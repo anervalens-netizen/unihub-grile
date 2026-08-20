@@ -4,7 +4,7 @@ Status: ACTIVE
 Overall outcome: UNVERIFIED  
 Owner: primary reviewer + builders desemnați de utilizator  
 Created: 2026-08-20  
-Updated: 2026-08-20
+Updated: 2026-08-21
 
 ## Objective
 
@@ -98,7 +98,7 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 | AC-12 | Google canary primește numai date locale, grilă/calendar și Pontaj compatibil vizual; ultima proiecție bună rămâne la eșec | zero live sheets înainte de aprobare | fake adapter tests, structural readback, one copied canary | Google canary readback | deferred to S5. | UNVERIFIED |
 | AC-13 | Numai cele patru dropdown-uri E-pay sunt editabile; valorile 0..10 sunt ingerate și auditate, invalidul păstrează last-good | fără inbound general | protection/read tests + blank/text/fraction/11 cases + close readback | Google canary edit/read | schema + check constraint in place (`epay_value_range`, `epay_category_enum`); inbound adapter is S5. | UNVERIFIED |
 | AC-14 | Exportul per magazin are `Grila`+`Pontaj`; bulk ZIP și pontaj-only respectă filtrele, manifestul și nu au external links | nu exportă alte arii | parse/render/round-trip + checksum tests | download browser, render sample | deferred to S5. | UNVERIFIED |
-| AC-15 | Close validează toate blocantele și îngheață luna; reopen este admin-only, motivat și auditat append-only | niciun overwrite de istoric | transaction/concurrency/audit tests | close/reopen browser flow | partial: month state machine + revision bump + closed-state rejection are in S1. Reopen and the audit chain land in S3. | UNVERIFIED |
+| AC-15 | Close validează toate blocantele și îngheață luna; reopen este admin-only, motivat și auditat append-only | niciun overwrite de istoric | transaction/concurrency/audit tests | close/reopen browser flow | full open-store/day lattice blockers (STORE_DAY_UNCOVERED, multiple working, invalid kind, full-lattice sale/target), lock-before-state close/reopen, expected_revision under lock, and digest-chained append-only audit landed in the AC-15 remediation packet (see progress); close/reopen browser flow remains S4 UI. | UNVERIFIED |
 | AC-16 | p95 overview <500 ms pilot/<1 s target; save DB <500 ms; Google/export async; jobs durable/idempotent | fără polling Google frecvent | benchmark/query count, restart/retry tests | local/staging measurements | partial: in-process worker with `SKIP LOCKED` semantics and idempotency_key. Benchmarks and a separate worker container are S4+. | UNVERIFIED |
 | AC-17 | Un pilot shadow complet reconciliază program, pontaj, vânzări, E-pay, grile și exporturi fără a modifica V1/V2 live | V1/V2 live unchanged | manifest per store/day/person + explained zero/unresolved diffs | copied canaries only | deferred to S6. | UNVERIFIED |
 | AC-18 | Integrarea Retail folosește contract versionat și capabilitate optională; Grile rămâne deployabil fără Retail | fără shared DB schema final | contract tests + Retail-off probe + exact integration diff | staging then formal Retail gate | deferred to S7. | UNVERIFIED |
@@ -404,6 +404,40 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   AC-09 remains `UNVERIFIED` (only a read-only audit may mark it PASS);
   AC-15's open-store/day close lattice and complete close-transition proof
   gaps are NOT part of this packet and remain outstanding.
+- 2026-08-21: AC-15 remediation builder packet landed in exact commit
+  `7b96f20f086d7311c65a63929322d7bfa202e241` (ahead of `93668bfb`; only the
+  pre-existing control-state plan edit was present in the worktree before the
+  packet). The three concrete Luna AC-15 findings are repaired:
+  (1) full open-store/day lattice — `CloseService._build_snapshots` now
+  builds the S3 authoritative lattice (every active store x every date of
+  the month; no separate closed-day table) as explicit `OpenStoreDay` rows
+  and `validate_close` evaluates every blocker over it: an active store/day
+  with no assignment row produces a typed `STORE_DAY_UNCOVERED` blocker
+  (OFF/LEAVE rows never occupy store coverage), full-lattice missing
+  sale/target checks stay precise, `INVALID_WORKING_KIND` is now produced,
+  and calculation completeness is never silently bypassed;
+  (2) serialized transition — `close_month`/`reopen_month` acquire
+  `SELECT ... FOR UPDATE` on the `Month` row before any state/revision
+  decision (unlocked pre-checks removed), the API `expected_revision` is
+  validated against the locked row (delegated to the service), blocker
+  failure mutates neither state nor audit, and a successful close appends
+  exactly one event while setting state+revision together — proven by a new
+  real PostgreSQL concurrency test where two racing close attempts
+  serialize and exactly one succeeds while the loser observes the committed
+  `CLOSED` state; (3) audit chain proof — `month_close_events` gains
+  deterministic `previous_event_digest`/`event_digest` SHA-256 fields
+  (Alembic 0007 `d8e0f2a4b6c8`, backfilling legacy rows with the identical
+  digest scheme, verified byte-for-byte against
+  `month_close_event_digest`) and `MonthCloseEventRepository.verify_chain`
+  detects any overwrite. Checks on the exact commit: `206 passed`
+  (193 SQLite + 13 PostgreSQL integration incl. the new full-lattice
+  uncovered, two-concurrent-close and chain-digest tests), `ruff check src
+  tests` clean, `ruff format --check` clean on changed files, `mypy --strict
+  src` clean on 56 source files; fresh PostgreSQL 17 `alembic upgrade head`
+  lands at `d8e0f2a4b6c8` with `alembic check` reporting zero drift, and the
+  0007 downgrade/upgrade round-trip re-backfills correctly. The new focused
+  tests fail on the pre-remediation source. AC-15 remains `UNVERIFIED` (only
+  a read-only audit may mark it PASS).
 
 ## Attempts, failures, and discoveries
 
@@ -656,15 +690,31 @@ has an explicit GO audit.
 
 The AC-09 remediation packet landed at exact candidate
 `be009ce8b3d4f83c32deaca954b1dd156a7a4301` (implementation commit; the plan
-progress entry above records the packet evidence). The five concrete AC-09
-findings are repaired and the focused tests fail on the pre-remediation
-source; the remaining demonstrated gap from the second Luna audit is the
-AC-15 slice (full open-store/day close lattice and complete close transition
-proof), which this packet deliberately did not touch. The next exact step is
-a fresh bounded read-only GPT-5.6 Luna audit through provider `openai`
-against `be009ce8b3d4f83c32deaca954b1dd156a7a4301`; an AC-15 remediation
-packet follows if that audit (or its successor) demonstrates remaining close
-gaps. Do not open S4, S5, or Retail integration until S3 has an explicit GO
+progress entry above records the packet evidence), with documentation follow-up
+`93668bfb82abaae7e79e1abcb64610043ae774f5`. Coordinator checks on a fresh
+PostgreSQL 17 database passed: `185 passed`, Ruff, strict mypy, migration to
+`c6d8e0f2a4b6`, and `alembic check` with no drift. A fresh Luna audit against
+exact `93668bfb82abaae7e79e1abcb64610043ae774f5` independently passed AC-07
+and AC-08, but returned `BLOCKED` because its mandatory post-attestation was
+incomplete and its database run reported an inconsistent `alembic check`; that
+migration anomaly is not reproduced by the coordinator's fresh run. The same
+audit reconfirmed the concrete AC-15 gap: close snapshots enumerate only
+existing `WORKING` assignments and miss active store/day dates with no
+assignment. The next exact step is an AC-15-only remediation packet for the
+full open-store/day lattice and serialized close transition, then fresh
+migration/check and a new independent Luna audit. Do not open S4, S5, or Retail
+integration until S3 has an explicit GO audit.
+
+The AC-15 remediation packet landed at exact candidate
+`7b96f20f086d7311c65a63929322d7bfa202e241` (implementation commit; the plan
+progress entry above records the packet evidence), with this documentation
+follow-up. Coordinator checks on a fresh PostgreSQL 17 database passed:
+`206 passed`, Ruff, strict mypy, migration to `d8e0f2a4b6c8` with
+`alembic check` reporting zero drift, and `13 passed` PostgreSQL integration
+(including the new full-lattice uncovered blocker and the two-concurrent-close
+serialization test). The next exact step is a fresh bounded read-only GPT-5.6
+Luna audit through provider `openai` against exact `7b96f20f...` to close
+AC-15; do not open S4, S5, or Retail integration until S3 has an explicit GO
 audit.
 
 ## Resume procedure
