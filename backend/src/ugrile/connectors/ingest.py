@@ -35,6 +35,7 @@ from ..domain.identifiers import (
     tenant_slug_from_tenant_id,
 )
 from ..repositories.models import (
+    IncentiveInput,
     Person,
     Store,
     StoreTarget,
@@ -42,6 +43,7 @@ from ..repositories.models import (
 )
 from .v1_types import (
     ConnectorV1Payload,
+    IncentiveRecord,
     PersonRecord,
     SalesRecord,
     StoreRecord,
@@ -83,6 +85,9 @@ class FixtureConnector:
         targets_count = self._upsert_targets(
             payload.targets, stores_index, tenant.id, tenant_token, generation
         )
+        incentives_count = self._upsert_incentives(
+            payload.incentives, people_index, tenant.id, tenant_token, generation
+        )
 
         self.session.flush()
 
@@ -91,6 +96,7 @@ class FixtureConnector:
             "people": len(people_index),
             "sales": sales_count,
             "targets": targets_count,
+            "incentives": incentives_count,
             "tenant": tenant.id,
             "generation": generation,
         }
@@ -251,12 +257,14 @@ class FixtureConnector:
                     amount=record.amount,
                     currency=record.currency,
                     source_ref=record.source_ref,
+                    sim_quantity=record.sim_quantity,
                 )
                 self.session.add(row)
             else:
                 existing.amount = record.amount
                 existing.currency = record.currency
                 existing.source_ref = record.source_ref
+                existing.sim_quantity = record.sim_quantity
             count += 1
         return count
 
@@ -304,14 +312,62 @@ class FixtureConnector:
                     version=record.version,
                     amount=record.amount,
                     currency=record.currency,
+                    sales_days=record.sales_days,
+                )
+                self.session.add(row)
+            else:
+                existing.amount = record.amount
+                existing.currency = record.currency
+                existing.sales_days = record.sales_days
+            count += 1
+        # ``generation`` is intentionally retained as part of the payload so
+        # audit code can attribute the target without re-reading the row.
+        _ = generation
+        return count
+
+    def _upsert_incentives(
+        self,
+        records: list[IncentiveRecord],
+        people_index: Mapping[str, str],
+        tenant_id: str,
+        tenant_token: str,
+        generation: str,
+    ) -> int:
+        count = 0
+        for record in records:
+            self._check_record_tenant(record.tenant_id, tenant_id, tenant_token)
+            person_id = people_index.get(record.person_internal_code)
+            if person_id is None:
+                raise NotFoundError(
+                    "incentive references unknown person",
+                    details={"person_internal_code": record.person_internal_code},
+                )
+            existing = (
+                self.session.query(IncentiveInput)
+                .filter_by(
+                    tenant_id=tenant_id,
+                    person_id=person_id,
+                    year=record.year,
+                    month=record.month,
+                    version=record.version,
+                )
+                .one_or_none()
+            )
+            if existing is None:
+                row = IncentiveInput(
+                    tenant_id=tenant_id,
+                    person_id=person_id,
+                    year=record.year,
+                    month=record.month,
+                    version=record.version,
+                    amount=record.amount,
+                    currency=record.currency,
                 )
                 self.session.add(row)
             else:
                 existing.amount = record.amount
                 existing.currency = record.currency
             count += 1
-        # ``generation`` is intentionally retained as part of the payload so
-        # audit code can attribute the target without re-reading the row.
         _ = generation
         return count
 

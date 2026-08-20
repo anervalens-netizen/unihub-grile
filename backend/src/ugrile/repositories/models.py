@@ -434,6 +434,9 @@ class SalesStoreDay(Base, TimestampMixin):
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="RON")
     source_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    sim_quantity: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -727,6 +730,13 @@ class StoreTarget(Base, TimestampMixin):
     business input that is not derived from a calendar or a sales record.
     The version lets a later reconciliation replace a stale target without
     losing history.
+
+    ``sales_days`` is the connector-authoritative selling-day count for the
+    store in the month (``zile_vanzare_magazin``). The grid divides the
+    monthly target by this count per docs/MOBIUP_RULE_PACK.md §2; ``None``
+    means the connector did not provide it and the grid raises an explicit
+    ``SALES_DAY_COUNT_MISSING`` marker (with a deterministic calendar-length
+    fallback) instead of silently assuming a divisor.
     """
 
     __tablename__ = "store_targets"
@@ -742,12 +752,17 @@ class StoreTarget(Base, TimestampMixin):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="RON")
+    sales_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         CheckConstraint("month BETWEEN 1 AND 12", name="store_target_month_in_range"),
         CheckConstraint(
             "kind IN ('MONTHLY_SALES', 'MONTHLY_UNITS', 'MONTHLY_ATTACH')",
             name="store_target_kind_enum",
+        ),
+        CheckConstraint(
+            "sales_days IS NULL OR sales_days >= 1",
+            name="store_target_sales_days_positive",
         ),
         UniqueConstraint(
             "tenant_id",
@@ -814,6 +829,48 @@ class SalaryMaster(Base, TimestampMixin):
             "tenant_id",
             "person_id",
             "effective_from",
+        ),
+    )
+
+
+class IncentiveInput(Base, TimestampMixin):
+    """Versioned monthly per-person incentive from Campaigns/connector.
+
+    Per docs/MOBIUP_RULE_PACK.md §5 the monthly incentive is the
+    authoritative value received from the connector — never recalculated
+    from the grid. Versioned like ``store_targets`` so a supersede stays
+    auditable; the grid consumes the latest version for the person/month
+    and defaults to zero (no campaign) without a marker.
+    """
+
+    __tablename__ = "incentive_inputs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    person_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    month: Mapped[int] = mapped_column(Integer, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="RON")
+
+    __table_args__ = (
+        CheckConstraint("month BETWEEN 1 AND 12", name="incentive_month_in_range"),
+        CheckConstraint("version >= 1", name="incentive_version_positive"),
+        UniqueConstraint(
+            "tenant_id",
+            "person_id",
+            "year",
+            "month",
+            "version",
+            name="uq_incentive_person_month_version",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "person_id"],
+            ["people.tenant_id", "people.id"],
+            name="fk_incentive_inputs_tenant_person",
         ),
     )
 
@@ -1012,6 +1069,7 @@ __all__ = [
     "OutboxJob",
     "StoreTarget",
     "SalaryMaster",
+    "IncentiveInput",
     "HolidayCalendar",
     "HolidayOverride",
     "MonthCloseEvent",

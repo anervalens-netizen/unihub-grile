@@ -33,6 +33,7 @@ from ..connectors.fixtures import (
 from ..connectors.ingest import FixtureConnector
 from ..connectors.v1_types import (
     ConnectorHeader,
+    IncentiveRecord,
     PersonRecord,
     SalesRecord,
     StoreRecord,
@@ -95,6 +96,10 @@ def _build_payload_for_tenant(tenant_id: str) -> Any:
             "targets": [
                 TargetRecord(**{**r.model_dump(), "tenant_id": bare_token})
                 for r in fx.targets
+            ],
+            "incentives": [
+                IncentiveRecord(**{**r.model_dump(), "tenant_id": bare_token})
+                for r in fx.incentives
             ],
         }
     )

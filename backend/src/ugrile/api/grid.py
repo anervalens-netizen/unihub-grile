@@ -13,6 +13,7 @@ The grid router exposes:
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends
@@ -25,11 +26,16 @@ from ..api.schemas import (
     AttributionRowOut,
     GridCalculationOut,
     GridComputeOut,
+    HolidayCalendarUpsertIn,
+    HolidayMarkerOut,
+    HolidayMonthOut,
+    HolidayOverrideIn,
     SalaryMasterOut,
     SalaryUpsertIn,
 )
 from ..domain.enums import WorkingKind
 from ..domain.rule_pack import RULE_PACK_VERSION
+from ..repositories.holidays import HolidayMarker, HolidayRepository
 from ..repositories.models import (
     GridCalculation,
     Month,
@@ -164,6 +170,120 @@ def get_attribution(
         company_total=summary.company_total,
         rows=rows,
         anomalies=list(summary.anomalies),
+    )
+
+
+def _marker_out(marker: HolidayMarker) -> HolidayMarkerOut:
+    return HolidayMarkerOut(
+        version=marker.version,
+        business_date=marker.business_date,
+        label=marker.label,
+        is_active=marker.is_active,
+        override_active=marker.override_active,
+        override_reason=marker.override_reason,
+    )
+
+
+@router.get("/{month_id}/holidays", response_model=HolidayMonthOut)
+def get_holidays(
+    month_id: str,
+    session: Session = Depends(db_session),
+    principal: Principal = Depends(current_principal),
+) -> HolidayMonthOut:
+    """Read the versioned holiday markers (plus admin overrides) for the month.
+
+    Read-only for any same-tenant principal; the markers are informational
+    and never affect schedule, Pontaj, target or pay.
+    """
+
+    month = _month_or_404(session, month_id, principal)
+    markers = HolidayRepository(session).markers_for_month(
+        tenant_id=principal.tenant_id,
+        year=month.year,
+        month=month.month,
+    )
+    return HolidayMonthOut(
+        month_id=month.id,
+        markers=[_marker_out(marker) for marker in markers],
+    )
+
+
+def _holiday_marker_for(
+    session: Session,
+    *,
+    tenant_id: str,
+    year: int,
+    month: int,
+    version: str,
+    business_date: date,
+) -> HolidayMarkerOut:
+    """Return the full marker for one (version, date) after an admin write."""
+
+    markers = HolidayRepository(session).markers_for_month(
+        tenant_id=tenant_id, year=year, month=month
+    )
+    for marker in markers:
+        if marker.version == version and marker.business_date == business_date:
+            return _marker_out(marker)
+    raise RuntimeError(f"holiday marker not found after upsert: {version} {business_date}")
+
+
+@router.post("/{month_id}/holidays", response_model=HolidayMarkerOut)
+def upsert_holiday_calendar(
+    month_id: str,
+    payload: HolidayCalendarUpsertIn,
+    session: Session = Depends(db_session),
+    principal: Principal = Depends(current_principal),
+) -> HolidayMarkerOut:
+    """Admin-only upsert of a versioned Romanian legal holiday date."""
+
+    assert_admin(principal)
+    month = _month_or_404(session, month_id, principal)
+    HolidayRepository(session).upsert_calendar(
+        tenant_id=principal.tenant_id,
+        version=payload.version,
+        business_date=payload.business_date,
+        label=payload.label,
+        is_active=payload.is_active,
+    )
+    session.flush()
+    return _holiday_marker_for(
+        session,
+        tenant_id=principal.tenant_id,
+        year=month.year,
+        month=month.month,
+        version=payload.version,
+        business_date=payload.business_date,
+    )
+
+
+@router.post("/{month_id}/holidays/override", response_model=HolidayMarkerOut)
+def upsert_holiday_override(
+    month_id: str,
+    payload: HolidayOverrideIn,
+    session: Session = Depends(db_session),
+    principal: Principal = Depends(current_principal),
+) -> HolidayMarkerOut:
+    """Admin-only override of a holiday marker (audited with reason + actor)."""
+
+    assert_admin(principal)
+    month = _month_or_404(session, month_id, principal)
+    HolidayRepository(session).upsert_override(
+        tenant_id=principal.tenant_id,
+        version=payload.version,
+        business_date=payload.business_date,
+        is_active=payload.is_active,
+        reason=payload.reason,
+        actor_id=principal.user_id,
+    )
+    session.flush()
+    return _holiday_marker_for(
+        session,
+        tenant_id=principal.tenant_id,
+        year=month.year,
+        month=month.month,
+        version=payload.version,
+        business_date=payload.business_date,
     )
 
 

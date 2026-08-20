@@ -18,6 +18,7 @@ from decimal import Decimal
 from .v1_types import (
     ConnectorHeader,
     ConnectorV1Payload,
+    IncentiveRecord,
     PersonRecord,
     SalesRecord,
     StoreRecord,
@@ -31,6 +32,10 @@ FIXTURE_GENERATION = "FIXTURE_V1"
 # Stable target versions. Bumping these requires an explicit migration in a
 # later stage; the connector does not silently supersede.
 FIXTURE_TARGET_VERSION = 1
+
+# Connector-authoritative selling days for the fixture stores in August 2026
+# (docs/MOBIUP_RULE_PACK.md §2: target_day = monthly target / sales_days).
+FIXTURE_SALES_DAYS = 26
 
 
 def default_fixture() -> ConnectorV1Payload:
@@ -84,18 +89,21 @@ def default_fixture() -> ConnectorV1Payload:
             store_internal_code="bucuresti_center",
             business_date=date(2026, 8, 1),
             amount=Decimal("12500.00"),
+            sim_quantity=9,
         ),
         SalesRecord(
             tenant_id=FIXTURE_TENANT_ID,
             store_internal_code="bucuresti_center",
             business_date=date(2026, 8, 2),
             amount=Decimal("9870.50"),
+            sim_quantity=3,
         ),
         SalesRecord(
             tenant_id=FIXTURE_TENANT_ID,
             store_internal_code="cluj_nord",
             business_date=date(2026, 8, 1),
             amount=Decimal("5400.25"),
+            sim_quantity=5,
         ),
     ]
     targets = [
@@ -107,6 +115,7 @@ def default_fixture() -> ConnectorV1Payload:
             kind="MONTHLY_SALES",
             version=FIXTURE_TARGET_VERSION,
             amount=Decimal("250000.00"),
+            sales_days=FIXTURE_SALES_DAYS,
         ),
         TargetRecord(
             tenant_id=FIXTURE_TENANT_ID,
@@ -116,6 +125,17 @@ def default_fixture() -> ConnectorV1Payload:
             kind="MONTHLY_SALES",
             version=FIXTURE_TARGET_VERSION,
             amount=Decimal("120000.00"),
+            sales_days=FIXTURE_SALES_DAYS,
+        ),
+    ]
+    incentives = [
+        IncentiveRecord(
+            tenant_id=FIXTURE_TENANT_ID,
+            person_internal_code="alice",
+            year=2026,
+            month=8,
+            version=1,
+            amount=Decimal("350.00"),
         ),
     ]
     return ConnectorV1Payload(
@@ -124,13 +144,15 @@ def default_fixture() -> ConnectorV1Payload:
         people=people,
         sales=sales,
         targets=targets,
+        incentives=incentives,
     )
 
 
 __all__ = [
     "FIXTURE_GENERATION",
+    "FIXTURE_SALES_DAYS",
+    "FIXTURE_TARGET_VERSION",
     "FIXTURE_TENANT_ID",
     "FIXTURE_TENANT_TOKEN",
-    "FIXTURE_TARGET_VERSION",
     "default_fixture",
 ]

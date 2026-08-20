@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
+from enum import StrEnum
 from typing import Final
 
 from .enums import WorkingKind
@@ -41,6 +42,21 @@ from .rule_pack import (
     RulePackV1,
     money,
 )
+
+
+class GridAnomalyCode(StrEnum):
+    """Deterministic per-person grid anomaly markers.
+
+    The engine itself stays pure (target zero already returns progress 0);
+    the service layer collects these codes while assembling the canonical
+    inputs and persists them in the ``GridCalculation`` payload so a
+    missing source is auditable instead of silently becoming zero.
+    """
+
+    TARGET_ZERO = "TARGET_ZERO"
+    MISSING_SALE = "MISSING_SALE"
+    SALES_DAY_COUNT_MISSING = "SALES_DAY_COUNT_MISSING"
+    SALARY_MASTER_MISSING = "SALARY_MASTER_MISSING"
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,6 +318,7 @@ V2_EXAMPLE_TOTAL: Final[Decimal] = Decimal("3457")  # 2600 + 480 + 27 + 350
 
 __all__ = [
     "CalendarGridDay",
+    "GridAnomalyCode",
     "GridComponents",
     "GridInputs",
     "V2_EXAMPLE_INCENTIVE",

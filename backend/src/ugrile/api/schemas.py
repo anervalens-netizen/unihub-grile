@@ -265,6 +265,41 @@ class GridComputeOut(BaseModel):
     snapshots: list[GridCalculationOut]
 
 
+class HolidayMarkerOut(BaseModel):
+    """One versioned Romanian legal holiday marker for a business date.
+
+    ``override_active`` / ``override_reason`` are ``None`` when no admin
+    override exists for the date. Informational only: the marker never
+    changes schedule, Pontaj, target or pay (docs/MOBIUP_RULE_PACK.md §9).
+    """
+
+    version: str
+    business_date: date
+    label: str
+    is_active: bool
+    override_active: bool | None = None
+    override_reason: str | None = None
+
+
+class HolidayCalendarUpsertIn(BaseModel):
+    version: str = Field(min_length=1, max_length=64)
+    business_date: date
+    label: str = Field(min_length=1, max_length=128)
+    is_active: bool = True
+
+
+class HolidayOverrideIn(BaseModel):
+    version: str = Field(min_length=1, max_length=64)
+    business_date: date
+    is_active: bool
+    reason: str = Field(min_length=4, max_length=512)
+
+
+class HolidayMonthOut(BaseModel):
+    month_id: str
+    markers: list[HolidayMarkerOut]
+
+
 class BlockerOut(BaseModel):
     code: CloseBlockerCode
     store_id: str | None
@@ -321,6 +356,10 @@ __all__ = [
     "GridCalculationOut",
     "GridComputeOut",
     "HealthReport",
+    "HolidayCalendarUpsertIn",
+    "HolidayMarkerOut",
+    "HolidayMonthOut",
+    "HolidayOverrideIn",
     "IngestRequest",
     "IngestResult",
     "JobOut",
