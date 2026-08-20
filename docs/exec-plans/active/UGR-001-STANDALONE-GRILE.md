@@ -735,6 +735,37 @@ Luna audit through provider `openai` against exact `7b96f20f...` to close
 AC-15; do not open S4, S5, or Retail integration until S3 has an explicit GO
 audit.
 
+The S4 perf-sink repair packet landed at exact candidate
+`1bf9b5da379ce5b5b6ee2f60035ded4c9db683c4` (one coherent commit on top of
+the S4 candidate `82d481e69d2d5ef9f2ddb4630b747fe70aef5034`; this is a
+documentation follow-up). The defect: `backend/tests/api/test_s4_perf.py::
+_write_perf_evidence` was writing its perf summary to
+`.agent/evidence/UGR-001/S4/perf.txt` — a TRACKED path inside the
+candidate worktree — so running the test mutated the tracked file and
+violated the verifier's mandatory clean post-attestation. AC-10/AC-16
+statuses are unchanged (`UNVERIFIED`); only the file-writing side
+effect moved. New behaviour:
+
+- default sink: `tempfile.gettempdir() / ugrile-s4-perf.txt`
+- explicit sink: `UGR_S4_PERF_OUT=/some/path pytest tests/api/test_s4_perf.py`
+- opt-out (CI): `UGR_S4_PERF_OUT="" pytest tests/api/test_s4_perf.py`
+
+The four p95 assertions are preserved untouched; no production code
+path changed; the historical `.agent/evidence/UGR-001/S4/perf.txt`
+snapshot from the S4 commit stays in place as the audit record.
+Coordinator checks on the candidate: backend `ruff check src tests`
+clean, `mypy src` clean on 58 source files, pytest `234 passed + 1
+skipped` on SQLite, pytest `-m postgres` `13 passed` on fresh
+ephemeral PG 17 (`55499` -> `1e3b2c4d5f6a`, `alembic check` zero
+drift), frontend `tsc --noEmit` clean, `vitest run` `17 passed`. The
+perf numbers themselves are within budget (overview / program /
+exceptions p95 < 5 ms, save p95 ≈ 300 ms vs the 500 ms ceiling). The
+next exact step is the S4 fresh bounded read-only GPT-5.6 Luna audit
+through provider `openai` against the exact S4 candidate
+`82d481e69d2d5ef9f2ddb4630b747fe70aef5034` (or a fresh candidate with
+this repair squashed in, at the auditor's discretion); do not open S5
+or Retail integration until S4 has an explicit GO audit.
+
 ## Resume procedure
 
 1. Read `AGENTS.md`, `README.md`, `ARCHITECTURE.md`, product/UX contracts, and

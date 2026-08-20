@@ -24,7 +24,18 @@ and a 5-day calendar across 31 days. p95 well under budget:
 - save       p95 = 295ms  (budget  500ms)
 
 The benchmark is wired to run automatically inside pytest with
-`UGR_S4_PERF_ITER=N` (default 12); it writes this file each run.
+`UGR_S4_PERF_ITER=N` (default 12). As of the S4 perf-sink repair
+(`fix(s4): route perf evidence to non-tracked path so verifier tree
+stays clean`), the benchmark no longer writes to this tracked file —
+it routes its human-readable summary to a non-tracked path so the
+verifier's mandatory clean post-attestation is preserved. Control:
+
+- default sink: `tempfile.gettempdir() / ugrile-s4-perf.txt`
+- explicit sink: `UGR_S4_PERF_OUT=/some/path pytest tests/api/test_s4_perf.py`
+- opt-out (CI): `UGR_S4_PERF_OUT="" pytest tests/api/test_s4_perf.py`
+
+The historical snapshot committed at the S4 candidate stays in place
+as the audit record.
 
 ## `index.html`
 Production-built `dist/index.html` artefact produced by `vite build`.
