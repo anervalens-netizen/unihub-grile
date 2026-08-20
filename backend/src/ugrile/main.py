@@ -16,6 +16,7 @@ from .api.assignments import router as assignments_router
 from .api.catalog import router as catalog_router
 from .api.health import router as health_router
 from .api.ingest import router as ingest_router
+from .api.schedule import router as schedule_router
 from .api.worker_api import router as worker_router
 from .core.config import get_settings
 from .core.logging import configure_logging, get_logger
@@ -31,9 +32,9 @@ def create_app() -> FastAPI:
         title="ugrile-backend",
         version="0.1.0",
         description=(
-            "UniHub Grile standalone foundation. S1: stack, schema, AC-02 "
-            "invariants, fixture connector, auth/scopes skeleton, one worker, "
-            "local dev/test commands."
+            "UniHub Grile standalone foundation. S1/S2: stack, schema, calendar, "
+            "derived Pontaj, XLSX schedule import, fixture connector, auth/scopes "
+            "seam, one worker, local dev/test commands."
         ),
     )
 
@@ -52,7 +53,7 @@ def create_app() -> FastAPI:
     def _version() -> dict[str, str]:
         return {
             "app": "ugrile-backend",
-            "stage": "S1",
+            "stage": "S2",
             "version": "0.1.0",
             "env": settings.app_env,
         }
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(catalog_router)
     app.include_router(assignments_router)
     app.include_router(ingest_router)
+    app.include_router(schedule_router)
     app.include_router(worker_router)
     return app
 

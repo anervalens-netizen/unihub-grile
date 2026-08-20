@@ -88,10 +88,36 @@ class AssignmentCreate(BaseModel):
     person_id: str
     business_date: date
     working_kind: WorkingKind
-    expected_revision: int | None = Field(
-        default=None,
-        description="Optional CAS guard. If provided, the write is rejected when the month revision is older.",
-    )
+    expected_revision: int | None = Field(default=None)
+
+
+class CalendarChangeIn(BaseModel):
+    person_id: str
+    business_date: date
+    status: DayStatus
+    store_id: str | None = None
+    working_kind: WorkingKind | None = None
+
+
+class CalendarApplyIn(BaseModel):
+    expected_revision: int
+    changes: list[CalendarChangeIn]
+
+
+class CalendarProjectionOut(BaseModel):
+    month_id: str
+    revision: int
+    assignment_count: int
+    person_calendar_count: int
+    coverage_count: int
+    pontaj_count: int
+
+
+class SchedulePreviewOut(BaseModel):
+    base_revision: int
+    changes: int
+    errors: list[dict[str, object]]
+    warnings: list[dict[str, object]]
 
 
 class ConflictOut(BaseModel):
@@ -141,6 +167,9 @@ class IngestRequest(BaseModel):
 __all__ = [
     "AssignmentCreate",
     "AssignmentOut",
+    "CalendarApplyIn",
+    "CalendarChangeIn",
+    "CalendarProjectionOut",
     "ConflictOut",
     "CoverageReport",
     "HealthReport",
@@ -149,6 +178,7 @@ __all__ = [
     "JobOut",
     "MonthOut",
     "PersonOut",
+    "SchedulePreviewOut",
     "StoreOut",
     "TenantOut",
 ]

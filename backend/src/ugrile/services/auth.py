@@ -16,13 +16,15 @@ The skeleton avoids encoding the future auth flow:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..domain.enums import RoleName
 from ..domain.errors import AuthError, ScopeError
-from ..repositories.models import User
+from ..repositories.models import Store, User
+from ..repositories.scopes import ManagerScopeRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +90,23 @@ def assert_same_tenant(principal: Principal, tenant_id: str) -> None:
         )
 
 
+def effective_store_ids(session: Session, principal: Principal, on_date: date) -> set[str]:
+    """Return the stores writable by a principal on an effective date.
+
+    Admins are tenant-wide. Managers/TLs need an explicit effective-dated
+    ``manager_scopes`` row; absence of a row is deny-by-default.
+    """
+
+    if principal.role is RoleName.ADMIN:
+        stmt = select(Store.id).where(Store.tenant_id == principal.tenant_id)
+        return set(session.execute(stmt).scalars())
+    return ManagerScopeRepository(session).store_ids_for_user(
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        on_date=on_date,
+    )
+
+
 def require_tenant(principal: Principal) -> str:
     """Return the tenant id the principal is allowed to use."""
 
@@ -99,6 +118,7 @@ __all__ = [
     "assert_admin",
     "assert_manager_or_admin",
     "assert_same_tenant",
+    "effective_store_ids",
     "load_principal",
     "require_tenant",
 ]

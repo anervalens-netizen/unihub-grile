@@ -6,14 +6,22 @@ out of scope at S1 — they arrive in S2 (calendar) and S5 (Sheet binding).
 
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from ..api.deps import current_principal, db_session
 from ..api.schemas import PersonOut, StoreOut, TenantOut
+from ..domain.errors import ScopeError
 from ..repositories.stores import PersonRepository, StoreRepository
 from ..repositories.tenants import TenantRepository
-from ..services.auth import Principal, assert_admin, assert_same_tenant
+from ..services.auth import (
+    Principal,
+    assert_admin,
+    assert_same_tenant,
+    effective_store_ids,
+)
 
 router = APIRouter(prefix="/catalog", tags=["catalog"])
 
@@ -37,8 +45,11 @@ def list_stores(
         assert_same_tenant(principal, tenant_id)
     else:
         tenant_id = principal.tenant_id
+    allowed_store_ids = effective_store_ids(session, principal, date.today())
     return [
-        StoreOut.model_validate(s) for s in StoreRepository(session).list_for_tenant(tenant_id)
+        StoreOut.model_validate(s)
+        for s in StoreRepository(session).list_for_tenant(tenant_id)
+        if s.id in allowed_store_ids
     ]
 
 
@@ -54,12 +65,19 @@ def list_people(
     else:
         tenant_id = principal.tenant_id
     repo = PersonRepository(session)
+    allowed_store_ids = effective_store_ids(session, principal, date.today())
     if store_id is not None:
+        if store_id not in allowed_store_ids:
+            raise ScopeError("store is outside manager scope", details={"store_id": store_id})
         return [
             PersonOut.model_validate(p)
             for p in repo.list_for_store(tenant_id=tenant_id, store_id=store_id)
         ]
-    return [PersonOut.model_validate(p) for p in repo.list_for_tenant(tenant_id=tenant_id)]
+    return [
+        PersonOut.model_validate(p)
+        for p in repo.list_for_tenant(tenant_id=tenant_id)
+        if p.home_store_id in allowed_store_ids
+    ]
 
 
 __all__ = ["router"]

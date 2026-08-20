@@ -71,7 +71,56 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default=RoleName.READONLY)
 
-    __table_args__ = (UniqueConstraint("tenant_id", "email", name="uq_users_tenant_email"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "email", name="uq_users_tenant_email"),
+        UniqueConstraint("tenant_id", "id", name="uq_users_tenant_id"),
+    )
+
+
+class ManagerScope(Base, TimestampMixin):
+    """Effective-dated store scope for manager/TL calendar writes."""
+
+    __tablename__ = "manager_scopes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    store_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="manager_scope_dates_valid",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "store_id",
+            "effective_from",
+            name="uq_manager_scope_window",
+        ),
+        Index(
+            "ix_manager_scopes_tenant_user_dates",
+            "tenant_id",
+            "user_id",
+            "effective_from",
+            "effective_to",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            ["users.tenant_id", "users.id"],
+            name="fk_manager_scopes_tenant_user",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "store_id"],
+            ["stores.tenant_id", "stores.id"],
+            name="fk_manager_scopes_tenant_store",
+        ),
+    )
 
 
 class Store(Base, TimestampMixin):
@@ -636,6 +685,7 @@ class StoreTarget(Base, TimestampMixin):
 __all__ = [
     "Tenant",
     "User",
+    "ManagerScope",
     "Store",
     "Person",
     "StoreAssignment",

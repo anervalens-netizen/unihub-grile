@@ -95,6 +95,15 @@ def test_assert_coverage_raises_with_details():
     assert err.details["conflicts"][0]["code"] == "MULTIPLE_AGENTS_PER_STORE_DAY"
 
 
+def test_normal_requires_home_store():
+    with pytest.raises(ValidationError):
+        validate_working_kind(
+            person_home_store_id="s1",
+            site_store_id="s2",
+            working_kind=WorkingKind.NORMAL,
+        )
+
+
 def test_extra_home_requires_same_home_store():
     with pytest.raises(ValidationError):
         validate_working_kind(

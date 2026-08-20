@@ -124,10 +124,19 @@ def validate_working_kind(
     site_store_id: str,
     working_kind: WorkingKind,
 ) -> None:
-    """Enforce EXTRA_HOME / EXTRA_OTHER preconditions per ARCHITECTURE §5."""
+    """Enforce NORMAL/EXTRA_HOME/EXTRA_OTHER preconditions per contract."""
 
     from .errors import ValidationError
 
+    if working_kind == WorkingKind.NORMAL and person_home_store_id != site_store_id:
+        raise ValidationError(
+            "NORMAL requires person.home_store_id == site.store_id",
+            details={
+                "working_kind": working_kind.value,
+                "person_home_store_id": person_home_store_id,
+                "site_store_id": site_store_id,
+            },
+        )
     if working_kind == WorkingKind.EXTRA_HOME and person_home_store_id != site_store_id:
         raise ValidationError(
             "EXTRA_HOME requires person.home_store_id == site.store_id",

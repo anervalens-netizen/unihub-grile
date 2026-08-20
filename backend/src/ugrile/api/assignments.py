@@ -1,43 +1,77 @@
-"""Calendar write/read endpoints (S1 minimal).
+"""Calendar write/read endpoints.
 
-Only the endpoints required by the S1 contract live here:
-
-* POST /months/{month_id}/assignments — upsert a working assignment.
-* GET /months/{month_id}/coverage — return any AC-02 conflicts.
-* GET /months/{month_id}/assignments — list the working assignments.
-
-Wider manager scope (mid-month re-write, EXTRA_HOME classification, OFF/LEAVE
-projection) is part of S2 and intentionally omitted.
+S1 exposes the atomic single-assignment seam; S2 adds the revisioned whole
+calendar apply endpoint that keeps calendar, coverage and Pontaj derived from
+one authority.
 """
 
 from __future__ import annotations
 
+from calendar import monthrange
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..api.deps import current_principal, db_session
 from ..api.schemas import (
     AssignmentCreate,
     AssignmentOut,
+    CalendarApplyIn,
+    CalendarProjectionOut,
     ConflictOut,
     CoverageReport,
     MonthOut,
 )
-from ..domain.errors import (
-    CoverageInvariantError,
-    ValidationError,
-)
+from ..domain.enums import DayStatus
+from ..domain.errors import CoverageInvariantError, ScopeError, ValidationError
 from ..repositories.assignments import AssignmentRepository
-from ..repositories.models import SiteDayAssignment
+from ..repositories.models import Month, Person, SiteDayAssignment
 from ..repositories.months import MonthRepository
-from ..repositories.stores import PersonRepository, StoreRepository
-from ..services.auth import Principal, assert_manager_or_admin, assert_same_tenant
+from ..services.auth import (
+    Principal,
+    assert_manager_or_admin,
+    assert_same_tenant,
+    effective_store_ids,
+)
+from ..services.calendar import CalendarChange, CalendarService
 
 router = APIRouter(prefix="/months", tags=["calendar"])
 
 
 def _rehydrate(row: SiteDayAssignment) -> AssignmentOut:
     return AssignmentOut.model_validate(row)
+
+
+def _allowed_by_date(session: Session, principal: Principal, month: Month) -> dict[date, set[str]]:
+    year = month.year
+    month_number = month.month
+    return {
+        date(year, month_number, day): effective_store_ids(
+            session, principal, date(year, month_number, day)
+        )
+        for day in range(1, monthrange(year, month_number)[1] + 1)
+    }
+
+
+def _visible_rows(
+    session: Session,
+    rows: list[SiteDayAssignment],
+    allowed_by_date: dict[date, set[str]],
+) -> list[SiteDayAssignment]:
+    person_ids = {row.person_id for row in rows}
+    home_stores = {
+        person.id: person.home_store_id
+        for person in session.execute(select(Person).where(Person.id.in_(person_ids))).scalars()
+    }
+    return [
+        row
+        for row in rows
+        if row.business_date in allowed_by_date
+        and row.store_id in allowed_by_date[row.business_date]
+        and home_stores.get(row.person_id) in allowed_by_date[row.business_date]
+    ]
 
 
 @router.get("", response_model=list[MonthOut])
@@ -60,82 +94,47 @@ def upsert_assignment(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> AssignmentOut:
-    """Upsert one working assignment. Conflicts raise HTTP 409."""
+    """Compatibility endpoint backed by the S2 calendar authority."""
 
     assert_manager_or_admin(principal)
-    months = MonthRepository(session)
-    month = months.get(month_id)
+    month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
-    if month.state == "CLOSED":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "MONTH_CLOSED",
-                "message": f"month is closed: {month_id}",
-            },
-        )
-    if payload.expected_revision is not None and payload.expected_revision != month.revision:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "STALE_REVISION",
-                "message": "expected revision does not match current revision",
-                "expected": payload.expected_revision,
-                "current": month.revision,
-            },
-        )
-
-    stores = StoreRepository(session)
-    people = PersonRepository(session)
-    store = stores.get(payload.store_id)
-    person = people.get(payload.person_id)
-
-    assert_same_tenant(principal, store.tenant_id)
-    assert_same_tenant(principal, person.tenant_id)
-    if store.tenant_id != month.tenant_id or person.tenant_id != month.tenant_id:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "TENANT_MISMATCH",
-                "message": "store/person/month belong to different tenants",
-            },
-        )
-
-    # Working-kind preconditions (EXTRA_HOME / EXTRA_OTHER).
+    expected_revision = (
+        payload.expected_revision if payload.expected_revision is not None else month.revision
+    )
     try:
-        from ..domain.calendar import validate_working_kind
-
-        validate_working_kind(
-            person_home_store_id=person.home_store_id,
-            site_store_id=store.id,
-            working_kind=payload.working_kind,
-        )
-    except ValidationError as exc:
-        raise HTTPException(
-            status_code=exc.http_status,
-            detail={"code": exc.code, "message": exc.message, "details": exc.details},
-        ) from exc
-
-    repo = AssignmentRepository(session)
-    try:
-        row = repo.upsert_working(
-            tenant_id=month.tenant_id,
-            month_id=month.id,
-            store_id=store.id,
-            person_id=person.id,
-            business_date=payload.business_date,
-            working_kind=payload.working_kind,
+        result = CalendarService(session).apply(
+            month=month,
+            tenant_id=principal.tenant_id,
+            changes=[
+                CalendarChange(
+                    person_id=payload.person_id,
+                    business_date=payload.business_date,
+                    store_id=payload.store_id,
+                    status=DayStatus.WORKING,
+                    working_kind=payload.working_kind,
+                )
+            ],
+            expected_revision=expected_revision,
+            allowed_store_ids_by_date={
+                payload.business_date: effective_store_ids(
+                    session, principal, payload.business_date
+                )
+            },
         )
     except CoverageInvariantError as exc:
         raise HTTPException(
             status_code=exc.http_status,
             detail={"code": exc.code, "message": exc.message, "details": exc.details},
         ) from exc
-
-    # Bump the month revision after a successful write so subsequent CAS
-    # requests detect the drift.
-    months.bump_revision(month.id)
-    return _rehydrate(row)
+    for row in result.assignments:
+        if (
+            row.person_id == payload.person_id
+            and row.store_id == payload.store_id
+            and row.business_date == payload.business_date
+        ):
+            return _rehydrate(row)
+    raise ValidationError("calendar apply did not return the requested assignment")
 
 
 @router.get("/{month_id}/assignments", response_model=list[AssignmentOut])
@@ -147,8 +146,11 @@ def list_assignments(
 ) -> list[AssignmentOut]:
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
+    allowed_by_date = _allowed_by_date(session, principal, month)
+    if store_id is not None and not any(store_id in stores for stores in allowed_by_date.values()):
+        raise ScopeError("store is outside manager scope", details={"store_id": store_id})
     rows = AssignmentRepository(session).list_for_month(month_id, store_id=store_id)
-    return [_rehydrate(r) for r in rows]
+    return [_rehydrate(r) for r in _visible_rows(session, rows, allowed_by_date)]
 
 
 @router.get("/{month_id}/coverage", response_model=CoverageReport)
@@ -159,8 +161,11 @@ def month_coverage(
 ) -> CoverageReport:
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
+    allowed_by_date = _allowed_by_date(session, principal, month)
     rows = AssignmentRepository(session).list_for_month(month_id)
-    projections = AssignmentRepository(session).project_assignments(rows)
+    projections = AssignmentRepository(session).project_assignments(
+        _visible_rows(session, rows, allowed_by_date)
+    )
     from ..domain.calendar import check_coverage
 
     conflicts = check_coverage(projections)
@@ -176,6 +181,49 @@ def month_coverage(
             )
             for c in conflicts
         ],
+    )
+
+
+@router.post("/{month_id}/calendar/apply", response_model=CalendarProjectionOut)
+def apply_calendar(
+    month_id: str,
+    payload: CalendarApplyIn,
+    session: Session = Depends(db_session),
+    principal: Principal = Depends(current_principal),
+) -> CalendarProjectionOut:
+    assert_manager_or_admin(principal)
+    month = MonthRepository(session).get(month_id)
+    assert_same_tenant(principal, month.tenant_id)
+    changes = [
+        CalendarChange(
+            person_id=c.person_id,
+            business_date=c.business_date,
+            store_id=c.store_id,
+            status=c.status,
+            working_kind=c.working_kind,
+        )
+        for c in payload.changes
+    ]
+    allowed_by_date = {
+        date(month.year, month.month, day): effective_store_ids(
+            session, principal, date(month.year, month.month, day)
+        )
+        for day in range(1, monthrange(month.year, month.month)[1] + 1)
+    }
+    result = CalendarService(session).apply(
+        month=month,
+        tenant_id=principal.tenant_id,
+        changes=changes,
+        expected_revision=payload.expected_revision,
+        allowed_store_ids_by_date=allowed_by_date,
+    )
+    return CalendarProjectionOut(
+        month_id=result.month_id,
+        revision=result.revision,
+        assignment_count=len(result.assignments),
+        person_calendar_count=len(result.person_calendar),
+        coverage_count=len(result.coverage),
+        pontaj_count=len(result.pontaj),
     )
 
 
