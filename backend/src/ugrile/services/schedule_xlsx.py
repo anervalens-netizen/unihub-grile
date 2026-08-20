@@ -8,10 +8,10 @@ from datetime import date
 from io import BytesIO
 from typing import Any
 
-from openpyxl import Workbook, load_workbook  # type: ignore[import-untyped]
-from openpyxl.styles import Protection  # type: ignore[import-untyped]
-from openpyxl.utils import get_column_letter  # type: ignore[import-untyped]
-from openpyxl.worksheet.datavalidation import DataValidation  # type: ignore[import-untyped]
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Protection
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from ..domain.enums import DayStatus, WorkingKind
 from .calendar import CalendarChange
@@ -114,6 +114,8 @@ def build_template(
     store_codes_by_id = {store_id: code for code, store_id in stores.items()}
     wb = Workbook()
     ws = wb.active
+    if ws is None:
+        raise RuntimeError("workbook has no active sheet")
     ws.title = "Instrucțiuni"
     ws.append(["schema", SCHEMA])
     ws.append(["tenant_id", tenant_id])
@@ -232,7 +234,7 @@ def parse_schedule(
     tenant_id = str(values.get("tenant_id", ""))
     month_id = str(values.get("month_id", ""))
     try:
-        revision = int(values.get("base_revision", -1))
+        revision = int(str(values.get("base_revision", -1)))
     except (TypeError, ValueError):
         revision = -1
     if tenant_id != expected_tenant_id:

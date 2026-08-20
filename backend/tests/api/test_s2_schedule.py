@@ -128,6 +128,14 @@ def test_xlsx_template_preview_and_atomic_apply(client, faker_tenant):
     refreshed_workbook = load_workbook(BytesIO(refreshed.content), data_only=True)
     assert refreshed_workbook["user_admin"]["D2"].value == "NORMAL - s1"
 
+    stale_apply = client.post(
+        f"/months/{month_id}/schedule/apply",
+        files={"file": ("schedule.xlsx", edited_bytes, XLSX)},
+        headers=HEADERS,
+    )
+    assert stale_apply.status_code == 409
+    assert stale_apply.json()["code"] == "STALE_REVISION"
+
 
 def test_xlsx_preview_reports_coverage_and_kind_errors(client, faker_tenant):
     month_id = _open_month(faker_tenant)

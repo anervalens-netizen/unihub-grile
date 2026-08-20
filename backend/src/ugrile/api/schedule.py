@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from ..api.deps import current_principal, db_session
 from ..api.schemas import CalendarProjectionOut, SchedulePreviewOut
 from ..domain.enums import DayStatus, WorkingKind
-from ..domain.errors import DomainError, ValidationError
+from ..domain.errors import DomainError, StaleRevisionError, ValidationError
 from ..repositories.models import (
     Month,
     Person,
@@ -93,6 +93,14 @@ def _calendar_for_scope(
     allowed_by_date: dict[date, set[str]],
 ) -> list[CalendarChange]:
     person_ids = {row["person_id"] for row in people}
+    home_stores = {
+        person_id: home_store_id
+        for person_id, home_store_id in session.execute(
+            select(Person.id, Person.home_store_id).where(
+                Person.tenant_id == tenant_id, Person.id.in_(person_ids)
+            )
+        )
+    }
     assignments = list(
         session.execute(
             select(AssignmentRow).where(
@@ -122,6 +130,7 @@ def _calendar_for_scope(
         for row in assignments
         if row.business_date in allowed_by_date
         and row.store_id in allowed_by_date[row.business_date]
+        and home_stores.get(row.person_id) in allowed_by_date[row.business_date]
     ]
     changes.extend(
         CalendarChange(
@@ -132,6 +141,7 @@ def _calendar_for_scope(
         )
         for row in absences
         if row.business_date in allowed_by_date
+        and home_stores.get(row.person_id) in allowed_by_date[row.business_date]
     )
     return changes
 
@@ -269,6 +279,14 @@ async def schedule_apply(
     )
     errors = list(parsed.errors)
     if parsed.base_revision != month.revision:
+        if not errors:
+            raise StaleRevisionError(
+                "stale schedule revision",
+                details={
+                    "expected": month.revision,
+                    "provided": parsed.base_revision,
+                },
+            )
         errors.append(
             {
                 "code": "STALE_REVISION",
