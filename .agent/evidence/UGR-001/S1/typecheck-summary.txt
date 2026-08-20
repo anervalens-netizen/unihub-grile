@@ -1,0 +1,25 @@
+# ruff check (backend)
+   |
+60 |     assert result is not None
+61 |     assert result.status == "DONE"
+62 |     assert session.query(SalesStoreDay).count() == 3
+   |                                                      W292
+   |
+   = help: Add trailing newline
+
+Found 129 errors.
+[*] 96 fixable with the `--fix` option (1 hidden fix can be enabled with the `--unsafe-fixes` option).
+
+# mypy (backend)
+src/ugrile/api/health.py:70: error: Function is missing a return type annotation  [no-untyped-def]
+src/ugrile/api/catalog.py:22: error: Function is missing a return type annotation  [no-untyped-def]
+src/ugrile/api/catalog.py:31: error: Function is missing a return type annotation  [no-untyped-def]
+src/ugrile/api/catalog.py:44: error: Function is missing a return type annotation  [no-untyped-def]
+src/ugrile/api/assignments.py:55: error: Function is missing a return type annotation  [no-untyped-def]
+src/ugrile/api/assignments.py:68: error: Function is missing a return type annotation  [no-untyped-def]
+src/ugrile/api/assignments.py:153: error: Function is missing a return type annotation  [no-untyped-def]
+src/ugrile/api/assignments.py:166: error: Function is missing a return type annotation  [no-untyped-def]
+src/ugrile/main.py:51: error: Function is missing a return type annotation  [no-untyped-def]
+Found 32 errors in 11 files (checked 35 source files)
+
+# tsc (frontend)

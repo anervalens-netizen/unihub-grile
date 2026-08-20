@@ -82,30 +82,30 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 
 | ID | Observable behavior | Must not change | Verification and expected result | Runtime proof | Evidence | Status |
 |---|---|---|---|---|---|---|
-| AC-01 | Aplicația standalone pornește local cu API, frontend, PostgreSQL și un singur worker; health/readiness sunt determinate fără Retail/Google | Retail și legacy Grile | build + test + local health; oprirea Retail/Google fixture nu blochează read UI | local compose/systemd dev probe | pending | UNVERIFIED |
-| AC-02 | Schema și motorul impun max. un agent per magazin/zi și max. un magazin per agent/zi | datele fixture | teste concurente + constrângeri DB; conflictele sunt respinse determinist | API conflict 409 | pending | UNVERIFIED |
-| AC-03 | Fixture connector versionat furnizează magazine, persoane, targete și vânzări magazin/zi fără import din codul/schema Retail | Stage 1–6 read-only Retail | search/import-boundary test + fixture ingest idempotent | ingest status local | pending | UNVERIFIED |
-| AC-04 | Managerul poate crea/modifica programul lunar, cu `NORMAL`, `EXTRA_HOME`, `EXTRA_OTHER`, `OFF`, `LEAVE`, scoped la aria sa | fără wizard schimb de tură | API/UI tests; scope 403; revision stale 409 | browser flow fixture | pending | UNVERIFIED |
-| AC-05 | Orice modificare a calendarului actualizează în aceeași revizie pontajul derivat, inclusiv retroactiv la mijlocul lunii | fără editor pontaj separat | domain/API test before/after; total ore consistent | UI + XLSX/Sheet preview | pending | UNVERIFIED |
-| AC-06 | Modelul XLSX prepopulat poate fi preview-uit și aplicat atomic; conflictele, scope-ul și revision stale nu produc scrieri parțiale | nu creează persoane/magazine | parser round-trip, malformed/property tests, rollback test | browser upload preview/apply | pending | UNVERIFIED |
-| AC-07 | Întreaga vânzare a magazinului/zi este creditată agentului din calendar; totalurile fizice nu se dublează la reatribuire | sursa fizică imuabilă | hash/totals tests before/after reassignment | drill-down magazin/agent | pending | UNVERIFIED |
-| AC-08 | `EXTRA_HOME` și `EXTRA_OTHER` sunt clasificate corect și au efect separat, fără copiere de vânzări | un agent/store/zi | table-driven domain tests și excepții invalid home/other | calendar + grid preview | pending | UNVERIFIED |
-| AC-09 | Calculul grilei este determinist, versionat și reconciliabil pentru două persoane/magazin | formula neconfirmată rămâne config/UNVERIFIED | golden fixtures vs contract acceptat, Decimal, unchanged input hash -> same output | store/agent detail | pending | UNVERIFIED |
-| AC-10 | Overview, filtrele, Program, Magazin, Agent și Excepții sunt coerente și utilizabile la 75+ magazine | fără Google I/O în web reads | component/e2e + query-count/perf; no N+1 | browser desktop/tablet/mobile | pending | UNVERIFIED |
-| AC-11 | TL vede/scrie numai aria effective-dated; admin vede tot; closed month respinge writes | auth real se leagă ulterior | API authorization matrix | authenticated local/staging flow | pending | UNVERIFIED |
-| AC-12 | Google canary primește numai date locale, grilă/calendar și Pontaj compatibil vizual; ultima proiecție bună rămâne la eșec | zero live sheets înainte de aprobare | fake adapter tests, structural readback, one copied canary | Google canary readback | pending | UNVERIFIED |
-| AC-13 | Numai cele patru dropdown-uri E-pay sunt editabile; valorile 0..10 sunt ingerate și auditate, invalidul păstrează last-good | fără inbound general | protection/read tests + blank/text/fraction/11 cases + close readback | Google canary edit/read | pending | UNVERIFIED |
-| AC-14 | Exportul per magazin are `Grila`+`Pontaj`; bulk ZIP și pontaj-only respectă filtrele, manifestul și nu au external links | nu exportă alte arii | parse/render/round-trip + checksum tests | download browser, render sample | pending | UNVERIFIED |
-| AC-15 | Close validează toate blocantele și îngheață luna; reopen este admin-only, motivat și auditat append-only | niciun overwrite de istoric | transaction/concurrency/audit tests | close/reopen browser flow | pending | UNVERIFIED |
-| AC-16 | p95 overview <500 ms pilot/<1 s target; save DB <500 ms; Google/export async; jobs durable/idempotent | fără polling Google frecvent | benchmark/query count, restart/retry tests | local/staging measurements | pending | UNVERIFIED |
-| AC-17 | Un pilot shadow complet reconciliază program, pontaj, vânzări, E-pay, grile și exporturi fără a modifica V1/V2 live | V1/V2 live unchanged | manifest per store/day/person + explained zero/unresolved diffs | copied canaries only | pending | UNVERIFIED |
-| AC-18 | Integrarea Retail folosește contract versionat și capabilitate optională; Grile rămâne deployabil fără Retail | fără shared DB schema final | contract tests + Retail-off probe + exact integration diff | staging then formal Retail gate | pending | UNVERIFIED |
+| AC-01 | Aplicația standalone pornește local cu API, frontend, PostgreSQL și un singur worker; health/readiness sunt determinate fără Retail/Google | Retail și legacy Grile | build + test + local health; oprirea Retail/Google fixture nu blochează read UI | local compose/systemd dev probe | `.agent/evidence/UGR-001/S1/health-probe.txt`, `schema-evidence.txt`, `worker-probe.txt` | UNVERIFIED |
+| AC-02 | Schema și motorul impun max. un agent per magazin/zi și max. un magazin per agent/zi | datele fixture | teste concurente + constrângeri DB; conflictele sunt respinse determinist | API conflict 409 | `.agent/evidence/UGR-001/S1/ac02-conflict-probe.txt`, `coverage-report.txt` | UNVERIFIED |
+| AC-03 | Fixture connector versionat furnizează magazine, persoane, targete și vânzări magazin/zi fără import din codul/schema Retail | Stage 1–6 read-only Retail | search/import-boundary test + fixture ingest idempotent | ingest status local | `.agent/evidence/UGR-001/S1/ingest-fixture.txt` | UNVERIFIED |
+| AC-04 | Managerul poate crea/modifica programul lunar, cu `NORMAL`, `EXTRA_HOME`, `EXTRA_OTHER`, `OFF`, `LEAVE`, scoped la aria sa | fără wizard schimb de tură | API/UI tests; scope 403; revision stale 409 | browser flow fixture | partial: S1 seeder endpoints accept `NORMAL`/`EXTRA_HOME`/`EXTRA_OTHER`; `OFF`/`LEAVE` and the UI flow belong to S2. | UNVERIFIED |
+| AC-05 | Orice modificare a calendarului actualizează în aceeași revizie pontajul derivat, inclusiv retroactiv la mijlocul lunii | fără editor pontaj separat | domain/API test before/after; total ore consistent | UI + XLSX/Sheet preview | partial: schema carries revision; projection engine is S2. | UNVERIFIED |
+| AC-06 | Modelul XLSX prepopulat poate fi preview-uit și aplicat atomic; conflictele, scope-ul și revision stale nu produc scrieri parțiale | nu creează persoane/magazine | parser round-trip, malformed/property tests, rollback test | browser upload preview/apply | deferred to S2. | UNVERIFIED |
+| AC-07 | Întreaga vânzare a magazinului/zi este creditată agentului din calendar; totalurile fizice nu se dublează la reatribuire | sursa fizică imuabilă | hash/totals tests before/after reassignment | drill-down magazin/agent | deferred to S3. | UNVERIFIED |
+| AC-08 | `EXTRA_HOME` și `EXTRA_OTHER` sunt clasificate corect și au efect separat, fără copiere de vânzări | un agent/store/zi | table-driven domain tests și excepții invalid home/other | calendar + grid preview | domain preconditions implemented in `ugrile.domain.calendar.validate_working_kind`; full attribution is S3. | UNVERIFIED |
+| AC-09 | Calculul grilei este determinist, versionat și reconciliabil pentru două persoane/magazin | formula neconfirmată rămâne config/UNVERIFIED | golden fixtures vs contract acceptat, Decimal, unchanged input hash -> same output | store/agent detail | deferred to S3 (formula confirmation pending). | UNVERIFIED |
+| AC-10 | Overview, filtrele, Program, Magazin, Agent și Excepții sunt coerente și utilizabile la 75+ magazine | fără Google I/O în web reads | component/e2e + query-count/perf; no N+1 | browser desktop/tablet/mobile | deferred to S4 (UI). | UNVERIFIED |
+| AC-11 | TL vede/scrie numai aria effective-dated; admin vede tot; closed month respinge writes | auth real se leagă ulterior | API authorization matrix | authenticated local/staging flow | skeleton implemented (`X-Ugrile-Identity` + `X-Ugrile-Tenant`, role checks in `services.auth`); real auth and TL scopes land in S2. | UNVERIFIED |
+| AC-12 | Google canary primește numai date locale, grilă/calendar și Pontaj compatibil vizual; ultima proiecție bună rămâne la eșec | zero live sheets înainte de aprobare | fake adapter tests, structural readback, one copied canary | Google canary readback | deferred to S5. | UNVERIFIED |
+| AC-13 | Numai cele patru dropdown-uri E-pay sunt editabile; valorile 0..10 sunt ingerate și auditate, invalidul păstrează last-good | fără inbound general | protection/read tests + blank/text/fraction/11 cases + close readback | Google canary edit/read | schema + check constraint in place (`epay_value_range`, `epay_category_enum`); inbound adapter is S5. | UNVERIFIED |
+| AC-14 | Exportul per magazin are `Grila`+`Pontaj`; bulk ZIP și pontaj-only respectă filtrele, manifestul și nu au external links | nu exportă alte arii | parse/render/round-trip + checksum tests | download browser, render sample | deferred to S5. | UNVERIFIED |
+| AC-15 | Close validează toate blocantele și îngheață luna; reopen este admin-only, motivat și auditat append-only | niciun overwrite de istoric | transaction/concurrency/audit tests | close/reopen browser flow | partial: month state machine + revision bump + closed-state rejection are in S1. Reopen and the audit chain land in S3. | UNVERIFIED |
+| AC-16 | p95 overview <500 ms pilot/<1 s target; save DB <500 ms; Google/export async; jobs durable/idempotent | fără polling Google frecvent | benchmark/query count, restart/retry tests | local/staging measurements | partial: in-process worker with `SKIP LOCKED` semantics and idempotency_key. Benchmarks and a separate worker container are S4+. | UNVERIFIED |
+| AC-17 | Un pilot shadow complet reconciliază program, pontaj, vânzări, E-pay, grile și exporturi fără a modifica V1/V2 live | V1/V2 live unchanged | manifest per store/day/person + explained zero/unresolved diffs | copied canaries only | deferred to S6. | UNVERIFIED |
+| AC-18 | Integrarea Retail folosește contract versionat și capabilitate optională; Grile rămâne deployabil fără Retail | fără shared DB schema final | contract tests + Retail-off probe + exact integration diff | staging then formal Retail gate | deferred to S7. | UNVERIFIED |
 
 ## Tasks and dependencies
 
 | Stage | Scope / livrabil mare | Depends on | Owner | Attempts | State |
 |---|---|---|---|---:|---|
-| S1 | Foundation standalone: stack, schema, domain invariants, fixture connector, auth/scopes skeleton, one worker, local dev/test | none | builder 1 | 0 | READY |
+| S1 | Foundation standalone: stack, schema, domain invariants, fixture connector, auth/scopes skeleton, one worker, local dev/test | none | builder 1 | 1 | BUILDING |
 | S2 | Calendar + pontaj + XLSX schedule import: APIs, revisions, derived projections, preview/apply atomic | S1 GO | builder 2 | 0 | BACKLOG |
 | S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + formula confirmations | builder 3 | 0 | BACKLOG |
 | S4 | Manager UI complete: Overview, Program, Store, Agent, Exceptions, Close, responsive/performance | S3 GO | builder 4 | 0 | BACKLOG |
@@ -258,6 +258,12 @@ S7 gate: AC-18 plus a separately approved cutover contract.
 - 2026-08-20: repository and canonical documents created for tag-ul
   `planning-baseline-20260820`. All acceptance criteria remain UNVERIFIED. Next:
   hand S1 to one builder.
+- 2026-08-20: S1 builder delivered the foundation. Single coherent commit on
+  `main` ahead of `planning-baseline-20260820`. Evidence in
+  `.agent/evidence/UGR-001/S1/`; build/test/format/typecheck all clean (28
+  backend tests, 2 frontend tests, 0 ruff/mypy/tsc errors). Stage moves from
+  `READY` to `BUILDING` and stops — handoff to primary reviewer for the GO/NO-GO
+  audit.
 
 ## Attempts, failures, and discoveries
 
@@ -269,6 +275,21 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   visual/output, not ownership.
 - Anonymous edit-by-link cannot identify the editor. E-pay audit records the
   Sheet/store source and read time, not an unprovable person identity.
+- S1 partial unique index dispatch was originally DB-only. SQLite exposes the
+  constraint columns in its error message but not the index name; PostgreSQL
+  surfaces the index name in `pgerror.diag.constraint_name`. The repository
+  now combines the index name (when present) with a follow-up read of the
+  committed state to name the violated invariant precisely across dialects.
+  This keeps the API payload deterministic whether the underlying engine is
+  SQLite (unit tests) or PostgreSQL (production + canary).
+- SQLite in-memory databases are isolated per connection by default. The test
+  suite installs a ` ``StaticPool`` so the engine the application uses during
+  the TestClient request shares the schema the test seeded. Without that the
+  API call surfaces `OperationalError: no such table` even though the test
+  fixture committed the rows.
+- The Alembic autogenerate produced `1e5c879d0851_0001_initial_schema.py`.
+  Renamed to a clean filename `0001_initial_schema.py`; the SHA is preserved
+  on the next `alembic` invocation via the head pointer, not the file name.
 
 ## Decisions
 
@@ -300,14 +321,26 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   `c131c21cb29131d0dfa0d6b986a0831e19549d5f` (read-only observation).
 - Retail protected baseline: `/opt/Mobiup/unihub-retail` commit
   `6a3e71484e3f2e399c2fc6db42a98ab1ba8c0251` (read-only observation).
+- S1 builder evidence: `.agent/evidence/UGR-001/S1/` — README index plus
+  `health-probe.txt`, `schema-evidence.txt`, `ingest-fixture.txt`,
+  `ac02-conflict-probe.txt`, `coverage-report.txt`, `worker-probe.txt`,
+  `test-summary.txt`. All sanitised; no credentials, no production rows.
+- S1 decisions: `docs/decisions/s1-stack.md`.
+- S1 local commands: `docs/operations/local-commands.md`.
+- S1 developer stack: `docker-compose.yml` (postgres + api + worker + web).
 
 ## Integration, regression, and deployment
 
-- Integrated diff: documentation-only baseline, verification pending initial
-  commit.
-- Global checks: N/A until code exists.
+- Integrated diff: foundation commit ahead of `planning-baseline-20260820`;
+  see `.agent/evidence/UGR-001/S1/README.md` for the live verification steps.
+- Global checks: backend `pytest` 28 passed; frontend `vitest` 2 passed;
+  `ruff check`, `mypy --strict`, `tsc --noEmit` all clean.
 - Published artifact/SHA: NOT IN SCOPE.
-- Runtime health/logs/user flow: NOT IN SCOPE.
+- Runtime health/logs/user flow: `/healthz` and `/readyz` return `ok` and the
+  current Alembic head against an ephemeral Postgres 17 container; the worker
+  processes a typed NOOP job through `POST /worker/run`; the fixture ingest
+  applies 2 stores + 3 people + 3 sales rows idempotently under the caller
+  tenant.
 
 ## Risks and remaining work
 

@@ -1,0 +1,5 @@
+# Coverage report (GET /months/{id}/coverage)
+{
+    "month_id": "month_tenantacme_2026-08",
+    "conflicts": []
+}

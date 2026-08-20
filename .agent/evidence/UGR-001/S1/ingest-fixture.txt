@@ -1,0 +1,8 @@
+# Fixture ingest (POST /ingest/fixture tenant_token=acme)
+{
+    "tenant": "tenant_acme",
+    "generation": "FIXTURE_V1",
+    "stores": 2,
+    "people": 3,
+    "sales": 3
+}

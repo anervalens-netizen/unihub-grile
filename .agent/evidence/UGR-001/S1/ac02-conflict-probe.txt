@@ -1,0 +1,32 @@
+# AC-02 conflict probes
+
+## Step 1: assign Alice to store_bucuresticenter on 2026-08-01 (NORMAL) -- expect 200
+HTTP/1.1 200 OK
+date: Thu, 20 Aug 2026 10:07:44 GMT
+server: uvicorn
+content-length: 241
+content-type: application/json
+
+{"id":1,"tenant_id":"tenant_acme","month_id":"month_tenantacme_2026-08","store_id":"store_bucuresticenter","person_id":"person_alice","business_date":"2026-08-01","status":"WORKING","working_kind":"NORMAL","revision":0,"source":"MANAGER_UI"}
+## Step 2: try to assign Bob to the same store-day -- expect 409 with COVERAGE_INVARIANT
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100   463  100   311  100   152  19974   9762 --:--:-- --:--:-- --:--:-- 30866
+HTTP/1.1 409 Conflict
+date: Thu, 20 Aug 2026 10:07:44 GMT
+server: uvicorn
+content-length: 311
+content-type: application/json
+
+{"detail":{"code":"COVERAGE_INVARIANT","message":"AC-02 coverage invariant violated","details":{"conflicts":[{"code":"MULTIPLE_AGENTS_PER_STORE_DAY","store_id":"store_bucuresticenter","person_id":null,"business_date":"2026-08-01","person_ids":["person_alice","person_bob"],"index":"uq_site_day_one_working"}]}}}
+## Step 3: try to assign Alice to a different store on the same day -- expect 409 with MULTIPLE_STORES_PER_AGENT_DAY
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100   468  100   316  100   152  25438  12236 --:--:-- --:--:-- --:--:-- 39000
+HTTP/1.1 409 Conflict
+date: Thu, 20 Aug 2026 10:07:44 GMT
+server: uvicorn
+content-length: 316
+content-type: application/json
+
+{"detail":{"code":"COVERAGE_INVARIANT","message":"AC-02 coverage invariant violated","details":{"conflicts":[{"code":"MULTIPLE_STORES_PER_AGENT_DAY","store_id":null,"person_id":"person_alice","business_date":"2026-08-01","store_ids":["store_bucuresticenter","store_clujnord"],"index":"uq_person_day_one_working"}]}}}

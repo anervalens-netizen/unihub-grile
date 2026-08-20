@@ -1,0 +1,119 @@
+/* UniHub Grile — foundation styles.
+ *
+ * Intentionally minimal at S1; later stages will replace these with the
+ * product design system from `docs/UX_EXCEL_SPEC.md`.
+ */
+
+:root {
+  --fg: #1c1f24;
+  --bg: #f7f8fa;
+  --card-bg: #ffffff;
+  --border: #d4d7dd;
+  --accent: #1f5fbf;
+  --accent-fg: #ffffff;
+  --ok: #2e8540;
+  --warn: #c97a16;
+  --err: #b3261e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.app-shell {
+  max-width: 1024px;
+  margin: 0 auto;
+  padding: 1rem 1.5rem 4rem;
+}
+
+.app-header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.4rem;
+}
+
+.muted {
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.app-main {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+}
+
+.card h2 {
+  margin-top: 0;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: 12rem 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0.5rem 0 0;
+}
+
+dt {
+  color: #4b5563;
+}
+
+dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.status {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.status-ok {
+  background: #e6f4ea;
+  color: var(--ok);
+}
+
+.status-degraded,
+.status-down {
+  background: #fdecea;
+  color: var(--err);
+}
+
+.error {
+  background: #fdecea;
+  color: var(--err);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.grid article {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.75rem;
+}
+
+.app-footer {
+  margin-top: 2rem;
+  font-size: 0.85rem;
+}

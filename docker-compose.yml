@@ -1,0 +1,91 @@
+# Local development stack for UniHub Grile — S1.
+#
+# This compose file is intentionally minimal: one Postgres, one API, one
+# worker, and a Vite dev server. Production deployment is owned by a later
+# stage; the compose file is a developer convenience, not a release artifact.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: ugrile-pg-local
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: grile
+      POSTGRES_USER: grile
+      POSTGRES_PASSWORD: grile
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "grile"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    volumes:
+      - ugrile-pg-data:/var/lib/postgresql/data
+
+  api:
+    image: python:3.12-slim
+    container_name: ugrile-api-local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://grile:grile@postgres:5432/grile
+      UGRILE_HOST: 0.0.0.0
+      UGRILE_PORT: "8080"
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        python -m venv .venv
+        .venv/bin/pip install --quiet --upgrade pip
+        .venv/bin/pip install --quiet -e ".[dev]"
+        .venv/bin/alembic upgrade head
+        .venv/bin/uvicorn ugrile.main:app --host 0.0.0.0 --port 8080
+    ports:
+      - "8080:8080"
+
+  worker:
+    image: python:3.12-slim
+    container_name: ugrile-worker-local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://grile:grile@postgres:5432/grile
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        python -m venv .venv
+        .venv/bin/pip install --quiet --upgrade pip
+        .venv/bin/pip install --quiet -e ".[dev]"
+        .venv/bin/python -m ugrile.worker.worker
+    restart: unless-stopped
+
+  web:
+    image: node:22-alpine
+    container_name: ugrile-web-local
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    command:
+      - sh
+      - -c
+      - |
+        set -euo pipefail
+        corepack enable
+        pnpm install --silent
+        pnpm exec vite --host 0.0.0.0 --port 5173
+    ports:
+      - "5173:5173"
+
+volumes:
+  ugrile-pg-data:

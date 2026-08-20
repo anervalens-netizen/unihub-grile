@@ -1,0 +1,62 @@
+# Worker probe (enqueue NOOP, run worker, list jobs)
+
+## Enqueue NOOP
+{
+    "enqueued": true
+}
+
+## Run worker once
+{
+    "id": 4,
+    "tenant_id": "tenant_acme",
+    "kind": "NOOP",
+    "status": "DONE",
+    "idempotency_key": "noop:user_admin:1787220465",
+    "attempts": 1,
+    "last_error": null,
+    "payload": "{}"
+}
+
+## List recent jobs
+[
+    {
+        "id": 4,
+        "tenant_id": "tenant_acme",
+        "kind": "NOOP",
+        "status": "DONE",
+        "idempotency_key": "noop:user_admin:1787220465",
+        "attempts": 1,
+        "last_error": null,
+        "payload": "{}"
+    },
+    {
+        "id": 3,
+        "tenant_id": "tenant_acme",
+        "kind": "NOOP",
+        "status": "DONE",
+        "idempotency_key": "noop:user_admin:1787220201",
+        "attempts": 1,
+        "last_error": null,
+        "payload": "{}"
+    },
+    {
+        "id": 2,
+        "tenant_id": "tenant_acme",
+        "kind": "NOOP",
+        "status": "DONE",
+        "idempotency_key": "noop:user_admin:1787220188",
+        "attempts": 1,
+        "last_error": null,
+        "payload": "{}"
+    },
+    {
+        "id": 1,
+        "tenant_id": "tenant_acme",
+        "kind": "NOOP",
+        "status": "DONE",
+        "idempotency_key": "noop:user_admin:1787220153",
+        "attempts": 1,
+        "last_error": null,
+        "payload": "{}"
+    }
+]

@@ -1,0 +1,24 @@
+# Backend pytest summary
+  /opt/UniHub/unihub-grile/backend/.venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py:941: DeprecationWarning: The default date adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+28 passed, 1 warning in 1.23s
+
+# Backend ruff lint
+All checks passed!
+
+# Backend mypy
+Success: no issues found in 35 source files
+
+# Frontend vitest summary
+
+ ✓ tests/smoke.test.tsx  (2 tests) 106ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  13:07:55
+   Duration  1.31s (transform 119ms, setup 0ms, collect 255ms, tests 106ms, environment 531ms, prepare 174ms)
+
+
+# Frontend tsc

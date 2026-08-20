@@ -1,0 +1,42 @@
+# PostgreSQL schema evidence
+
+## Tables in the S1 schema
+               List of relations
+ Schema |         Name          | Type  | Owner 
+--------+-----------------------+-------+-------
+ public | alembic_version       | table | grile
+ public | audit_events          | table | grile
+ public | epay_observations     | table | grile
+ public | export_runs           | table | grile
+ public | grid_calculations     | table | grile
+ public | import_runs           | table | grile
+ public | months                | table | grile
+ public | outbox_jobs           | table | grile
+ public | people                | table | grile
+ public | person_day_absences   | table | grile
+ public | sales_person_day      | table | grile
+ public | sales_store_day       | table | grile
+ public | sheet_bindings        | table | grile
+ public | sheet_projection_runs | table | grile
+ public | site_day_assignments  | table | grile
+ public | store_assignments     | table | grile
+ public | stores                | table | grile
+ public | tenants               | table | grile
+ public | users                 | table | grile
+(19 rows)
+
+
+## Alembic head
+ version_num  
+--------------
+ 1e5c879d0851
+(1 row)
+
+
+## Partial unique indexes on site_day_assignments (AC-02 enforcement)
+         indexname         |                                                                                indexdef                                                                                 
+---------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ uq_person_day_one_working | CREATE UNIQUE INDEX uq_person_day_one_working ON public.site_day_assignments USING btree (tenant_id, person_id, business_date) WHERE ((status)::text = 'WORKING'::text)
+ uq_site_day_one_working   | CREATE UNIQUE INDEX uq_site_day_one_working ON public.site_day_assignments USING btree (tenant_id, store_id, business_date) WHERE ((status)::text = 'WORKING'::text)
+(2 rows)
+
