@@ -1,0 +1,79 @@
+# Whole-stack proof through Docker Compose web proxy
+
+Every probe below was issued against the Vite dev server on :5173; the
+Vite dev proxy (configured with UGRILE_API_PROXY=http://api:8080)
+forwards each /api/* request to the FastAPI container. This proves the
+S1 attempt-1 NO-GO on the Compose web-to-API routing is fixed.
+
+## GET /api/healthz via web proxy
+{
+    "status": "ok",
+    "database": true,
+    "schema_version": "0001_initial_schema",
+    "app_version": "0.1.0"
+}
+
+## GET /api/readyz via web proxy
+{
+    "status": "ok",
+    "database": true,
+    "schema_version": "b9fbb01f8cd0",
+    "app_version": "0.1.0"
+}
+
+## POST /api/ingest/fixture (via web proxy)
+{
+    "tenant": "tenant_acme",
+    "generation": "FIXTURE_V1",
+    "stores": 0,
+    "people": 0,
+    "sales": 0
+}
+
+## GET /api/catalog/tenants (via web proxy, after fixture settled)
+[
+    {
+        "id": "tenant_acme",
+        "name": "Acme",
+        "timezone": "Europe/Bucharest",
+        "is_active": true
+    },
+    {
+        "id": "tenant_fixture",
+        "name": "Fixture",
+        "timezone": "Europe/Bucharest",
+        "is_active": true
+    }
+]
+
+## POST /api/months/.../assignments (via web proxy, 200)
+{
+    "id": 1,
+    "tenant_id": "tenant_acme",
+    "month_id": "month_tenantacme_2026-08",
+    "store_id": "store_acme_bucuresticenter",
+    "person_id": "person_acme_alice",
+    "business_date": "2026-08-01",
+    "status": "WORKING",
+    "working_kind": "NORMAL",
+    "revision": 0,
+    "source": "MANAGER_UI"
+}
+
+## POST /api/months/.../assignments (via web proxy, 409)
+HTTP 409
+{
+    "detail": {
+        "code": "COVERAGE_INVARIANT",
+        "message": "AC-02 coverage invariant violated",
+        "details": {
+            "conflicts": [
+                {
+                    "code": "MULTIPLE_AGENTS_PER_STORE_DAY",
+                    "store_id": "store_acme_bucuresticenter",
+                    "person_id": null,
+                    "business_date": "2026-08-01",
+                    "person_ids": [
+                        "person_acme_alice",
+                        "person_acme_bob"
+                    ],

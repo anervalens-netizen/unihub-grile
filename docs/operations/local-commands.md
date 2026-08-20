@@ -24,7 +24,8 @@ make pg-down      # stop the container
 ```
 
 The container is named `ugrile-pg-s1` and uses `grile`/`grile` credentials.
-The Alembic migration lands as `0001_initial_schema`; verify with
+The Alembic chain lands as `0001_initial_schema` then
+`0002_composite_tenant_fks_and_targets`; verify with
 `docker exec ugrile-pg-s1 psql -U grile -d grile -c "\d site_day_assignments"`.
 
 ## 3. API + worker
@@ -36,12 +37,14 @@ make api    # foreground uvicorn on 127.0.0.1:8080
 The FastAPI app exposes `/healthz`, `/readyz`, `/version`, the catalog
 endpoints (`/catalog/{tenants,stores,people}`), the months/assignments
 endpoints (`/months`, `/months/{id}/assignments`, `/months/{id}/coverage`),
-the fixture ingest (`/ingest/fixture`, `/ingest/fixture/run`), and the
-worker probe (`/worker/{jobs,run,noop}`).
+the fixture ingest (`/ingest/fixture` — enqueue only), and the worker
+read-only endpoints (`/worker/jobs`, `/worker/noop`).
 
-The worker is in-process at S1; the same process exposes the typed jobs
-through `/worker/run` so a later stage can move it to a dedicated container
-without changing the API.
+The durable worker runs as a separate process via
+`python -m ugrile.worker.worker` and is the **only** authority that
+executes jobs. The previous attempt's `POST /worker/run` and
+`POST /ingest/fixture/run` were removed because they violated the single
+authority contract.
 
 ## 4. Health probe
 
@@ -62,6 +65,12 @@ The dev shell renders the foundation pages (`Health`, `Overview`) and uses
 the `X-Ugrile-Identity` / `X-Ugrile-Tenant` headers. Real authentication is
 out of scope for S1.
 
+When run via Docker Compose, the web container sets
+`UGRILE_API_PROXY=http://api:8080` so the proxy reaches the FastAPI
+container regardless of host port mappings. `node_modules` lives in a
+named volume (`ugrile-web-node_modules`) so the bind mount does not leak
+root-owned files into the developer's checkout.
+
 ## 6. Targeted checks
 
 ```bash
@@ -72,7 +81,10 @@ make test         # pytest (backend) + vitest (frontend)
 make build        # vite production bundle
 ```
 
-Each target is independent. Run `make test` before any CI push.
+Each target is independent. Run `make test` before any CI push. The
+backend pytest suite includes both SQLite unit tests and a real PostgreSQL
+integration test; the latter runs only when `UGRILE_PG_URL` points at a
+reachable PG server.
 
 ## 7. Smoke (api + migration in one shot)
 
@@ -101,8 +113,52 @@ curl -i -X POST http://127.0.0.1:8080/months/month_tenantacme_2026-08/assignment
   -H "X-Ugrile-Identity: user_admin" \
   -H "X-Ugrile-Tenant: tenant_acme" \
   -H "Content-Type: application/json" \
-  -d '{"month_id":"month_tenantacme_2026-08","store_id":"store_alice","person_id":"person_alice","business_date":"2026-08-01","working_kind":"NORMAL"}'
+  -d '{"month_id":"month_tenantacme_2026-08","store_id":"store_acme_bucuresticenter","person_id":"person_acme_alice","business_date":"2026-08-01","working_kind":"NORMAL"}'
 ```
 
-(The second call exercises a single-agent store-day; a second similar call
-in the same store-day yields 409 with `COVERAGE_INVARIANT`.)
+(The first call enqueues a fixture job; the worker settles it. The second
+call exercises a single-agent store-day; a second similar call in the
+same store-day yields 409 with `COVERAGE_INVARIANT`.)
+
+## 9. Real concurrent PostgreSQL AC-02
+
+```bash
+UGRILE_PG_URL=postgresql+psycopg://grile:grile@127.0.0.1:55432/grile \
+  .venv/bin/python -m pytest tests/integration/test_postgres_concurrent_ac02.py -v
+```
+
+Three integration tests cover: (a) two threads racing the
+`uq_site_day_one_working` partial unique index, (b) two threads racing
+`uq_person_day_one_working`, and (c) a two-tenant fixture isolation probe
+that proves the composite `(tenant_id, home_store_id)` FK rejects a
+cross-tenant `home_store_id`. The tests are skipped automatically when
+`UGRILE_PG_URL` is unreachable.
+
+## 10. Whole-stack via Docker Compose
+
+```bash
+docker compose up -d
+# seed admin/month
+docker exec ugrile-api-local /opt/venv/bin/alembic upgrade head
+docker exec ugrile-api-local /opt/venv/bin/python -c \
+  "import sys; sys.path.insert(0,'/app'); \
+   from ugrile.core.database import reset_engine, get_sessionmaker; reset_engine(); \
+   from ugrile.domain.enums import RoleName, MonthState; \
+   from ugrile.domain.identifiers import make_tenant_id, make_month_id; \
+   from ugrile.repositories.models import Tenant, User, Month; \
+   S = get_sessionmaker(); \
+   tid = make_tenant_id('acme'); s = S(); \
+   s.add(Tenant(id=tid, name='Acme', timezone='Europe/Bucharest', is_active=True)); s.commit(); \
+   s.add(User(id='user_admin', tenant_id=tid, email='admin@acme.example', display_name='Admin', role=RoleName.ADMIN.value, is_active=True)); s.commit(); \
+   s.add(Month(id=make_month_id(tid, 2026, 8), tenant_id=tid, year=2026, month=8, state=MonthState.OPEN, revision=0)); s.commit()"
+# probe through the web proxy
+curl -fsS http://127.0.0.1:5173/api/healthz
+curl -fsS -X POST http://127.0.0.1:5173/api/ingest/fixture \
+  -H "X-Ugrile-Identity: user_admin" -H "X-Ugrile-Tenant: tenant_acme" \
+  -H "Content-Type: application/json" -d '{"tenant_token":"acme"}'
+```
+
+The Vite dev server inside the `web` container proxies `/api/*` to the
+FastAPI container at `http://api:8080` (compose service name), so the
+read-UI path is provable end-to-end. The durable worker container runs
+`python -m ugrile.worker.worker` and drains the outbox asynchronously.

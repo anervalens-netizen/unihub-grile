@@ -5,13 +5,26 @@ ingest is idempotent for the tenant/generation pair: re-running produces the
 same rows and never modifies audit state. Sales rows are upserted by
 (tenant, store, date, generation) — the physical total is immutable; only
 its presence is updated.
+
+Tenant safety
+-------------
+
+* Store and Person identifiers are derived from ``(tenant_token, code)`` so
+  two tenants can never collide on the same primary key.
+* Upsert lookups use ``(tenant_id, internal_code)`` rather than the primary
+  key, so the connector does not need to know the synthetic id.
+* Foreign references are validated against the caller tenant before any
+  write, so a fixture with a cross-tenant store reference fails fast with a
+  precise error.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..domain.errors import ConnectorError, NotFoundError
@@ -19,15 +32,23 @@ from ..domain.identifiers import (
     make_person_id,
     make_store_id,
     make_tenant_id,
+    tenant_slug_from_tenant_id,
 )
-from ..repositories.models import Tenant
-from .fixtures import FIXTURE_GENERATION, FIXTURE_TENANT_ID
+from ..repositories.models import (
+    Person,
+    Store,
+    StoreTarget,
+    Tenant,
+)
 from .v1_types import (
     ConnectorV1Payload,
     PersonRecord,
     SalesRecord,
     StoreRecord,
+    TargetRecord,
 )
+
+_VALID_TARGET_KINDS = {"MONTHLY_SALES", "MONTHLY_UNITS", "MONTHLY_ATTACH"}
 
 
 class FixtureConnector:
@@ -52,10 +73,16 @@ class FixtureConnector:
             )
 
         tenant = self._ensure_tenant(tenant_id)
+        tenant_token = tenant_slug_from_tenant_id(tenant.id)
 
-        stores_index = self._upsert_stores(payload.stores, tenant.id)
-        people_index = self._upsert_people(payload.people, stores_index, tenant.id)
-        sales_count = self._upsert_sales(payload.sales, stores_index, tenant.id, generation)
+        stores_index = self._upsert_stores(payload.stores, tenant.id, tenant_token)
+        people_index = self._upsert_people(payload.people, stores_index, tenant.id, tenant_token)
+        sales_count = self._upsert_sales(
+            payload.sales, stores_index, tenant.id, tenant_token, generation
+        )
+        targets_count = self._upsert_targets(
+            payload.targets, stores_index, tenant.id, tenant_token, generation
+        )
 
         self.session.flush()
 
@@ -63,6 +90,7 @@ class FixtureConnector:
             "stores": len(stores_index),
             "people": len(people_index),
             "sales": sales_count,
+            "targets": targets_count,
             "tenant": tenant.id,
             "generation": generation,
         }
@@ -70,13 +98,11 @@ class FixtureConnector:
     # --- helpers -----------------------------------------------------------
 
     def _ensure_tenant(self, tenant_id: str) -> Tenant:
-        from ..repositories.models import Tenant
-
         existing = self.session.get(Tenant, tenant_id)
         if existing is not None:
             return existing
         # Display name is the bare tenant id without the ``tenant_`` prefix.
-        bare = tenant_id[len("tenant_") :] if tenant_id.startswith("tenant_") else tenant_id
+        bare = tenant_slug_from_tenant_id(tenant_id)
         tenant = Tenant(
             id=tenant_id,
             name=bare.replace("_", " ").title(),
@@ -88,28 +114,19 @@ class FixtureConnector:
         return tenant
 
     def _upsert_stores(
-        self, records: list[StoreRecord], tenant_id: str
+        self,
+        records: list[StoreRecord],
+        tenant_id: str,
+        tenant_token: str,
     ) -> dict[str, str]:
-        from ..repositories.models import Store
-
         index: dict[str, str] = {}
         for record in records:
-            # Records declare their tenant token (e.g. ``tenant_fixture``);
-            # accept both the bare token and the prefixed id.
-            record_tenant = record.tenant_id
-            bare_tenant = (
-                tenant_id[len("tenant_") :] if tenant_id.startswith("tenant_") else tenant_id
-            )
-            if record_tenant not in {tenant_id, bare_tenant}:
-                raise ConnectorError(
-                    "record tenant_id does not match payload tenant",
-                    details={
-                        "record_tenant_id": record_tenant,
-                        "expected": [tenant_id, bare_tenant],
-                    },
-                )
-            store_id = make_store_id(record.internal_code)
-            row = self.session.get(Store, store_id)
+            self._check_record_tenant(record.tenant_id, tenant_id, tenant_token)
+            store_id = make_store_id(tenant_token, record.internal_code)
+            # Tenant-scoped lookup: query by (tenant_id, internal_code), not
+            # by primary key, so a different tenant's row can never be
+            # matched.
+            row = self._find_store_by_code(tenant_id, record.internal_code)
             if row is None:
                 row = Store(
                     id=store_id,
@@ -121,12 +138,26 @@ class FixtureConnector:
                     is_active=record.is_active,
                 )
                 self.session.add(row)
+                self.session.flush()
             else:
+                if row.id != store_id:
+                    # Defensive: the persisted row carries the wrong id
+                    # shape. This indicates a migration regression or a
+                    # pre-existing legacy row; surface it loudly.
+                    raise ConnectorError(
+                        "store id shape mismatch for tenant-scoped lookup",
+                        details={
+                            "expected": store_id,
+                            "found": row.id,
+                            "tenant_id": tenant_id,
+                            "internal_code": record.internal_code,
+                        },
+                    )
                 row.company_code = record.company_code
                 row.external_code = record.external_code
                 row.name = record.name
                 row.is_active = record.is_active
-            index[record.internal_code] = store_id
+            index[record.internal_code] = row.id
         self.session.flush()
         return index
 
@@ -135,11 +166,11 @@ class FixtureConnector:
         records: list[PersonRecord],
         stores_index: Mapping[str, str],
         tenant_id: str,
+        tenant_token: str,
     ) -> dict[str, str]:
-        from ..repositories.models import Person
-
         index: dict[str, str] = {}
         for record in records:
+            self._check_record_tenant(record.tenant_id, tenant_id, tenant_token)
             home_store_id = stores_index.get(record.home_store_internal_code)
             if home_store_id is None:
                 raise ConnectorError(
@@ -149,8 +180,8 @@ class FixtureConnector:
                         "missing_store": record.home_store_internal_code,
                     },
                 )
-            person_id = make_person_id(record.internal_code)
-            row = self.session.get(Person, person_id)
+            person_id = make_person_id(tenant_token, record.internal_code)
+            row = self._find_person_by_code(tenant_id, record.internal_code)
             if row is None:
                 row = Person(
                     id=person_id,
@@ -162,12 +193,23 @@ class FixtureConnector:
                     is_active=record.is_active,
                 )
                 self.session.add(row)
+                self.session.flush()
             else:
+                if row.id != person_id:
+                    raise ConnectorError(
+                        "person id shape mismatch for tenant-scoped lookup",
+                        details={
+                            "expected": person_id,
+                            "found": row.id,
+                            "tenant_id": tenant_id,
+                            "internal_code": record.internal_code,
+                        },
+                    )
                 row.external_code = record.external_code
                 row.display_name = record.display_name
                 row.home_store_id = home_store_id
                 row.is_active = record.is_active
-            index[record.internal_code] = person_id
+            index[record.internal_code] = row.id
         self.session.flush()
         return index
 
@@ -176,12 +218,14 @@ class FixtureConnector:
         records: list[SalesRecord],
         stores_index: Mapping[str, str],
         tenant_id: str,
+        tenant_token: str,
         generation: str,
     ) -> int:
         from ..repositories.models import SalesStoreDay
 
         count = 0
         for record in records:
+            self._check_record_tenant(record.tenant_id, tenant_id, tenant_token)
             store_id = stores_index.get(record.store_internal_code)
             if store_id is None:
                 raise NotFoundError(
@@ -216,6 +260,94 @@ class FixtureConnector:
             count += 1
         return count
 
+    def _upsert_targets(
+        self,
+        records: list[TargetRecord],
+        stores_index: Mapping[str, str],
+        tenant_id: str,
+        tenant_token: str,
+        generation: str,
+    ) -> int:
+        count = 0
+        for record in records:
+            self._check_record_tenant(record.tenant_id, tenant_id, tenant_token)
+            if record.kind not in _VALID_TARGET_KINDS:
+                raise ConnectorError(
+                    "target kind is not recognised",
+                    details={"kind": record.kind, "allowed": sorted(_VALID_TARGET_KINDS)},
+                )
+            store_id = stores_index.get(record.store_internal_code)
+            if store_id is None:
+                raise NotFoundError(
+                    "target references unknown store",
+                    details={"store_internal_code": record.store_internal_code},
+                )
+            existing = (
+                self.session.query(StoreTarget)
+                .filter_by(
+                    tenant_id=tenant_id,
+                    store_id=store_id,
+                    year=record.year,
+                    month=record.month,
+                    kind=record.kind,
+                    version=record.version,
+                )
+                .one_or_none()
+            )
+            if existing is None:
+                row = StoreTarget(
+                    tenant_id=tenant_id,
+                    store_id=store_id,
+                    year=record.year,
+                    month=record.month,
+                    kind=record.kind,
+                    version=record.version,
+                    amount=record.amount,
+                    currency=record.currency,
+                )
+                self.session.add(row)
+            else:
+                existing.amount = record.amount
+                existing.currency = record.currency
+            count += 1
+        # ``generation`` is intentionally retained as part of the payload so
+        # audit code can attribute the target without re-reading the row.
+        _ = generation
+        return count
+
+    @staticmethod
+    def _check_record_tenant(
+        record_tenant: str, payload_tenant: str, payload_token: str
+    ) -> None:
+        """Reject cross-tenant records.
+
+        Accept the canonical tenant id (``tenant_<token>``), the bare token,
+        or the empty placeholder for sales/target records whose ``tenant_id``
+        is optional metadata only.
+        """
+
+        if record_tenant in {"", payload_tenant, payload_token}:
+            return
+        raise ConnectorError(
+            "record tenant_id does not match payload tenant",
+            details={
+                "record_tenant_id": record_tenant,
+                "expected": [payload_tenant, payload_token],
+            },
+        )
+
+    def _find_store_by_code(self, tenant_id: str, internal_code: str) -> Store | None:
+        stmt = select(Store).where(
+            Store.tenant_id == tenant_id, Store.internal_code == internal_code
+        )
+        return self.session.execute(stmt).scalar_one_or_none()
+
+    def _find_person_by_code(self, tenant_id: str, internal_code: str) -> Person | None:
+        stmt = select(Person).where(
+            Person.tenant_id == tenant_id, Person.internal_code == internal_code
+        )
+        return self.session.execute(stmt).scalar_one_or_none()
+
 
 __all__ = ["FixtureConnector"]
 
@@ -229,10 +361,12 @@ def get_default_fixture() -> ConnectorV1Payload:
 
 
 def get_default_tenant_id() -> str:
-    return make_tenant_id(FIXTURE_TENANT_ID)
+    return make_tenant_id("fixture")
 
 
 def get_default_generation() -> str:
+    from .fixtures import FIXTURE_GENERATION
+
     return FIXTURE_GENERATION
 
 
@@ -245,3 +379,7 @@ __all__ += [
 
 def utcnow() -> datetime:
     return datetime.now(tz=UTC)
+
+
+def _decimal_zero() -> Decimal:
+    return Decimal("0")

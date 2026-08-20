@@ -1,6 +1,8 @@
-# Health and readiness probes (no auth)
+# Health and readiness probes (no auth required)
 
-## /healthz
+Captured against the local Docker Compose stack on 2026-08-20.
+
+## /healthz (liveness + DB ping)
 {
     "status": "ok",
     "database": true,
@@ -8,11 +10,11 @@
     "app_version": "0.1.0"
 }
 
-## /readyz
+## /readyz (alembic head + tenants-table probe)
 {
     "status": "ok",
     "database": true,
-    "schema_version": "1e5c879d0851",
+    "schema_version": "b9fbb01f8cd0",
     "app_version": "0.1.0"
 }
 

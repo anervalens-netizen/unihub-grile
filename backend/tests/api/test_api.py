@@ -21,6 +21,26 @@ def client(engine, faker_tenant):
         yield c
 
 
+@pytest.fixture()
+def worker_runner(engine):
+    """Return a callable that drains the outbox exactly once.
+
+    The contract says the API must not run jobs; tests use this helper to
+    keep the single-authority invariant while still exercising the worker
+    path synchronously. The runner lives in the same process as the API
+    because both share the in-memory SQLite engine; the production
+    equivalent is ``python -m ugrile.worker.worker``.
+    """
+
+    from ugrile.worker.worker import WORKER_LOCKED_BY, run_once
+
+    def _run() -> object:
+        row, result = run_once(locked_by=WORKER_LOCKED_BY)
+        return row, result
+
+    return _run
+
+
 HEADERS = {"X-Ugrile-Identity": "user_admin", "X-Ugrile-Tenant": "tenant_acme"}
 
 
@@ -40,13 +60,14 @@ def test_ready(client):
     assert body["schema_version"] == "missing"
 
 
-def test_create_and_conflict(client):
+def test_create_and_conflict(client, faker_tenant):
     # Seed a month first via direct DB call.
     from ugrile.core import database
     from ugrile.repositories.months import MonthRepository
 
+    tenant_id = faker_tenant["tenant_id"]
     with database.session_scope() as session:
-        month = MonthRepository(session).get_or_create("tenant_acme", 2026, 8)
+        month = MonthRepository(session).get_or_create(tenant_id, 2026, 8)
         session.commit()
 
     # Open the month so assignments are allowed.
@@ -59,8 +80,8 @@ def test_create_and_conflict(client):
 
     payload = {
         "month_id": month.id,
-        "store_id": "store_s1",
-        "person_id": "person_a",
+        "store_id": faker_tenant["store_id"],
+        "person_id": faker_tenant["person_a_id"],
         "business_date": date(2026, 8, 10).isoformat(),
         "working_kind": "NORMAL",
     }
@@ -69,8 +90,8 @@ def test_create_and_conflict(client):
 
     payload2 = {
         "month_id": month.id,
-        "store_id": "store_s1",
-        "person_id": "person_b",
+        "store_id": faker_tenant["store_id"],
+        "person_id": faker_tenant["person_b_id"],
         "business_date": date(2026, 8, 10).isoformat(),
         "working_kind": "NORMAL",
     }
@@ -80,10 +101,39 @@ def test_create_and_conflict(client):
     assert body["detail"]["code"] == "COVERAGE_INVARIANT"
 
 
-def test_ingest_fixture(client):
-    r = client.post("/ingest/fixture", headers=HEADERS, json={})
+def test_ingest_fixture_enqueues_job(client, worker_runner):
+    """The API enqueues the fixture job; the worker settles it."""
+
+    from ugrile.connectors.fixtures import FIXTURE_TENANT_TOKEN
+    from ugrile.core import database
+    from ugrile.domain.identifiers import make_tenant_id
+    from ugrile.repositories.models import OutboxJob, StoreTarget
+
+    tenant_id = make_tenant_id(FIXTURE_TENANT_TOKEN)
+    with database.session_scope() as session:
+        before = session.query(OutboxJob).count()
+
+    r = client.post(
+        "/ingest/fixture",
+        headers=HEADERS,
+        json={"tenant_token": FIXTURE_TENANT_TOKEN},
+    )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["stores"] == 2
-    assert body["people"] == 3
-    assert body["sales"] == 3
+    assert body["tenant"] == tenant_id
+    assert body["generation"] == "FIXTURE_V1"
+
+    with database.session_scope() as session:
+        after = session.query(OutboxJob).count()
+    assert after == before + 1
+
+    # Drain the outbox once and assert the fixture landed under the
+    # requested tenant.
+    row, result = worker_runner()
+    assert row is not None
+    assert result is not None
+    assert result.status == "DONE"
+
+    with database.session_scope() as session:
+        targets = session.query(StoreTarget).filter_by(tenant_id=tenant_id).count()
+    assert targets >= 2

@@ -1,8 +1,68 @@
-# Fixture ingest (POST /ingest/fixture tenant_token=acme)
+# POST /ingest/fixture (tenant=acme)
 {
     "tenant": "tenant_acme",
     "generation": "FIXTURE_V1",
-    "stores": 2,
-    "people": 3,
-    "sales": 3
+    "stores": 0,
+    "people": 0,
+    "sales": 0
 }
+
+## catalog/tenants
+[
+    {
+        "id": "tenant_acme",
+        "name": "Acme",
+        "timezone": "Europe/Bucharest",
+        "is_active": true
+    },
+    {
+        "id": "tenant_fixture",
+        "name": "Fixture",
+        "timezone": "Europe/Bucharest",
+        "is_active": true
+    }
+]
+
+## catalog/stores (after worker settled the fixtures)
+[
+    {
+        "id": "store_acme_bucuresticenter",
+        "tenant_id": "tenant_acme",
+        "company_code": "MOBIUP",
+        "internal_code": "bucuresti_center",
+        "external_code": "BUC-C",
+        "name": "Bucure\u0219ti Center",
+        "is_active": true
+    },
+    {
+        "id": "store_acme_clujnord",
+        "tenant_id": "tenant_acme",
+        "company_code": "MOBIUP",
+        "internal_code": "cluj_nord",
+        "external_code": "CLJ-N",
+        "name": "Cluj Nord",
+        "is_active": true
+    }
+]
+
+## store_targets rows (versioned inputs landed by the worker)
+   tenant_id    |           store_id            | year | month |     kind      | version |  amount   
+----------------+-------------------------------+------+-------+---------------+---------+-----------
+ tenant_acme    | store_acme_bucuresticenter    | 2026 |     8 | MONTHLY_SALES |       1 | 250000.00
+ tenant_acme    | store_acme_clujnord           | 2026 |     8 | MONTHLY_SALES |       1 | 120000.00
+ tenant_fixture | store_fixture_bucuresticenter | 2026 |     8 | MONTHLY_SALES |       1 | 250000.00
+ tenant_fixture | store_fixture_clujnord        | 2026 |     8 | MONTHLY_SALES |       1 | 120000.00
+(4 rows)
+
+
+## sales_store_day rows (immutable per-generation totals)
+   tenant_id    |           store_id            | business_date | generation |  amount  
+----------------+-------------------------------+---------------+------------+----------
+ tenant_acme    | store_acme_bucuresticenter    | 2026-08-01    | FIXTURE_V1 | 12500.00
+ tenant_acme    | store_acme_clujnord           | 2026-08-01    | FIXTURE_V1 |  5400.25
+ tenant_acme    | store_acme_bucuresticenter    | 2026-08-02    | FIXTURE_V1 |  9870.50
+ tenant_fixture | store_fixture_bucuresticenter | 2026-08-01    | FIXTURE_V1 | 12500.00
+ tenant_fixture | store_fixture_clujnord        | 2026-08-01    | FIXTURE_V1 |  5400.25
+ tenant_fixture | store_fixture_bucuresticenter | 2026-08-02    | FIXTURE_V1 |  9870.50
+(6 rows)
+

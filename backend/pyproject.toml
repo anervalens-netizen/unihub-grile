@@ -59,3 +59,6 @@ minversion = "8.0"
 addopts = "-ra --strict-markers"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "postgres: requires a reachable PostgreSQL server (set UGRILE_PG_URL).",
+]

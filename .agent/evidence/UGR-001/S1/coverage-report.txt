@@ -1,4 +1,9 @@
-# Coverage report (GET /months/{id}/coverage)
+# Coverage report after the AC-02 conflict probes
+
+The committed state has one WORKING assignment (Alice NORMAL on 2026-08-01 in
+store_acme_bucuresticenter) — the two rejected writes were never committed. The
+coverage probe therefore returns an empty conflict list.
+
 {
     "month_id": "month_tenantacme_2026-08",
     "conflicts": []

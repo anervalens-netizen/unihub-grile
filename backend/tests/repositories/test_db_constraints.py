@@ -1,8 +1,10 @@
 """AC-02 DB constraint tests.
 
 These tests run against the in-memory SQLite schema. The same DDL is
-exercised against PostgreSQL by ``tests/integration/test_postgres_constraints.py``
-(marked ``postgres`` and skipped when no PG is configured).
+exercised against PostgreSQL by ``tests/integration/test_postgres_concurrent_ac02.py``
+(marked ``postgres`` and skipped when no PG is configured); that test
+proves the partial unique indexes reject concurrent inserts across two
+threads, which the SQLite in-memory path cannot replicate.
 """
 
 from __future__ import annotations

@@ -1,6 +1,13 @@
-# PostgreSQL schema evidence
+# Schema evidence (PostgreSQL 17 after migration b9fbb01f8cd0)
 
-## Tables in the S1 schema
+## alembic head
+ version_num  
+--------------
+ b9fbb01f8cd0
+(1 row)
+
+
+## Tables
                List of relations
  Schema |         Name          | Type  | Owner 
 --------+-----------------------+-------+-------
@@ -20,23 +27,133 @@
  public | sheet_projection_runs | table | grile
  public | site_day_assignments  | table | grile
  public | store_assignments     | table | grile
+ public | store_targets         | table | grile
  public | stores                | table | grile
  public | tenants               | table | grile
  public | users                 | table | grile
-(19 rows)
+(20 rows)
 
 
-## Alembic head
- version_num  
---------------
- 1e5c879d0851
-(1 row)
+## people (composite FK on (tenant_id, home_store_id) -> stores)
+                           Table "public.people"
+    Column     |           Type           | Collation | Nullable | Default 
+---------------+--------------------------+-----------+----------+---------
+ id            | character varying(64)    |           | not null | 
+ tenant_id     | character varying(64)    |           | not null | 
+ internal_code | character varying(32)    |           | not null | 
+ external_code | character varying(64)    |           |          | 
+ display_name  | character varying(256)   |           | not null | 
+ home_store_id | character varying(64)    |           | not null | 
+ is_active     | boolean                  |           | not null | 
+ created_at    | timestamp with time zone |           | not null | now()
+ updated_at    | timestamp with time zone |           | not null | now()
+Indexes:
+    "pk_people" PRIMARY KEY, btree (id)
+    "ix_people_tenant_id" btree (tenant_id)
+    "uq_people_tenant_id" UNIQUE CONSTRAINT, btree (tenant_id, id)
+    "uq_people_tenant_internal" UNIQUE CONSTRAINT, btree (tenant_id, internal_code)
+Foreign-key constraints:
+    "fk_people_tenant_home_store" FOREIGN KEY (tenant_id, home_store_id) REFERENCES stores(tenant_id, id)
+    "fk_people_tenant_id_tenants" FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+Referenced by:
+    TABLE "epay_observations" CONSTRAINT "fk_epay_observations_tenant_person" FOREIGN KEY (tenant_id, person_id) REFERENCES people(tenant_id, id)
+    TABLE "grid_calculations" CONSTRAINT "fk_grid_calculations_tenant_person" FOREIGN KEY (tenant_id, person_id) REFERENCES people(tenant_id, id)
+    TABLE "person_day_absences" CONSTRAINT "fk_person_day_absences_tenant_person" FOREIGN KEY (tenant_id, person_id) REFERENCES people(tenant_id, id)
+    TABLE "sales_person_day" CONSTRAINT "fk_sales_person_day_tenant_person" FOREIGN KEY (tenant_id, person_id) REFERENCES people(tenant_id, id)
+    TABLE "site_day_assignments" CONSTRAINT "fk_site_day_assignments_tenant_person" FOREIGN KEY (tenant_id, person_id) REFERENCES people(tenant_id, id)
+    TABLE "store_assignments" CONSTRAINT "fk_store_assignments_tenant_person" FOREIGN KEY (tenant_id, person_id) REFERENCES people(tenant_id, id)
 
 
-## Partial unique indexes on site_day_assignments (AC-02 enforcement)
-         indexname         |                                                                                indexdef                                                                                 
----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- uq_person_day_one_working | CREATE UNIQUE INDEX uq_person_day_one_working ON public.site_day_assignments USING btree (tenant_id, person_id, business_date) WHERE ((status)::text = 'WORKING'::text)
- uq_site_day_one_working   | CREATE UNIQUE INDEX uq_site_day_one_working ON public.site_day_assignments USING btree (tenant_id, store_id, business_date) WHERE ((status)::text = 'WORKING'::text)
-(2 rows)
+## stores (composite unique (tenant_id, id) for FK targets)
+                           Table "public.stores"
+    Column     |           Type           | Collation | Nullable | Default 
+---------------+--------------------------+-----------+----------+---------
+ id            | character varying(64)    |           | not null | 
+ tenant_id     | character varying(64)    |           | not null | 
+ company_code  | character varying(32)    |           | not null | 
+ internal_code | character varying(32)    |           | not null | 
+ external_code | character varying(64)    |           |          | 
+ name          | character varying(128)   |           | not null | 
+ is_active     | boolean                  |           | not null | 
+ created_at    | timestamp with time zone |           | not null | now()
+ updated_at    | timestamp with time zone |           | not null | now()
+Indexes:
+    "pk_stores" PRIMARY KEY, btree (id)
+    "ix_stores_tenant_id" btree (tenant_id)
+    "uq_stores_tenant_id" UNIQUE CONSTRAINT, btree (tenant_id, id)
+    "uq_stores_tenant_internal" UNIQUE CONSTRAINT, btree (tenant_id, internal_code)
+Foreign-key constraints:
+    "fk_stores_tenant_id_tenants" FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+Referenced by:
+    TABLE "epay_observations" CONSTRAINT "fk_epay_observations_tenant_store" FOREIGN KEY (tenant_id, store_id) REFERENCES stores(tenant_id, id)
+    TABLE "grid_calculations" CONSTRAINT "fk_grid_calculations_tenant_store" FOREIGN KEY (tenant_id, store_id) REFERENCES stores(tenant_id, id)
+    TABLE "people" CONSTRAINT "fk_people_tenant_home_store" FOREIGN KEY (tenant_id, home_store_id) REFERENCES stores(tenant_id, id)
+    TABLE "sales_person_day" CONSTRAINT "fk_sales_person_day_tenant_store" FOREIGN KEY (tenant_id, store_id) REFERENCES stores(tenant_id, id)
+    TABLE "sales_store_day" CONSTRAINT "fk_sales_store_day_tenant_store" FOREIGN KEY (tenant_id, store_id) REFERENCES stores(tenant_id, id)
+    TABLE "sheet_bindings" CONSTRAINT "fk_sheet_bindings_tenant_store" FOREIGN KEY (tenant_id, store_id) REFERENCES stores(tenant_id, id)
+    TABLE "sheet_projection_runs" CONSTRAINT "fk_sheet_projection_runs_tenant_store" FOREIGN KEY (tenant_id, store_id) REFERENCES stores(tenant_id, id)
+    TABLE "site_day_assignments" CONSTRAINT "fk_site_day_assignments_tenant_store" FOREIGN KEY (tenant_id, store_id) REFERENCES stores(tenant_id, id)
+    TABLE "store_assignments" CONSTRAINT "fk_store_assignments_tenant_store" FOREIGN KEY (tenant_id, store_id) REFERENCES stores(tenant_id, id)
+    TABLE "store_targets" CONSTRAINT "fk_store_targets_tenant_store" FOREIGN KEY (tenant_id, store_id) REFERENCES stores(tenant_id, id)
+
+
+## site_day_assignments (AC-02 partial unique indexes)
+                                        Table "public.site_day_assignments"
+    Column     |           Type           | Collation | Nullable |                     Default                      
+---------------+--------------------------+-----------+----------+--------------------------------------------------
+ id            | integer                  |           | not null | nextval('site_day_assignments_id_seq'::regclass)
+ tenant_id     | character varying(64)    |           | not null | 
+ month_id      | character varying(64)    |           | not null | 
+ store_id      | character varying(64)    |           | not null | 
+ person_id     | character varying(64)    |           | not null | 
+ business_date | date                     |           | not null | 
+ status        | character varying(16)    |           | not null | 
+ working_kind  | character varying(16)    |           |          | 
+ revision      | integer                  |           | not null | 
+ source        | character varying(32)    |           | not null | 
+ created_at    | timestamp with time zone |           | not null | now()
+ updated_at    | timestamp with time zone |           | not null | now()
+Indexes:
+    "pk_site_day_assignments" PRIMARY KEY, btree (id)
+    "ix_site_day_assignments_month_id" btree (month_id)
+    "ix_site_day_assignments_month_store" btree (month_id, store_id, business_date)
+    "ix_site_day_assignments_tenant_id" btree (tenant_id)
+    "uq_person_day_one_working" UNIQUE, btree (tenant_id, person_id, business_date) WHERE status::text = 'WORKING'::text
+    "uq_site_day_one_working" UNIQUE, btree (tenant_id, store_id, business_date) WHERE status::text = 'WORKING'::text
+Check constraints:
+    "ck_site_day_assignments_status_enum" CHECK (status::text = ANY (ARRAY['WORKING'::character varying, 'OFF'::character varying, 'LEAVE'::character varying]::text[]))
+    "ck_site_day_assignments_working_kind_enum" CHECK (working_kind IS NULL OR (working_kind::text = ANY (ARRAY['NORMAL'::character varying, 'EXTRA_HOME'::character varying, 'EXTRA_OTHER'::character varying]::text[])))
+    "ck_site_day_assignments_working_kind_only_when_working" CHECK (status::text = 'WORKING'::text AND working_kind IS NOT NULL OR status::text <> 'WORKING'::text AND working_kind IS NULL)
+Foreign-key constraints:
+    "fk_site_day_assignments_month_id_months" FOREIGN KEY (month_id) REFERENCES months(id)
+    "fk_site_day_assignments_tenant_id_tenants" FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+    "fk_site_day_assignments_tenant_person" FOREIGN KEY (tenant_id, person_id) REFERENCES people(tenant_id, id)
+    "fk_site_day_assignments_tenant_store" FOREIGN KEY (tenant_id, store_id) REFERENCES stores(tenant_id, id)
+
+
+## store_targets (v1 versioned targets)
+                                       Table "public.store_targets"
+   Column   |           Type           | Collation | Nullable |                  Default                  
+------------+--------------------------+-----------+----------+-------------------------------------------
+ id         | integer                  |           | not null | nextval('store_targets_id_seq'::regclass)
+ tenant_id  | character varying(64)    |           | not null | 
+ store_id   | character varying(64)    |           | not null | 
+ year       | integer                  |           | not null | 
+ month      | integer                  |           | not null | 
+ kind       | character varying(32)    |           | not null | 
+ version    | integer                  |           | not null | 
+ amount     | numeric(18,2)            |           | not null | 
+ currency   | character varying(8)     |           | not null | 
+ created_at | timestamp with time zone |           | not null | now()
+ updated_at | timestamp with time zone |           | not null | now()
+Indexes:
+    "pk_store_targets" PRIMARY KEY, btree (id)
+    "ix_store_targets_tenant_id" btree (tenant_id)
+    "uq_store_target_window_version" UNIQUE CONSTRAINT, btree (tenant_id, store_id, year, month, kind, version)
+Check constraints:
+    "ck_store_targets_store_target_kind_enum" CHECK (kind::text = ANY (ARRAY['MONTHLY_SALES'::character varying, 'MONTHLY_UNITS'::character varying, 'MONTHLY_ATTACH'::character varying]::text[]))
+    "ck_store_targets_store_target_month_in_range" CHECK (month >= 1 AND month <= 12)
+Foreign-key constraints:
+    "fk_store_targets_tenant_id_tenants" FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+    "fk_store_targets_tenant_store" FOREIGN KEY (tenant_id, store_id) REFERENCES stores(tenant_id, id)
 

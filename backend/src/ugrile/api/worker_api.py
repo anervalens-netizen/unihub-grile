@@ -1,7 +1,17 @@
-"""Worker probe and job listing.
+"""Worker API surface (admin-only).
 
-S1 only needs a health endpoint and a listing endpoint; richer lifecycle
-controls land with the operations stage.
+The worker is the **sole** authority that executes jobs (see
+``ugrile.worker.worker``). The API layer is permitted to:
+
+* **enqueue** typed jobs (``POST /worker/noop``) so the manager UI can
+  schedule work without holding the request open;
+* **list** recent jobs (``GET /worker/jobs``) so operators can audit state.
+
+The API MUST NOT execute jobs. The previous ``POST /worker/run`` and
+``POST /ingest/fixture/run`` endpoints were removed because they violated
+the single-authority contract; the worker started via
+``python -m ugrile.worker.worker`` is the only path that calls
+``run_once``.
 """
 
 from __future__ import annotations
@@ -15,7 +25,7 @@ from ..api.schemas import JobOut
 from ..domain.enums import JobKind
 from ..repositories.models import OutboxJob
 from ..services.auth import Principal, assert_admin
-from ..worker.worker import run_once
+from ..worker.worker import enqueue
 
 router = APIRouter(prefix="/worker", tags=["worker"])
 
@@ -32,37 +42,24 @@ def list_jobs(
     return [JobOut.model_validate(r) for r in rows]
 
 
-@router.post("/run", response_model=JobOut | None)
-def run_one(
-    session: Session = Depends(db_session),
-    principal: Principal = Depends(current_principal),
-) -> JobOut | None:
-    """Run one job iteration. Useful for manual recovery from the API."""
-
-    assert_admin(principal)
-    row, _result = run_once(locked_by="ugrile-api")
-    if row is None:
-        return None
-    return JobOut.model_validate(row)
-
-
 @router.post("/noop")
 def enqueue_noop(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
-) -> dict[str, bool]:
+) -> dict[str, object]:
+    """Enqueue a NOOP job. The worker settles it asynchronously."""
+
     assert_admin(principal)
     import time
 
-    from ..worker.worker import enqueue as _enqueue
-
-    _enqueue(
+    row = enqueue(
         session,
         tenant_id=principal.tenant_id,
         kind=JobKind.NOOP.value,
         idempotency_key=f"noop:{principal.user_id}:{int(time.time())}",
     )
-    return {"enqueued": True}
+    session.commit()
+    return {"enqueued": True, "job_id": row.id, "idempotency_key": row.idempotency_key}
 
 
 __all__ = ["router"]

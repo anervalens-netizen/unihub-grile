@@ -3,6 +3,16 @@
 # This compose file is intentionally minimal: one Postgres, one API, one
 # worker, and a Vite dev server. Production deployment is owned by a later
 # stage; the compose file is a developer convenience, not a release artifact.
+#
+# Web-to-API routing
+# ------------------
+# The Vite dev server runs inside its own container and must proxy ``/api``
+# to the FastAPI container. The previous attempt used the default
+# ``127.0.0.1:8080`` target, which resolves to the web container's own
+# loopback inside Compose — that was the cause of the S1 attempt-1 NO-GO
+# on the read-UI path. We now point the proxy at the compose service name
+# ``api`` so the request reaches the FastAPI container regardless of the
+# host port mapping.
 services:
   postgres:
     image: postgres:17-alpine
@@ -32,6 +42,8 @@ services:
       DATABASE_URL: postgresql+psycopg://grile:grile@postgres:5432/grile
       UGRILE_HOST: 0.0.0.0
       UGRILE_PORT: "8080"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
     working_dir: /app
     volumes:
       - ./backend:/app
@@ -40,11 +52,16 @@ services:
       - -c
       - |
         set -euo pipefail
-        python -m venv .venv
-        .venv/bin/pip install --quiet --upgrade pip
-        .venv/bin/pip install --quiet -e ".[dev]"
-        .venv/bin/alembic upgrade head
-        .venv/bin/uvicorn ugrile.main:app --host 0.0.0.0 --port 8080
+        # The python:3.12-slim image does not ship python3-venv; install
+        # backend dependencies into the system interpreter instead of a
+        # virtualenv. The bind mount already provides the project tree.
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends python3-venv >/dev/null
+        python -m venv /opt/venv
+        /opt/venv/bin/pip install --quiet --upgrade pip
+        /opt/venv/bin/pip install --quiet -e ".[dev]"
+        /opt/venv/bin/alembic upgrade head
+        /opt/venv/bin/uvicorn ugrile.main:app --host 0.0.0.0 --port 8080
     ports:
       - "8080:8080"
 
@@ -54,8 +71,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      api:
+        condition: service_started
     environment:
       DATABASE_URL: postgresql+psycopg://grile:grile@postgres:5432/grile
+      UGRILE_WORKER_POLL_SECONDS: "0.25"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
     working_dir: /app
     volumes:
       - ./backend:/app
@@ -64,28 +86,46 @@ services:
       - -c
       - |
         set -euo pipefail
-        python -m venv .venv
-        .venv/bin/pip install --quiet --upgrade pip
-        .venv/bin/pip install --quiet -e ".[dev]"
-        .venv/bin/python -m ugrile.worker.worker
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends python3-venv >/dev/null
+        python -m venv /opt/venv
+        /opt/venv/bin/pip install --quiet --upgrade pip
+        /opt/venv/bin/pip install --quiet -e ".[dev]"
+        /opt/venv/bin/python -m ugrile.worker.worker
     restart: unless-stopped
 
   web:
     image: node:22-alpine
     container_name: ugrile-web-local
+    depends_on:
+      - api
+    environment:
+      # Vite reads UGRILE_API_PROXY at server start to decide where the
+      # /api dev proxy should send requests. ``http://api:8080`` is the
+      # compose-network hostname of the FastAPI container.
+      UGRILE_API_PROXY: "http://api:8080"
+      CI: "true"
+      PNPM_CONFIG_CONFIRM_MODULES_PURGE: "false"
     working_dir: /app
     volumes:
+      # node_modules lives in a named volume so the bind-mount contract
+      # doesn't leak root-owned files into the developer's checkout. The
+      # volume persists between restarts so the install runs at most once.
       - ./frontend:/app
+      - ugrile-web-node_modules:/app/node_modules
     command:
       - sh
       - -c
       - |
-        set -euo pipefail
+        set -eu
         corepack enable
-        pnpm install --silent
+        if [ ! -d /app/node_modules/vite ] || [ ! -e /app/node_modules/.pnpm/rollup@4.62.4/node_modules/@rollup/rollup-linux-x64-gnu/package.json ]; then
+          pnpm install --silent --ignore-scripts || pnpm install --silent --ignore-scripts
+        fi
         pnpm exec vite --host 0.0.0.0 --port 5173
     ports:
       - "5173:5173"
 
 volumes:
   ugrile-pg-data:
+  ugrile-web-node_modules:

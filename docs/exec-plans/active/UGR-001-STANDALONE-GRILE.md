@@ -271,6 +271,18 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   `2` vitest, tsc, Vite build). PostgreSQL migration and sequential API
   conflicts were reproduced independently, so the failure is architectural and
   contractual rather than a generic build failure.
+- 2026-08-20: S1 attempt 2 builder delivered the remediation. Single coherent
+  commit on `main` ahead of `b9e1b3d`. Alembic chain lands as
+  `0001_initial_schema` (1e5c879d0851) then
+  `0002_composite_tenant_fks_and_targets` (b9fbb01f8cd0); backend pytest
+  `36 passed` (33 SQLite + 3 real PostgreSQL integration including concurrent
+  AC-02 races); `ruff` and `mypy --strict` clean on 35 source files; frontend
+  `tsc` and `pnpm build` clean; `python -m ugrile.worker.worker` runs the
+  durable loop and drains the outbox; Compose web proxy
+  `http://api:8080` reaches the FastAPI container end-to-end; evidence
+  re-emitted under `.agent/evidence/UGR-001/S1/` is internally consistent
+  against the candidate commit. Stage stays `BUILDING` until a fresh
+  GO/NO-GO audit on the new artifact.
 
 ## Attempts, failures, and discoveries
 
@@ -353,19 +365,27 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   `c131c21cb29131d0dfa0d6b986a0831e19549d5f` (read-only observation).
 - Retail protected baseline: `/opt/Mobiup/unihub-retail` commit
   `6a3e71484e3f2e399c2fc6db42a98ab1ba8c0251` (read-only observation).
-- S1 builder evidence: `.agent/evidence/UGR-001/S1/` — README index plus
-  `health-probe.txt`, `schema-evidence.txt`, `ingest-fixture.txt`,
+- S1 attempt-2 builder evidence: `.agent/evidence/UGR-001/S1/` — README index
+  plus `health-probe.txt`, `schema-evidence.txt`, `ingest-fixture.txt`,
   `ac02-conflict-probe.txt`, `coverage-report.txt`, `worker-probe.txt`,
-  `test-summary.txt`. All sanitised; no credentials, no production rows.
+  `compose-stack-proof.txt`, `concurrent-ac02-pg.txt`, `test-summary.txt`,
+  `typecheck-summary.txt`. All sanitised; no credentials, no production rows.
 - S1 decisions: `docs/decisions/s1-stack.md`.
 - S1 local commands: `docs/operations/local-commands.md`.
 - S1 developer stack: `docker-compose.yml` (postgres + api + worker + web).
-- S1 independent primary checks on `b9e1b3d`: backend pytest `28 passed`, ruff
-  PASS, mypy PASS (35 files), frontend vitest `2 passed`, tsc PASS, Vite build
-  PASS; PostgreSQL migration `1e5c879d0851`; API assignment probe `200/409/409`.
-- S1 failure probes: `python -m ugrile.worker.worker` exited `0` in ~1s and left
-  NOOP `PENDING`; isolated two-tenant fixture probe retained Store/Person rows
-  only under the first tenant while second-tenant sales referenced them.
+- S1 primary checks on the candidate commit: backend pytest `36 passed`
+  (33 SQLite + 3 PostgreSQL integration), ruff PASS, mypy PASS on 35 source
+  files, frontend tsc PASS, Vite build PASS; PostgreSQL chain lands at
+  `b9fbb01f8cd0`; API assignment probe `200/409/409`; concurrent
+  `uq_site_day_one_working` / `uq_person_day_one_working` race rejects one of
+  two threads; Compose `/api/healthz` + `/api/ingest/fixture` work through
+  the Vite dev proxy; durable worker started via `python -m ugrile.worker.worker`
+  drains the outbox to `DONE`.
+- S1 attempt-1 failure probes (resolved): `python -m ugrile.worker.worker`
+  exited `0` in ~1s with no executable entrypoint — fixed by adding
+  `if __name__ == "__main__": main()`; isolated two-tenant fixture probe
+  retained Store/Person rows only under the first tenant — fixed by
+  tenant-encoded synthetic IDs plus composite `(tenant_id, target_id)` FKs.
 
 ## Integration, regression, and deployment
 

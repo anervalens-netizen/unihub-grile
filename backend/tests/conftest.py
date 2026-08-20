@@ -93,38 +93,39 @@ def faker_tenant(session):
     )
     from ugrile.repositories.models import Person, Store, Tenant, User
 
-    tenant_id = make_tenant_id("acme")
+    tenant_token = "acme"
+    tenant_id = make_tenant_id(tenant_token)
     tenant = Tenant(id=tenant_id, name="Acme", timezone="Europe/Bucharest")
     store = Store(
-        id=make_store_id("s1"),
+        id=make_store_id(tenant_token, "s1"),
         tenant_id=tenant_id,
         company_code="MOBIUP",
         internal_code="s1",
         name="S1",
     )
     other_store = Store(
-        id=make_store_id("s2"),
+        id=make_store_id(tenant_token, "s2"),
         tenant_id=tenant_id,
         company_code="MOBIUP",
         internal_code="s2",
         name="S2",
     )
     person_a = Person(
-        id=make_person_id("a"),
+        id=make_person_id(tenant_token, "a"),
         tenant_id=tenant_id,
         internal_code="a",
         display_name="Alice",
         home_store_id=store.id,
     )
     person_b = Person(
-        id=make_person_id("b"),
+        id=make_person_id(tenant_token, "b"),
         tenant_id=tenant_id,
         internal_code="b",
         display_name="Bob",
         home_store_id=store.id,
     )
     person_c = Person(
-        id=make_person_id("c"),
+        id=make_person_id(tenant_token, "c"),
         tenant_id=tenant_id,
         internal_code="c",
         display_name="Carmen",
@@ -141,10 +142,63 @@ def faker_tenant(session):
     session.commit()
     return {
         "tenant_id": tenant_id,
+        "tenant_token": tenant_token,
         "store_id": store.id,
         "other_store_id": other_store.id,
         "person_a_id": person_a.id,
         "person_b_id": person_b.id,
         "person_c_id": person_c.id,
+        "user_id": user.id,
+    }
+
+
+@pytest.fixture()
+def faker_second_tenant(session):
+    """A second tenant used by multi-tenant isolation tests.
+
+    Shares no row with ``faker_tenant``. The two stores have the same
+    internal code (``s1``) but the composite FK plus the tenant-scoped
+    ids prove they cannot collide.
+    """
+
+    from ugrile.domain.enums import RoleName
+    from ugrile.domain.identifiers import (
+        make_person_id,
+        make_store_id,
+        make_tenant_id,
+    )
+    from ugrile.repositories.models import Person, Store, Tenant, User
+
+    tenant_token = "beta"
+    tenant_id = make_tenant_id(tenant_token)
+    tenant = Tenant(id=tenant_id, name="Beta", timezone="Europe/Bucharest")
+    store = Store(
+        id=make_store_id(tenant_token, "s1"),
+        tenant_id=tenant_id,
+        company_code="BETA",
+        internal_code="s1",
+        name="Beta S1",
+    )
+    person = Person(
+        id=make_person_id(tenant_token, "alice"),
+        tenant_id=tenant_id,
+        internal_code="alice",
+        display_name="Alice B",
+        home_store_id=store.id,
+    )
+    user = User(
+        id="user_admin_beta",
+        tenant_id=tenant_id,
+        email="admin@beta.example",
+        display_name="Beta Admin",
+        role=RoleName.ADMIN.value,
+    )
+    session.add_all([tenant, store, person, user])
+    session.commit()
+    return {
+        "tenant_id": tenant_id,
+        "tenant_token": tenant_token,
+        "store_id": store.id,
+        "person_id": person.id,
         "user_id": user.id,
     }

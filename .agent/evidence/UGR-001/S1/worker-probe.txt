@@ -1,30 +1,20 @@
-# Worker probe (enqueue NOOP, run worker, list jobs)
+# Worker probe (single authority)
 
-## Enqueue NOOP
+## POST /worker/noop (enqueue only — API does NOT execute)
 {
-    "enqueued": true
+    "enqueued": true,
+    "job_id": 4,
+    "idempotency_key": "noop:user_admin:1787233536"
 }
 
-## Run worker once
-{
-    "id": 4,
-    "tenant_id": "tenant_acme",
-    "kind": "NOOP",
-    "status": "DONE",
-    "idempotency_key": "noop:user_admin:1787220465",
-    "attempts": 1,
-    "last_error": null,
-    "payload": "{}"
-}
-
-## List recent jobs
+## GET /worker/jobs?limit=10
 [
     {
         "id": 4,
         "tenant_id": "tenant_acme",
         "kind": "NOOP",
         "status": "DONE",
-        "idempotency_key": "noop:user_admin:1787220465",
+        "idempotency_key": "noop:user_admin:1787233536",
         "attempts": 1,
         "last_error": null,
         "payload": "{}"
@@ -32,31 +22,36 @@
     {
         "id": 3,
         "tenant_id": "tenant_acme",
-        "kind": "NOOP",
+        "kind": "FIXTURE_INGEST",
         "status": "DONE",
-        "idempotency_key": "noop:user_admin:1787220201",
+        "idempotency_key": "fixture:tenant_acme:1787233535962",
         "attempts": 1,
         "last_error": null,
-        "payload": "{}"
+        "payload": "{\"tenant_token\":\"acme\"}"
     },
     {
         "id": 2,
-        "tenant_id": "tenant_acme",
-        "kind": "NOOP",
+        "tenant_id": "tenant_fixture",
+        "kind": "FIXTURE_INGEST",
         "status": "DONE",
-        "idempotency_key": "noop:user_admin:1787220188",
+        "idempotency_key": "fixture:tenant_fixture:1787233532951",
         "attempts": 1,
         "last_error": null,
-        "payload": "{}"
+        "payload": "{\"tenant_token\":\"fixture\"}"
     },
     {
         "id": 1,
         "tenant_id": "tenant_acme",
-        "kind": "NOOP",
+        "kind": "FIXTURE_INGEST",
         "status": "DONE",
-        "idempotency_key": "noop:user_admin:1787220153",
+        "idempotency_key": "fixture:tenant_acme:1787233532940",
         "attempts": 1,
         "last_error": null,
-        "payload": "{}"
+        "payload": "{\"tenant_token\":\"acme\"}"
     }
 ]
+
+## /api/worker/run is intentionally removed (single worker authority)
+The contract is explicit: only the durable worker started via
+'python -m ugrile.worker.worker' executes jobs. The API only enqueues
+and lists; the in-process worker loop drained the queue above.

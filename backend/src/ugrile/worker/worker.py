@@ -11,6 +11,22 @@ with an OS scheduler without touching the job registry.
 * ``run_once`` is the unit of work exposed to the API and tests; it commits
   on success and marks the row FAILED on domain errors.
 * ``run_forever`` is the production loop with a small poll interval.
+* ``python -m ugrile.worker.worker`` invokes ``run_forever`` so the S1
+  contract (one durable worker) has a real executable entrypoint.
+
+Authority and idempotency
+-------------------------
+
+The contract is explicit: the worker is the **only** authority that
+executes jobs. The API layer is permitted to enqueue; it MUST NOT run a job
+inline. This module enforces the boundary by always requiring ``locked_by``
+to be the worker's own identifier — the API helpers in
+``ugrile.api.worker_api`` are restricted to enqueue/list.
+
+The job row carries the tenant id in its ``tenant_id`` column. The handler
+receives that tenant id as a separate parameter so it can scope its work;
+the API cannot substitute a different tenant by tampering with the payload
+because the row's tenant is authoritative.
 """
 
 from __future__ import annotations
@@ -33,6 +49,8 @@ from ..repositories.models import OutboxJob
 from .jobs import JobResult, get_handler
 
 log = get_logger("ugrile.worker")
+
+WORKER_LOCKED_BY = "ugrile-worker"
 
 
 @dataclass(slots=True)
@@ -68,7 +86,9 @@ def claim_next(session: Session, *, locked_by: str) -> OutboxJob | None:
     return row
 
 
-def run_once(*, locked_by: str = "ugrile-worker") -> tuple[OutboxJob | None, JobResult | None]:
+def run_once(
+    *, locked_by: str = WORKER_LOCKED_BY
+) -> tuple[OutboxJob | None, JobResult | None]:
     """Process a single job inside its own transaction.
 
     Returns the row and the result. ``row`` is ``None`` when there is no
@@ -76,16 +96,14 @@ def run_once(*, locked_by: str = "ugrile-worker") -> tuple[OutboxJob | None, Job
     is re-raised to the caller for visibility).
     """
 
-    handler_dispatch: dict[str, Any] = {}
     with session_scope() as session:
         row = claim_next(session, locked_by=locked_by)
         if row is None:
             return None, None
-        handler_dispatch["row"] = row
         try:
             handler = get_handler(row.kind)
             payload = _parse_payload(row.payload)
-            result = handler(session, payload)
+            result = handler(session, row.tenant_id, payload)
         except DomainError as exc:
             row.status = "FAILED"
             row.last_error = f"{exc.code}: {exc.message}"
@@ -199,10 +217,35 @@ def _utcnow() -> datetime:
     return datetime.now(tz=UTC)
 
 
+def main() -> RunSummary:
+    """Programmatic entrypoint used by ``python -m ugrile.worker.worker``.
+
+    The process runs the durable loop under SIGINT/SIGTERM control. The
+    summary is logged on exit so supervisors can verify a clean shutdown.
+    """
+
+    log.info("worker_started", locked_by=WORKER_LOCKED_BY)
+    summary = run_forever()
+    log.info(
+        "worker_stopped",
+        processed=summary.processed,
+        done=summary.done,
+        failed=summary.failed,
+        empty_polls=summary.empty_polls,
+    )
+    return summary
+
+
+if __name__ == "__main__":
+    main()
+
+
 __all__ = [
     "RunSummary",
+    "WORKER_LOCKED_BY",
     "claim_next",
     "enqueue",
+    "main",
     "run_once",
     "run_once_safe",
     "run_forever",

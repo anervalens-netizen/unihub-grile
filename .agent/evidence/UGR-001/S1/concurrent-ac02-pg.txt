@@ -1,0 +1,23 @@
+# Real concurrent PostgreSQL AC-02 test (AC-02 enforcement at DB)
+
+The integration tests use the PG server at $UGRILE_PG_URL (default
+127.0.0.1:55432). Two threads, each with their own session, race to
+insert a WORKING row for the same store-day (or person-day); the
+partial unique indexes reject one of them with an IntegrityError whose
+pg diag carries the violated index name.
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.3, pluggy-1.6.0 -- /opt/UniHub/unihub-grile/backend/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /opt/UniHub/unihub-grile/backend
+configfile: pyproject.toml
+plugins: asyncio-0.24.0, cov-6.0.0, anyio-4.14.2
+asyncio: mode=Mode.AUTO, default_loop_scope=None
+collecting ... collected 3 items
+
+tests/integration/test_postgres_concurrent_ac02.py::test_concurrent_inserts_store_day_index_rejects_race PASSED [ 33%]
+tests/integration/test_postgres_concurrent_ac02.py::test_concurrent_inserts_person_day_index_rejects_race PASSED [ 66%]
+tests/integration/test_postgres_concurrent_ac02.py::test_two_tenant_fixture_isolation_on_postgres PASSED [100%]
+
+============================== 3 passed in 1.80s ===============================

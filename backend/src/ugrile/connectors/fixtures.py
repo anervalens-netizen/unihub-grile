@@ -1,8 +1,9 @@
 """Built-in fixture data.
 
 The fixture is deterministic and small (one tenant, two stores, three
-people). It exercises every connection type the v1 contract advertises and
-gives the import-boundary test a real payload to assert against.
+people, three sales rows, two target rows). It exercises every connection
+type the v1 contract advertises and gives the import-boundary test a real
+payload to assert against.
 
 Do not read fixtures from outside the package — the loader is the single
 authoritative source so production deployments cannot accidentally serve a
@@ -20,10 +21,16 @@ from .v1_types import (
     PersonRecord,
     SalesRecord,
     StoreRecord,
+    TargetRecord,
 )
 
-FIXTURE_TENANT_ID = "tenant_fixture"
+FIXTURE_TENANT_TOKEN = "fixture"
+FIXTURE_TENANT_ID = f"tenant_{FIXTURE_TENANT_TOKEN}"
 FIXTURE_GENERATION = "FIXTURE_V1"
+
+# Stable target versions. Bumping these requires an explicit migration in a
+# later stage; the connector does not silently supersede.
+FIXTURE_TARGET_VERSION = 1
 
 
 def default_fixture() -> ConnectorV1Payload:
@@ -91,12 +98,39 @@ def default_fixture() -> ConnectorV1Payload:
             amount=Decimal("5400.25"),
         ),
     ]
+    targets = [
+        TargetRecord(
+            tenant_id=FIXTURE_TENANT_ID,
+            store_internal_code="bucuresti_center",
+            year=2026,
+            month=8,
+            kind="MONTHLY_SALES",
+            version=FIXTURE_TARGET_VERSION,
+            amount=Decimal("250000.00"),
+        ),
+        TargetRecord(
+            tenant_id=FIXTURE_TENANT_ID,
+            store_internal_code="cluj_nord",
+            year=2026,
+            month=8,
+            kind="MONTHLY_SALES",
+            version=FIXTURE_TARGET_VERSION,
+            amount=Decimal("120000.00"),
+        ),
+    ]
     return ConnectorV1Payload(
         header=header,
         stores=stores,
         people=people,
         sales=sales,
+        targets=targets,
     )
 
 
-__all__ = ["default_fixture", "FIXTURE_TENANT_ID", "FIXTURE_GENERATION"]
+__all__ = [
+    "FIXTURE_GENERATION",
+    "FIXTURE_TENANT_ID",
+    "FIXTURE_TENANT_TOKEN",
+    "FIXTURE_TARGET_VERSION",
+    "default_fixture",
+]

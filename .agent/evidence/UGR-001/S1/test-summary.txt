@@ -1,24 +1,42 @@
-# Backend pytest summary
+# Test summary (S1 attempt 2)
+
+## backend pytest (36 tests: 33 SQLite + 3 PostgreSQL integration)
+
+tests/repositories/test_db_constraints.py ....                           [ 80%]
+tests/worker/test_worker.py .......                                      [100%]
+
+=============================== warnings summary ===============================
+tests/repositories/test_coverage_repo.py::test_check_month_coverage_flags_manually_introduced_violation
   /opt/UniHub/unihub-grile/backend/.venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py:941: DeprecationWarning: The default date adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
     cursor.execute(statement, parameters)
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-28 passed, 1 warning in 1.23s
+======================== 36 passed, 1 warning in 4.45s =========================
 
-# Backend ruff lint
+## backend ruff check
 All checks passed!
 
-# Backend mypy
+## backend mypy
 Success: no issues found in 35 source files
 
-# Frontend vitest summary
+## frontend vitest (executed inside the compose web container)
 
- ✓ tests/smoke.test.tsx  (2 tests) 106ms
+ [32m✓[39m tests/smoke.test.tsx [2m ([22m[2m2 tests[22m[2m)[22m[90m 140[2mms[22m[39m
 
- Test Files  1 passed (1)
-      Tests  2 passed (2)
-   Start at  13:07:55
-   Duration  1.31s (transform 119ms, setup 0ms, collect 255ms, tests 106ms, environment 531ms, prepare 174ms)
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+[2m   Start at [22m 13:50:11
+[2m   Duration [22m 1.52s[2m (transform 75ms, setup 0ms, collect 257ms, tests 140ms, environment 577ms, prepare 136ms)[22m
 
 
-# Frontend tsc
+## frontend tsc (executed inside the compose web container)
+
+## frontend pnpm build (executed inside the compose web container)
+transforming...
+[32m✓[39m 35 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                 [39m[1m[2m  0.41 kB[22m[1m[22m[2m │ gzip:  0.28 kB[22m
+[2mdist/[22m[2massets/[22m[35mindex-Bei2VhlJ.css  [39m[1m[2m  1.26 kB[22m[1m[22m[2m │ gzip:  0.61 kB[22m
+[2mdist/[22m[2massets/[22m[36mindex-BQdg8WHI.js   [39m[1m[2m146.16 kB[22m[1m[22m[2m │ gzip: 47.13 kB[22m
+[32m✓ built in 1.27s[39m

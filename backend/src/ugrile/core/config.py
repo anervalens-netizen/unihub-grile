@@ -37,7 +37,11 @@ class Settings(BaseSettings):
 
     # Worker / job queue settings.
     worker_enabled: bool = True
-    worker_poll_seconds: float = 0.5
+    worker_poll_seconds: float = Field(
+        default=0.5,
+        validation_alias="UGRILE_WORKER_POLL_SECONDS",
+        description="Outbox poll interval for the durable worker loop.",
+    )
 
     # Connector / fixture ingestion. No live retail import is enabled at this stage.
     connector_default: str = "fixture-v1"
