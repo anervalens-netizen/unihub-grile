@@ -82,9 +82,9 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 
 | ID | Observable behavior | Must not change | Verification and expected result | Runtime proof | Evidence | Status |
 |---|---|---|---|---|---|---|
-| AC-01 | Aplicația standalone pornește local cu API, frontend, PostgreSQL și un singur worker; health/readiness sunt determinate fără Retail/Google | Retail și legacy Grile | build + test + local health; oprirea Retail/Google fixture nu blochează read UI | local compose/systemd dev probe | `.agent/evidence/UGR-001/S1/health-probe.txt`, `schema-evidence.txt`, `worker-probe.txt` | UNVERIFIED |
-| AC-02 | Schema și motorul impun max. un agent per magazin/zi și max. un magazin per agent/zi | datele fixture | teste concurente + constrângeri DB; conflictele sunt respinse determinist | API conflict 409 | `.agent/evidence/UGR-001/S1/ac02-conflict-probe.txt`, `coverage-report.txt` | UNVERIFIED |
-| AC-03 | Fixture connector versionat furnizează magazine, persoane, targete și vânzări magazin/zi fără import din codul/schema Retail | Stage 1–6 read-only Retail | search/import-boundary test + fixture ingest idempotent | ingest status local | `.agent/evidence/UGR-001/S1/ingest-fixture.txt` | UNVERIFIED |
+| AC-01 | Aplicația standalone pornește local cu API, frontend, PostgreSQL și un singur worker; health/readiness sunt determinate fără Retail/Google | Retail și legacy Grile | build + test + local health; oprirea Retail/Google fixture nu blochează read UI | local compose/systemd dev probe | Audit `b9e1b3d`: API/Postgres și buildurile trec; workerul declarat iese imediat, proxy-ul web Compose indică greșit localhost, iar API poate consuma joburi | FAIL |
+| AC-02 | Schema și motorul impun max. un agent per magazin/zi și max. un magazin per agent/zi | datele fixture | teste concurente + constrângeri DB; conflictele sunt respinse determinist | API conflict 409 | Audit `b9e1b3d`: indexuri PostgreSQL și probe API 200/409/409 confirmate; testul concurent obligatoriu lipsește și testul menționat în comentariu nu există | FAIL |
+| AC-03 | Fixture connector versionat furnizează magazine, persoane, targete și vânzări magazin/zi fără import din codul/schema Retail | Stage 1–6 read-only Retail | search/import-boundary test + fixture ingest idempotent | ingest status local | Audit `b9e1b3d`: zero import Retail confirmat; targets lipsesc; IDs store/person nu sunt tenant-scoped; workerul ignoră tenantul jobului | FAIL |
 | AC-04 | Managerul poate crea/modifica programul lunar, cu `NORMAL`, `EXTRA_HOME`, `EXTRA_OTHER`, `OFF`, `LEAVE`, scoped la aria sa | fără wizard schimb de tură | API/UI tests; scope 403; revision stale 409 | browser flow fixture | partial: S1 seeder endpoints accept `NORMAL`/`EXTRA_HOME`/`EXTRA_OTHER`; `OFF`/`LEAVE` and the UI flow belong to S2. | UNVERIFIED |
 | AC-05 | Orice modificare a calendarului actualizează în aceeași revizie pontajul derivat, inclusiv retroactiv la mijlocul lunii | fără editor pontaj separat | domain/API test before/after; total ore consistent | UI + XLSX/Sheet preview | partial: schema carries revision; projection engine is S2. | UNVERIFIED |
 | AC-06 | Modelul XLSX prepopulat poate fi preview-uit și aplicat atomic; conflictele, scope-ul și revision stale nu produc scrieri parțiale | nu creează persoane/magazine | parser round-trip, malformed/property tests, rollback test | browser upload preview/apply | deferred to S2. | UNVERIFIED |
@@ -105,7 +105,7 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 
 | Stage | Scope / livrabil mare | Depends on | Owner | Attempts | State |
 |---|---|---|---|---:|---|
-| S1 | Foundation standalone: stack, schema, domain invariants, fixture connector, auth/scopes skeleton, one worker, local dev/test | none | builder 1 | 1 | BUILDING |
+| S1 | Foundation standalone: stack, schema, domain invariants, fixture connector, auth/scopes skeleton, one worker, local dev/test | none | builder 1 | 2 | BUILDING |
 | S2 | Calendar + pontaj + XLSX schedule import: APIs, revisions, derived projections, preview/apply atomic | S1 GO | builder 2 | 0 | BACKLOG |
 | S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + formula confirmations | builder 3 | 0 | BACKLOG |
 | S4 | Manager UI complete: Overview, Program, Store, Agent, Exceptions, Close, responsive/performance | S3 GO | builder 4 | 0 | BACKLOG |
@@ -264,6 +264,13 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   backend tests, 2 frontend tests, 0 ruff/mypy/tsc errors). Stage moves from
   `READY` to `BUILDING` and stops — handoff to primary reviewer for the GO/NO-GO
   audit.
+- 2026-08-20: primary + independent read-only audit on exact artifact
+  `b9e1b3d6343c0e95af9ba1a09a9687875705a423` returned `NO-GO/FAIL` for
+  AC-01, AC-02 and AC-03. S1 remains `BUILDING`, attempt 2; S2 stays blocked.
+  Targeted checks on the unchanged artifact passed (`28` pytest, ruff, mypy,
+  `2` vitest, tsc, Vite build). PostgreSQL migration and sequential API
+  conflicts were reproduced independently, so the failure is architectural and
+  contractual rather than a generic build failure.
 
 ## Attempts, failures, and discoveries
 
@@ -290,6 +297,19 @@ S7 gate: AC-18 plus a separately approved cutover contract.
 - The Alembic autogenerate produced `1e5c879d0851_0001_initial_schema.py`.
   Renamed to a clean filename `0001_initial_schema.py`; the SHA is preserved
   on the next `alembic` invocation via the head pointer, not the file name.
+- Multi-tenant probe applied the same internal store/person codes to
+  `tenant_alpha` then `tenant_beta`. Only `tenant_alpha` owned the two Store and
+  three Person rows, while `tenant_beta` sales referenced those same IDs. Root
+  cause: `make_store_id`/`make_person_id` omit tenant and connector upserts use
+  primary-key lookup instead of tenant + internal code.
+- `python -m ugrile.worker.worker` exited successfully in about one second and
+  left an enqueued NOOP in `PENDING`; the module exports `run_forever` but has no
+  executable entrypoint. The tracked worker proof used API `/worker/run`, not the
+  dedicated worker process.
+- Tracked evidence is internally inconsistent: `test-summary.txt` reports clean
+  ruff/mypy while `typecheck-summary.txt` retains an older 129-ruff/32-mypy
+  failure. Current independent rerun is clean, but evidence must be replaced by
+  one exact-candidate summary.
 
 ## Decisions
 
@@ -310,7 +330,19 @@ S7 gate: AC-18 plus a separately approved cutover contract.
 
 ## Auditor verdicts
 
-- None. Documentation creation is not a product-stage PASS.
+- 2026-08-20 — S1 exact artifact
+  `b9e1b3d6343c0e95af9ba1a09a9687875705a423`: **FAIL / NO-GO**.
+  - AC-01 FAIL: Compose web proxy defaults to its own container localhost;
+    dedicated worker command exits immediately; API also exposes job execution,
+    contradicting one worker authority.
+  - AC-02 FAIL: correct domain/index/sequential 409 behavior, but no concurrent
+    PostgreSQL test required by the contract; referenced integration test absent.
+  - AC-03 FAIL: no targets in connector/fixture, worker always applies canonical
+    `tenant_fixture`, and global store/person IDs cause cross-tenant references.
+  - Independent auditor: `/root/s1_acceptance_audit`, confidence `0.99`.
+  - Largest gap: repair AC-03 end-to-end with targets, tenant-scoped identity and
+    worker payload/tenant correctness, then prove two-tenant isolation on
+    PostgreSQL.
 
 ## Evidence index
 
@@ -328,6 +360,12 @@ S7 gate: AC-18 plus a separately approved cutover contract.
 - S1 decisions: `docs/decisions/s1-stack.md`.
 - S1 local commands: `docs/operations/local-commands.md`.
 - S1 developer stack: `docker-compose.yml` (postgres + api + worker + web).
+- S1 independent primary checks on `b9e1b3d`: backend pytest `28 passed`, ruff
+  PASS, mypy PASS (35 files), frontend vitest `2 passed`, tsc PASS, Vite build
+  PASS; PostgreSQL migration `1e5c879d0851`; API assignment probe `200/409/409`.
+- S1 failure probes: `python -m ugrile.worker.worker` exited `0` in ~1s and left
+  NOOP `PENDING`; isolated two-tenant fixture probe retained Store/Person rows
+  only under the first tenant while second-tenant sales referenced them.
 
 ## Integration, regression, and deployment
 
@@ -357,9 +395,22 @@ S7 gate: AC-18 plus a separately approved cutover contract.
 
 ## Next exact step
 
-Give one builder only the S1 contract, starting from
-`planning-baseline-20260820`, and require it to stop with an exact commit and
-the evidence listed in the S1 handoff.
+Return S1 attempt 2 to one builder. It must remediate only the demonstrated gaps:
+
+1. make Store/Person identity and all foreign references tenant-safe (IDs plus
+   composite tenant integrity or an equivalent DB-enforced design); query/upsert
+   by tenant + stable code and add a two-tenant isolation regression;
+2. add versioned targets to connector types, fixture, persistence and idempotent
+   ingest;
+3. pass the job tenant/payload into fixture ingest; make the dedicated worker
+   command actually run and keep job execution under one authority;
+4. fix Compose web-to-API routing and prove the whole local stack/read UI;
+5. add a real concurrent PostgreSQL AC-02 test and remove the nonexistent test
+   reference;
+6. replace contradictory evidence with one sanitized exact-commit result set.
+
+Stop after one coherent remediation commit and the complete S1 handoff. Do not
+start S2.
 
 ## Resume procedure
 
