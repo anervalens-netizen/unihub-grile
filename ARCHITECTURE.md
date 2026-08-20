@@ -106,20 +106,20 @@ versionat, nu condiții dispersate în cod.
 ## 6. Pontaj derivat
 
 Pontajul nu are editor separat. Pentru fiecare persoană și zi, motorul proiectează
-valoarea vizibilă pe baza calendarului și a configurației clientului:
+valoarea vizibilă pe baza calendarului și a rule pack-ului clientului:
 
-- zi lucrată: intervalul implicit configurat pentru magazin, inițial
-  `10:00–22:00`, plus durata de pauză configurată;
-- liber/concediu: celulă goală sau codul vizual acceptat de export;
+- zi lucrată Mobiup: `11` ore nete, interval `10:00–22:00`, pauză `1` oră;
+- liber/concediu: celulele celor trei rânduri sunt goale;
 - weekend: aceeași evidențiere galbenă ca modelul furnizat;
-- total: calculat determinist din intervale și pauze.
+- total: `AH` însumează rândul de ore nete.
 
 Dacă managerul modifică programul la mijlocul lunii, aceeași revizie actualizează
 calendarul, pontajul, creditul de vânzări și grila. Proiecția Google este apoi
 regenerată asincron.
 
-Orele implicite și pauza sunt configurabile per client/magazin; nu se hardcodează
-în motor până la confirmarea modelului exact de calcul din Stage 2.
+Schema exactă `C8:AG31`, blocurile de câte trei rânduri și golden fixtures sunt
+definite în `docs/MOBIUP_RULE_PACK.md`. Politica nu este configurabilă de TL per
+magazin; un viitor client primește alt rule pack versionat.
 
 ## 7. Google Sheets
 
@@ -164,4 +164,3 @@ Retail nu importă tabelele sau regulile Grile. La Stage 7 poate expune un link 
 capabilitate/autentificare și endpointul/outbox-ul contractului. Accesul direct la
 schema Retail este permis numai unui adaptor tranzitoriu read-only și nu poate fi
 arhitectura finală.
-

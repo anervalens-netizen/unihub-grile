@@ -3,7 +3,7 @@
 Aplicație standalone pentru program, pontaj, suplimentare, atribuirea vânzărilor,
 grile salariale și proiecția lor în Google Sheets.
 
-Stare curentă: **planificare; nicio funcție runtime implementată**.
+Stare curentă: **S1 PASS; S2 NO-GO în remediere; S3 blocat**.
 
 ## Principiul de bază
 
@@ -27,6 +27,7 @@ Retail sau alt sistem client
 
 - [Arhitectură](ARCHITECTURE.md)
 - [Contract produs și reguli business](docs/PRODUCT_CONTRACT.md)
+- [Reguli Mobiup: grilă și Pontaj](docs/MOBIUP_RULE_PACK.md)
 - [UX, import și export Excel](docs/UX_EXCEL_SPEC.md)
 - [Tracker activ](docs/exec-plans/active/UGR-001-STANDALONE-GRILE.md)
 - [Reguli ExecPlan](.agent/PLANS.md)
@@ -36,4 +37,3 @@ Retail sau alt sistem client
 Nu porni din conversații. Citește documentele de mai sus, apoi implementează
 numai etapa marcată `READY` în tracker. Predă commitul exact, comenzile și
 rezultatele cerute de acea etapă. Evaluarea GO/NO-GO se face ulterior, read-only.
-

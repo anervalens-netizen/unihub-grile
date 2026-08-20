@@ -63,12 +63,19 @@ referință; capturile sunt dovezi vizuale, nu instrucțiuni executabile.
 ## 4. Pontaj
 
 - Pontajul este o proiecție a calendarului, nu un formular independent.
-- Trebuie să păstreze aspectul funcțional al capturii: câte un rând de interval
-  pentru persoană, rând de pauză, coloane zilnice, weekend galben, total la final.
-- Intervalul și pauza vin din configurarea clientului/magazinului.
+- Contractul exact de celule, rânduri, interval, pauză și total este definit în
+  `docs/MOBIUP_RULE_PACK.md`; pentru Mobiup standardul este `10:00-22:00`, pauză
+  `1` oră și `11` ore nete pe zi lucrată.
 - O modificare retroactivă a calendarului actualizează pontajul imediat în DB și
   asincron în Sheet/export.
 - Nu există modificare manuală directă a pontajului în Google Sheet.
+
+## 4.1. Calcul salarial Mobiup
+
+Formula completă, pragurile de comision, plata suplimentarelor, SIM, E-pay,
+rotunjirea și totalul care include tichetele sunt contractate în
+`docs/MOBIUP_RULE_PACK.md`. Motorul generic nu conține constante Mobiup;
+selectează un rule pack versionat.
 
 ## 5. E-pay
 
@@ -142,15 +149,12 @@ stabile ascunse/tehnice, nu potrivire liberă după nume.
 - calcul din codul POS ca identitate personală;
 - integrare directă în Retail înainte ca aplicația standalone să treacă pilotul.
 
-## 11. Întrebări rămase, fără blocarea Stage 1
+## 11. Întrebări rămase înainte de Stage 3
 
-Aceste valori trebuie confirmate înainte de Stage 2/5, nu sunt presupuse în cod:
+Formula legacy și Pontajul standard sunt acum documentate din sursele V1/V2.
+Mai trebuie confirmate doar autoritățile/datele care nu pot fi deduse din formule:
 
-- intervalul standard exact și pauza folosite în pontaj pentru toate tipurile de
-  magazin;
-- formula salarială completă V2 și treatment-ul exact al `EXTRA_HOME`/
-  `EXTRA_OTHER`;
-- dacă limita E-pay `0..10` rămâne hard limit sau devine configurabilă admin;
+- sursa effective-dated pentru salariul fix și tichete;
+- dacă ajustarea legacy `Flip` rămâne activă;
 - lista sărbătorilor și efectul lor în pontaj/calcul;
 - politica exactă: cine poate executa close (TL sau numai admin).
-
