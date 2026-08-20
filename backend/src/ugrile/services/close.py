@@ -9,8 +9,16 @@ Close contract
 --------------
 
 * Admin-only — non-admin callers get a typed ``FORBIDDEN`` response.
-* Deterministic blocker detection over the current month state.
-* Month row is updated atomically with the audit chain append.
+* The ``Month`` row is acquired ``SELECT ... FOR UPDATE`` **before** any
+  state/revision decision, so two concurrent close attempts serialize and
+  exactly one succeeds; the loser observes the committed ``CLOSED`` state.
+* ``expected_revision`` (when provided) is validated against the locked
+  row, never against an unlocked pre-read.
+* Deterministic blocker detection over the full open-store/day lattice
+  (:func:`ugrile.domain.close.validate_close`); any blocker aborts the
+  transaction before state or audit rows are touched.
+* A successful close appends exactly one audit event and sets
+  ``state``/``revision`` together in the same transaction.
 * A successful close freezes all subsequent business writes (the existing
   ``CalendarService`` already raises ``MONTH_CLOSED`` on any change).
 
@@ -18,9 +26,17 @@ Reopen contract
 ---------------
 
 * Admin-only — non-admin callers get a typed ``FORBIDDEN`` response.
+* The ``Month`` row is locked before the ``CLOSED`` state check.
 * Reason required (>= 4 chars, non-empty after trim).
 * ``months.revision`` is bumped; ``state`` flips ``CLOSED`` → ``REOPENED``.
 * A new audit chain entry is appended; the previous close row stays.
+
+Audit chain
+-----------
+
+Each event is chained by a deterministic digest (see
+:mod:`ugrile.domain.close`); ``MonthCloseEventRepository.verify_chain``
+proves the chain is intact.
 """
 
 from __future__ import annotations
@@ -36,6 +52,7 @@ from sqlalchemy.orm import Session
 from ..domain.close import (
     BlockerDetail,
     CloseValidation,
+    OpenStoreDay,
     PersonDaySnapshot,
     ReopenValidation,
     SalesAvailabilitySnapshot,
@@ -46,22 +63,23 @@ from ..domain.close import (
     validate_close,
 )
 from ..domain.enums import CloseAction, MonthState
-from ..domain.errors import NotFoundError, ScopeError, ValidationError
+from ..domain.errors import NotFoundError, ScopeError, StaleRevisionError, ValidationError
 from ..repositories.close import MonthCloseEventRepository
 from ..repositories.models import (
     Month,
+    Person,
     SalesStoreDay,
     SiteDayAssignment,
     Store,
     StoreTarget,
 )
-from ..repositories.months import MonthRepository
 
 
 @dataclass(frozen=True, slots=True)
 class CloseRequest:
     actor_id: str
     role_value: str
+    expected_revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,24 +101,47 @@ class CloseOutcome:
 class CloseService:
     def __init__(self, session: Session) -> None:
         self.session = session
-        self.months = MonthRepository(session)
         self.audit = MonthCloseEventRepository(session)
 
     # --- validation builders ---------------------------------------------
 
+    def _lock_month(self, month_id: str) -> Month:
+        """Lock the month row; returns the locked row (tenant-agnostic)."""
+
+        locked = self.session.execute(
+            select(Month).where(Month.id == month_id).with_for_update()
+        ).scalar_one_or_none()
+        if locked is None:
+            raise NotFoundError(f"month not found: {month_id}")
+        return locked
+
     def _build_snapshots(
         self, *, tenant_id: str, month: Month
     ) -> tuple[
+        list[OpenStoreDay],
         list[StoreCoverageSnapshot],
         list[PersonDaySnapshot],
         list[SalesAvailabilitySnapshot],
         list[StoreTargetAvailabilitySnapshot],
     ]:
         days = monthrange(month.year, month.month)[1]
-        dates = [
-            date(month.year, month.month, 1 + offset)
-            for offset in range(days)
+        dates = [date(month.year, month.month, 1 + offset) for offset in range(days)]
+        stores = list(
+            self.session.execute(
+                select(Store).where(Store.tenant_id == tenant_id, Store.is_active.is_(True))
+            ).scalars()
+        )
+        store_ids = sorted({store.id for store in stores})
+        # S3 authoritative open-store/day lattice: every active store for
+        # every date of the month. There is no separate closed-day table; a
+        # missing assignment row must never silently mean the store is closed.
+        open_days = [
+            OpenStoreDay(store_id=store_id, business_date=d)
+            for store_id in store_ids
+            for d in dates
         ]
+        lattice = {(day.store_id, day.business_date) for day in open_days}
+
         working = list(
             self.session.execute(
                 select(SiteDayAssignment).where(
@@ -110,6 +151,15 @@ class CloseService:
                 )
             ).scalars()
         )
+        person_ids = {row.person_id for row in working}
+        home_stores: dict[str, str] = {}
+        if person_ids:
+            home_stores = {
+                person.id: person.home_store_id
+                for person in self.session.execute(
+                    select(Person).where(Person.tenant_id == tenant_id, Person.id.in_(person_ids))
+                ).scalars()
+            }
         coverage: list[StoreCoverageSnapshot] = []
         person_days: list[PersonDaySnapshot] = []
         for row in working:
@@ -119,6 +169,7 @@ class CloseService:
                     business_date=row.business_date,
                     person_id=row.person_id,
                     working_kind=row.working_kind,
+                    person_home_store_id=home_stores.get(row.person_id),
                 )
             )
             person_days.append(
@@ -141,30 +192,28 @@ class CloseService:
         sales_index: dict[tuple[str, date], bool] = {}
         for sale_row in sales:
             sales_index[(sale_row.store_id, sale_row.business_date)] = True
+        # Full-lattice sales availability, plus any sale rows that land
+        # outside the lattice (e.g. an inactive store) so orphan detection
+        # stays precise.
         sales_availability: list[SalesAvailabilitySnapshot] = []
-        for (store_id, business_date), present in sorted(sales_index.items()):
+        for store_id, d in sorted(lattice):
             sales_availability.append(
                 SalesAvailabilitySnapshot(
-                    store_id=store_id, business_date=business_date, has_sale=present
+                    store_id=store_id,
+                    business_date=d,
+                    has_sale=sales_index.get((store_id, d), False),
                 )
             )
-        for row in working:
-            if (row.store_id, row.business_date) in sales_index:
-                continue
-            sales_availability.append(
-                SalesAvailabilitySnapshot(
-                    store_id=row.store_id,
-                    business_date=row.business_date,
-                    has_sale=False,
+        for sale_row in sorted(sales, key=lambda s: (s.store_id, s.business_date)):
+            if (sale_row.store_id, sale_row.business_date) not in lattice:
+                sales_availability.append(
+                    SalesAvailabilitySnapshot(
+                        store_id=sale_row.store_id,
+                        business_date=sale_row.business_date,
+                        has_sale=True,
+                    )
                 )
-            )
 
-        stores = list(
-            self.session.execute(
-                select(Store).where(Store.tenant_id == tenant_id, Store.is_active.is_(True))
-            ).scalars()
-        )
-        store_ids = sorted({store.id for store in stores})
         target_availability: list[StoreTargetAvailabilitySnapshot] = []
         target_rows = list(
             self.session.execute(
@@ -183,9 +232,7 @@ class CloseService:
                 latest_targets[key] = target_row
         for d in dates:
             for store_id in store_ids:
-                target_lookup: StoreTarget | None = latest_targets.get(
-                    (store_id, "MONTHLY_SALES")
-                )
+                target_lookup: StoreTarget | None = latest_targets.get((store_id, "MONTHLY_SALES"))
                 if target_lookup is None or target_lookup.amount <= 0:
                     target_availability.append(
                         StoreTargetAvailabilitySnapshot(
@@ -204,15 +251,14 @@ class CloseService:
                         target_amount=target_lookup.amount,
                     )
                 )
-        return coverage, person_days, sales_availability, target_availability
+        return open_days, coverage, person_days, sales_availability, target_availability
 
-    def _validation(
-        self, *, tenant_id: str, month: Month
-    ) -> CloseValidation:
-        coverage, person_days, sales, targets = self._build_snapshots(
+    def _validation(self, *, tenant_id: str, month: Month) -> CloseValidation:
+        open_days, coverage, person_days, sales, targets = self._build_snapshots(
             tenant_id=tenant_id, month=month
         )
         return validate_close(
+            open_days=open_days,
             coverage=coverage,
             person_days=person_days,
             sales_availability=sales,
@@ -233,14 +279,21 @@ class CloseService:
                 "admin role required to close a month",
                 details={"role": request.role_value, "actor_id": request.actor_id},
             )
-        month = self.months.get(month_id)
-        if month.tenant_id != tenant_id:
+        locked = self._lock_month(month_id)
+        if locked.tenant_id != tenant_id:
             raise NotFoundError("month not found")
-        assert_close_state(month.state)
-        locked = self.session.execute(
-            select(Month).where(Month.id == month_id).with_for_update()
-        ).scalar_one()
+        # State and revision decisions happen only under the row lock, so two
+        # concurrent close attempts serialize and exactly one succeeds.
         assert_close_state(locked.state)
+        if request.expected_revision is not None and locked.revision != request.expected_revision:
+            raise StaleRevisionError(
+                "stale close revision",
+                details={
+                    "code": "STALE_REVISION",
+                    "expected": request.expected_revision,
+                    "current": locked.revision,
+                },
+            )
         validation = self._validation(tenant_id=tenant_id, month=locked)
         if not validation.ok:
             raise ValidationError(
@@ -305,13 +358,9 @@ class CloseService:
                 error or "invalid reopen reason",
                 details={"code": "REOPEN_REASON_REQUIRED"},
             )
-        month = self.months.get(month_id)
-        if month.tenant_id != tenant_id:
+        locked = self._lock_month(month_id)
+        if locked.tenant_id != tenant_id:
             raise NotFoundError("month not found")
-        assert_reopen_state(month.state)
-        locked = self.session.execute(
-            select(Month).where(Month.id == month_id).with_for_update()
-        ).scalar_one()
         assert_reopen_state(locked.state)
         previous_state = locked.state
         revision_before = locked.revision

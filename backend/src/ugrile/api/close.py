@@ -46,18 +46,13 @@ def close_month(
 ) -> CloseOutcomeOut:
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
-    if payload.expected_revision is not None and payload.expected_revision != month.revision:
-        from ..domain.errors import StaleRevisionError
-
-        raise StaleRevisionError(
-            "stale close revision",
-            details={
-                "code": "STALE_REVISION",
-                "expected": payload.expected_revision,
-                "current": month.revision,
-            },
-        )
-    request = CloseRequest(actor_id=principal.user_id, role_value=principal.role.value)
+    # The expected-revision check is delegated to CloseService, which
+    # validates it against the locked month row (no unlocked pre-read).
+    request = CloseRequest(
+        actor_id=principal.user_id,
+        role_value=principal.role.value,
+        expected_revision=payload.expected_revision,
+    )
     outcome = CloseService(session).close_month(
         tenant_id=principal.tenant_id,
         month_id=month_id,
@@ -110,9 +105,7 @@ def reopen_month(
     )
 
 
-@router.get(
-    "/{month_id}/close-events", response_model=list[CloseEventOut]
-)
+@router.get("/{month_id}/close-events", response_model=list[CloseEventOut])
 def list_close_events(
     month_id: str,
     session: Session = Depends(db_session),

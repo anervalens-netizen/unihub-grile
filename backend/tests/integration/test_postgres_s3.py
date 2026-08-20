@@ -104,7 +104,14 @@ def _seed(pg_session) -> dict[str, str]:
         display_name="Bob",
         home_store_id=s1.id,
     )
-    pg_session.add_all([p1, p2])
+    p3 = Person(
+        id=make_person_id(tenant_token, "c"),
+        tenant_id=tenant_id,
+        internal_code="c",
+        display_name="Carmen",
+        home_store_id=s2.id,
+    )
+    pg_session.add_all([p1, p2, p3])
     pg_session.commit()
     pg_session.add(
         SalesStoreDay(
@@ -147,6 +154,7 @@ def _seed(pg_session) -> dict[str, str]:
         "other_store_id": s2.id,
         "person_a_id": p1.id,
         "person_b_id": p2.id,
+        "person_c_id": p3.id,
     }
 
 
@@ -157,9 +165,65 @@ def _open_month(pg_session, tenant_id: str) -> Month:
     return month
 
 
-def test_attribution_and_reassignment_preserve_company_total_on_postgres(
-    pg_session, pg_engine
-):
+AUGUST_2026_DAYS = [date(2026, 8, day) for day in range(1, 32)]
+
+
+def _cover_clean_full_month(pg_session, ids: dict[str, str], month: Month) -> None:
+    """Seed full-month sales and cover both stores for every day.
+
+    The S3 open-store/day authority is every active store for every date of
+    the month, so the clean-month fixture must represent the intended open
+    days explicitly — one working agent per store/day for the whole month.
+    """
+
+    pg_session.add_all(
+        [
+            SalesStoreDay(
+                tenant_id=ids["tenant_id"],
+                store_id=ids["store_id"],
+                business_date=d,
+                generation=FIXTURE_GENERATION,
+                amount=Decimal("12500.00"),
+                currency="RON",
+            )
+            # Day 1 of store 1 is already seeded by _seed().
+            for d in AUGUST_2026_DAYS
+            if d != date(2026, 8, 1)
+        ]
+        + [
+            SalesStoreDay(
+                tenant_id=ids["tenant_id"],
+                store_id=ids["other_store_id"],
+                business_date=d,
+                generation=FIXTURE_GENERATION,
+                amount=Decimal("5400.25"),
+                currency="RON",
+            )
+            for d in AUGUST_2026_DAYS
+        ]
+    )
+    pg_session.commit()
+    CalendarService(pg_session).apply(
+        month=month,
+        tenant_id=ids["tenant_id"],
+        expected_revision=0,
+        changes=[
+            CalendarChange(
+                ids["person_a_id"], d, ids["store_id"], DayStatus.WORKING, WorkingKind.NORMAL
+            )
+            for d in AUGUST_2026_DAYS
+        ]
+        + [
+            CalendarChange(
+                ids["person_c_id"], d, ids["other_store_id"], DayStatus.WORKING, WorkingKind.NORMAL
+            )
+            for d in AUGUST_2026_DAYS
+        ],
+    )
+    pg_session.commit()
+
+
+def test_attribution_and_reassignment_preserve_company_total_on_postgres(pg_session, pg_engine):
     ids = _seed(pg_session)
     month = _open_month(pg_session, ids["tenant_id"])
     svc = CalendarService(pg_session)
@@ -179,9 +243,7 @@ def test_attribution_and_reassignment_preserve_company_total_on_postgres(
     )
     pg_session.commit()
     revision_one = (
-        pg_session.query(SalesPersonDayProjection)
-        .filter_by(month_id=month.id, revision=1)
-        .all()
+        pg_session.query(SalesPersonDayProjection).filter_by(month_id=month.id, revision=1).all()
     )
     assert len(revision_one) == 1
     assert revision_one[0].amount == Decimal("12500.00")
@@ -222,18 +284,14 @@ def test_attribution_and_reassignment_preserve_company_total_on_postgres(
     pg_session.commit()
 
     revision_two = (
-        pg_session.query(SalesPersonDayProjection)
-        .filter_by(month_id=month.id, revision=2)
-        .all()
+        pg_session.query(SalesPersonDayProjection).filter_by(month_id=month.id, revision=2).all()
     )
     assert len(revision_two) == 2
     company_total = sum(row.amount for row in revision_two)
     assert company_total == Decimal("22370.50")
     # Revision 1 is immutable: still Alice on day 1.
     revision_one_again = (
-        pg_session.query(SalesPersonDayProjection)
-        .filter_by(month_id=month.id, revision=1)
-        .all()
+        pg_session.query(SalesPersonDayProjection).filter_by(month_id=month.id, revision=1).all()
     )
     assert revision_one_again[0].person_id == ids["person_a_id"]
     assert revision_one_again[0].amount == Decimal("12500.00")
@@ -242,21 +300,7 @@ def test_attribution_and_reassignment_preserve_company_total_on_postgres(
 def test_admin_only_close_reopen_with_audit_chain_on_postgres(pg_session, pg_engine):
     ids = _seed(pg_session)
     month = _open_month(pg_session, ids["tenant_id"])
-    CalendarService(pg_session).apply(
-        month=month,
-        tenant_id=ids["tenant_id"],
-        expected_revision=0,
-        changes=[
-            CalendarChange(
-                ids["person_a_id"],
-                date(2026, 8, 1),
-                ids["store_id"],
-                DayStatus.WORKING,
-                WorkingKind.NORMAL,
-            )
-        ],
-    )
-    pg_session.commit()
+    _cover_clean_full_month(pg_session, ids, month)
     admin = Principal(
         user_id="user_admin",
         tenant_id=ids["tenant_id"],
@@ -275,9 +319,7 @@ def test_admin_only_close_reopen_with_audit_chain_on_postgres(pg_session, pg_eng
         CloseService(pg_session).close_month(
             tenant_id=ids["tenant_id"],
             month_id=month.id,
-            request=CloseRequest(
-                actor_id=manager.user_id, role_value=manager.role.value
-            ),
+            request=CloseRequest(actor_id=manager.user_id, role_value=manager.role.value),
         )
 
     outcome = CloseService(pg_session).close_month(
@@ -323,8 +365,15 @@ def test_admin_only_close_reopen_with_audit_chain_on_postgres(pg_session, pg_eng
     )
     assert [event.action for event in events] == ["CLOSE", "REOPEN"]
     assert events[0].id != events[1].id
+    assert (
+        MonthCloseEventRepository(pg_session).verify_chain(
+            tenant_id=ids["tenant_id"], month_id=month.id
+        )
+        == []
+    )
 
-    # After reopen the calendar accepts writes again.
+    # After reopen the calendar accepts writes again (day 5 of store 1 is
+    # already covered by person_a, so person_b replaces person_a there).
     CalendarService(pg_session).apply(
         month=month,
         tenant_id=ids["tenant_id"],
@@ -336,7 +385,13 @@ def test_admin_only_close_reopen_with_audit_chain_on_postgres(pg_session, pg_eng
                 ids["store_id"],
                 DayStatus.WORKING,
                 WorkingKind.NORMAL,
-            )
+            ),
+            CalendarChange(
+                ids["person_a_id"],
+                date(2026, 8, 5),
+                None,
+                DayStatus.OFF,
+            ),
         ],
     )
     pg_session.commit()

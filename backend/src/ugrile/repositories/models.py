@@ -941,6 +941,12 @@ class MonthCloseEvent(Base):
     Every successful close or reopen appends one row. The chain carries the
     previous ``state`` so a future read can reconstruct the full history
     without touching the ``Month`` row (which is mutated in place).
+
+    Chain integrity: ``event_digest`` is the deterministic SHA-256 of the
+    row's persisted fields plus ``previous_event_digest`` (the digest of the
+    previous event in the month's chain, ``None`` for the first event). A
+    verifier can recompute the whole chain; any overwrite or deletion breaks
+    a link. See ``ugrile.domain.close`` for the digest scheme.
     """
 
     __tablename__ = "month_close_events"
@@ -960,6 +966,8 @@ class MonthCloseEvent(Base):
     actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     blockers: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    previous_event_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    event_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

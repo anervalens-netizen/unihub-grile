@@ -337,6 +337,8 @@ class CloseEventOut(BaseModel):
     actor_id: str
     reason: str | None
     blockers: str
+    previous_event_digest: str | None
+    event_digest: str
 
 
 __all__ = [
