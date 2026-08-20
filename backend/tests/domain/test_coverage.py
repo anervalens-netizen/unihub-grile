@@ -129,3 +129,46 @@ def test_extra_home_ok_when_same_store():
         site_store_id="s1",
         working_kind=WorkingKind.EXTRA_HOME,
     )
+
+
+@pytest.mark.parametrize(
+    "home,site,kind",
+    [
+        ("s1", "s2", WorkingKind.NORMAL),
+        ("s1", "s2", WorkingKind.EXTRA_HOME),
+        ("s1", "s1", WorkingKind.EXTRA_OTHER),
+        ("s2", "s1", WorkingKind.NORMAL),
+    ],
+)
+def test_invalid_home_other_pairs(home, site, kind):
+    """Table-driven coverage of invalid home/other combinations.
+
+    ``NORMAL``/``EXTRA_HOME`` require the person to be on their home store;
+    ``EXTRA_OTHER`` requires them to be on a different store. Each row in
+    the table is an invariant violation that the domain must reject.
+    """
+
+    with pytest.raises(ValidationError):
+        validate_working_kind(
+            person_home_store_id=home,
+            site_store_id=site,
+            working_kind=kind,
+        )
+
+
+@pytest.mark.parametrize(
+    "home,site,kind",
+    [
+        ("s1", "s1", WorkingKind.NORMAL),
+        ("s1", "s1", WorkingKind.EXTRA_HOME),
+        ("s1", "s2", WorkingKind.EXTRA_OTHER),
+    ],
+)
+def test_valid_home_other_pairs(home, site, kind):
+    """Table-driven coverage of valid home/other combinations."""
+
+    validate_working_kind(
+        person_home_store_id=home,
+        site_store_id=site,
+        working_kind=kind,
+    )

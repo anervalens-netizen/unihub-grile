@@ -13,7 +13,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..domain.enums import DayStatus, MonthState, WorkingKind
+from ..domain.enums import (
+    CloseBlockerCode,
+    DayStatus,
+    MonthState,
+    WorkingKind,
+)
 
 
 class HealthReport(BaseModel):
@@ -190,14 +195,131 @@ class IngestRequest(BaseModel):
     )
 
 
+class AttributionRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    person_id: str
+    store_id: str
+    business_date: date
+    amount: Decimal
+    currency: str
+    generation: str
+    working_kind: WorkingKind
+    revision: int
+
+
+class AttributionMonthOut(BaseModel):
+    month_id: str
+    revision: int
+    total_rows: int
+    company_total: Decimal
+    rows: list[AttributionRowOut]
+    anomalies: list[dict[str, object]]
+
+
+class SalaryUpsertIn(BaseModel):
+    person_id: str = Field(min_length=1)
+    effective_from: date
+    effective_to: date | None = None
+    salary: Decimal
+    tickets: Decimal
+    flip: Decimal = Decimal("0")
+    source: str = "HR_MASTER"
+    notes: str | None = None
+
+
+class SalaryMasterOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tenant_id: str
+    person_id: str
+    effective_from: date
+    effective_to: date | None
+    salary: Decimal
+    tickets: Decimal
+    flip: Decimal
+    source: str
+    notes: str | None = None
+
+
+class GridCalculationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tenant_id: str
+    month_id: str
+    store_id: str
+    person_id: str
+    rule_pack_version: str
+    revision: int
+    inputs_hash: str
+    outputs_hash: str
+    payload: str
+
+
+class GridComputeOut(BaseModel):
+    month_id: str
+    revision: int
+    rule_pack_version: str
+    snapshots: list[GridCalculationOut]
+
+
+class BlockerOut(BaseModel):
+    code: CloseBlockerCode
+    store_id: str | None
+    person_id: str | None
+    business_date: date | None
+    message: str
+
+
+class CloseIn(BaseModel):
+    expected_revision: int | None = None
+
+
+class CloseOutcomeOut(BaseModel):
+    month_id: str
+    revision: int
+    new_state: MonthState
+    audit_event_id: int
+    blockers: list[BlockerOut]
+
+
+class ReopenIn(BaseModel):
+    reason: str = Field(min_length=4, max_length=512)
+
+
+class CloseEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    month_id: str
+    action: str
+    previous_state: str
+    new_state: str
+    revision_before: int
+    revision_after: int
+    actor_id: str
+    reason: str | None
+    blockers: str
+
+
 __all__ = [
     "AssignmentCreate",
     "AssignmentOut",
+    "AttributionMonthOut",
+    "AttributionRowOut",
+    "BlockerOut",
     "CalendarApplyIn",
     "CalendarChangeIn",
     "CalendarProjectionOut",
+    "CloseEventOut",
+    "CloseIn",
+    "CloseOutcomeOut",
     "ConflictOut",
     "CoverageReport",
+    "GridCalculationOut",
+    "GridComputeOut",
     "HealthReport",
     "IngestRequest",
     "IngestResult",
@@ -207,6 +329,9 @@ __all__ = [
     "PontajMonthOut",
     "PontajPersonTotalsOut",
     "PontajRowOut",
+    "ReopenIn",
+    "SalaryMasterOut",
+    "SalaryUpsertIn",
     "SchedulePreviewOut",
     "StoreOut",
     "TenantOut",

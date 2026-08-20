@@ -70,3 +70,28 @@ class ConnectorError(DomainError):
 class AuthError(DomainError):
     code = "AUTH_ERROR"
     http_status = 401
+
+
+class MonthStateError(ConflictError):
+    """Raised when the month is in a state that disallows the requested action.
+
+    Carries the typed ``state`` and ``code`` so the API can produce a precise
+    409 payload. Used by the close/reopen core (AC-15).
+    """
+
+    code = "MONTH_STATE"
+    http_status = 409
+
+
+__all__ = [
+    "AuthError",
+    "ConflictError",
+    "ConnectorError",
+    "CoverageInvariantError",
+    "DomainError",
+    "MonthStateError",
+    "NotFoundError",
+    "ScopeError",
+    "StaleRevisionError",
+    "ValidationError",
+]

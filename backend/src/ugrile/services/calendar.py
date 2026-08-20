@@ -24,6 +24,7 @@ from ..domain.projections import (
 )
 from ..repositories.models import Month, Person, PersonDayAbsence, PontajProjection, Store
 from ..repositories.models import SiteDayAssignment as AssignmentRow
+from .attribution import AttributionService
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,6 +310,12 @@ class CalendarService:
             revision=new_revision,
             domains=domains,
             hours=hours,
+        )
+        # S3: rebuild the sales attribution projection in the same
+        # transaction so a rolled-back calendar never leaves an attributed
+        # row behind.
+        AttributionService(self.session).rebuild_for_month(
+            month=month, tenant_id=tenant_id, revision=new_revision
         )
         dates = [
             date(month.year, month.month, day)

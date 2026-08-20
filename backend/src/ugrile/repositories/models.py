@@ -766,6 +766,228 @@ class StoreTarget(Base, TimestampMixin):
     )
 
 
+class SalaryMaster(Base, TimestampMixin):
+    """Effective-dated salary + ticket input sourced from HR/payroll master.
+
+    Per docs/PRODUCT_CONTRACT.md §11 and docs/MOBIUP_RULE_PACK.md §9 the
+    master is the only authority for salary and tickets. The grid engine
+    never edits these rows; it only reads them by effective date.
+
+    The row is composite-keyed on ``(tenant_id, person_id, effective_from)``
+    so multiple revisions can be stored in history without losing the
+    previous value.
+    """
+
+    __tablename__ = "salary_master"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    person_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    salary: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    tickets: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    flip: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="HR_MASTER")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "person_id",
+            "effective_from",
+            name="uq_salary_master_window",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="salary_master_dates_valid",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "person_id"],
+            ["people.tenant_id", "people.id"],
+            name="fk_salary_master_tenant_person",
+        ),
+        Index(
+            "ix_salary_master_tenant_person_dates",
+            "tenant_id",
+            "person_id",
+            "effective_from",
+        ),
+    )
+
+
+class HolidayCalendar(Base, TimestampMixin):
+    """Versioned Romanian legal holiday calendar.
+
+    Each row pins a single calendar version (e.g. ``rom-legal-2026``) to a
+    set of business dates. In S3 the engine only reads the row for the
+    tenant's active version; it does not modify schedule, Pontaj, target or
+    pay. Admin overrides are tracked separately in :class:`HolidayOverride`.
+    """
+
+    __tablename__ = "holiday_calendars"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    business_date: Mapped[date] = mapped_column(Date, nullable=False)
+    label: Mapped[str] = mapped_column(String(128), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "version",
+            "business_date",
+            name="uq_holiday_calendar_version_date",
+        ),
+    )
+
+
+class HolidayOverride(Base, TimestampMixin):
+    """Admin override on a specific holiday calendar date.
+
+    Allows turning a holiday on/off per tenant; the row carries the admin
+    user id and reason for audit. The grid engine reads the override but
+    still treats the date as a marker — it does not adjust salary or Pontaj.
+    """
+
+    __tablename__ = "holiday_overrides"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    business_date: Mapped[date] = mapped_column(Date, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "version",
+            "business_date",
+            name="uq_holiday_override_version_date",
+        ),
+    )
+
+
+class MonthCloseEvent(Base):
+    """Append-only audit chain for month close/reopen (AC-15).
+
+    Every successful close or reopen appends one row. The chain carries the
+    previous ``state`` so a future read can reconstruct the full history
+    without touching the ``Month`` row (which is mutated in place).
+    """
+
+    __tablename__ = "month_close_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    month_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("months.id"), nullable=False, index=True
+    )
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    previous_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    new_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    revision_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    blockers: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_month_close_events_month",
+            "tenant_id",
+            "month_id",
+            "occurred_at",
+        ),
+        CheckConstraint(
+            "action IN ('CLOSE', 'REOPEN')",
+            name="month_close_events_action_enum",
+        ),
+        CheckConstraint(
+            "previous_state IN ('DRAFT', 'OPEN', 'CLOSED', 'REOPENED') "
+            "AND new_state IN ('DRAFT', 'OPEN', 'CLOSED', 'REOPENED')",
+            name="month_close_events_states_enum",
+        ),
+    )
+
+
+class SalesPersonDayProjection(Base, TimestampMixin):
+    """Per-revision projection of the attributed store-day credit (AC-07).
+
+    Materialised by the calendar CAS in the same transaction as the calendar
+    and Pontaj projections. The composite key includes the connector
+    ``generation`` so reattribution after a connector advance stays
+    auditable; prior revisions are immutable.
+    """
+
+    __tablename__ = "sales_person_day_projections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    month_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("months.id"), nullable=False, index=True
+    )
+    person_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    store_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    business_date: Mapped[date] = mapped_column(Date, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0"))
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="RON")
+    generation: Mapped[str] = mapped_column(String(32), nullable=False)
+    working_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "month_id",
+            "person_id",
+            "store_id",
+            "business_date",
+            "revision",
+            "generation",
+            name="uq_sales_person_day_projection",
+        ),
+        Index(
+            "ix_sales_person_day_projection_current",
+            "tenant_id",
+            "month_id",
+            "revision",
+            "business_date",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "store_id"],
+            ["stores.tenant_id", "stores.id"],
+            name="fk_sales_person_day_projection_tenant_store",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "person_id"],
+            ["people.tenant_id", "people.id"],
+            name="fk_sales_person_day_projection_tenant_person",
+        ),
+        CheckConstraint(
+            "working_kind IN ('NORMAL', 'EXTRA_HOME', 'EXTRA_OTHER')",
+            name="sales_person_day_projection_kind_enum",
+        ),
+    )
+
+
 __all__ = [
     "Tenant",
     "User",
@@ -789,4 +1011,9 @@ __all__ = [
     "AuditEvent",
     "OutboxJob",
     "StoreTarget",
+    "SalaryMaster",
+    "HolidayCalendar",
+    "HolidayOverride",
+    "MonthCloseEvent",
+    "SalesPersonDayProjection",
 ]

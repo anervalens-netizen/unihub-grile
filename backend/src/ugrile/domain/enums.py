@@ -54,3 +54,52 @@ class JobKind(StrEnum):
     FIXTURE_INGEST = "FIXTURE_INGEST"
     TENANT_BOOTSTRAP = "TENANT_BOOTSTRAP"
     NOOP = "NOOP"
+
+
+class EpayCategory(StrEnum):
+    """E-pay observation categories (per agent per store)."""
+
+    UNDER_50 = "UNDER_50"
+    AT_OR_OVER_50 = "AT_OR_OVER_50"
+
+
+class CloseBlockerCode(StrEnum):
+    """Typed close blockers.
+
+    Each blocker represents a deterministic precondition that a month must
+    satisfy before close. Anything that depends on stages beyond S3 (full E-pay
+    refresh, signed Sheet canary readback, external reconciliation) is added
+    here as a typed code so the integrator can wire the missing check later
+    without bypassing existing ones.
+    """
+
+    STORE_DAY_UNCOVERED = "STORE_DAY_UNCOVERED"
+    STORE_DAY_MULTIPLE_WORKING = "STORE_DAY_MULTIPLE_WORKING"
+    PERSON_DAY_MULTIPLE_WORKING = "PERSON_DAY_MULTIPLE_WORKING"
+    INVALID_WORKING_KIND = "INVALID_WORKING_KIND"
+    SALES_MISSING_FOR_WORKED_DAY = "SALES_MISSING_FOR_WORKED_DAY"
+    SALES_ORPHAN_FOR_COVERED_DAY = "SALES_ORPHAN_FOR_COVERED_DAY"
+    TARGET_ZERO_FOR_WORKED_STORE = "TARGET_ZERO_FOR_WORKED_STORE"
+    EPAY_FRESH_READBACK_REQUIRED = "EPAY_FRESH_READBACK_REQUIRED"
+    SHEET_CANARY_REQUIRED = "SHEET_CANARY_REQUIRED"
+    EXTERNAL_RECONCILIATION_REQUIRED = "EXTERNAL_RECONCILIATION_REQUIRED"
+
+
+class CloseAction(StrEnum):
+    """Append-only close audit actions."""
+
+    CLOSE = "CLOSE"
+    REOPEN = "REOPEN"
+
+
+__all__ = [
+    "CloseAction",
+    "CloseBlockerCode",
+    "ConnectorGeneration",
+    "DayStatus",
+    "EpayCategory",
+    "JobKind",
+    "MonthState",
+    "RoleName",
+    "WorkingKind",
+]
