@@ -7,7 +7,8 @@ service call.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -120,6 +121,31 @@ class SchedulePreviewOut(BaseModel):
     warnings: list[dict[str, object]]
 
 
+class PontajRowOut(BaseModel):
+    person_id: str
+    business_date: date
+    status: DayStatus
+    start_time: time | None
+    end_time: time | None
+    pause_minutes: int
+    hours: Decimal
+
+
+class PontajPersonTotalsOut(BaseModel):
+    person_id: str
+    working_days: int
+    leave_days: int
+    off_days: int
+    total_hours: Decimal
+
+
+class PontajMonthOut(BaseModel):
+    month_id: str
+    revision: int
+    rows: list[PontajRowOut]
+    totals: list[PontajPersonTotalsOut]
+
+
 class ConflictOut(BaseModel):
     code: str
     message: str
@@ -178,6 +204,9 @@ __all__ = [
     "JobOut",
     "MonthOut",
     "PersonOut",
+    "PontajMonthOut",
+    "PontajPersonTotalsOut",
+    "PontajRowOut",
     "SchedulePreviewOut",
     "StoreOut",
     "TenantOut",

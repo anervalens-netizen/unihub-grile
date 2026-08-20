@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -21,7 +22,7 @@ from ..domain.projections import (
     derive_pontaj,
     derive_store_coverage,
 )
-from ..repositories.models import Month, Person, PersonDayAbsence, Store
+from ..repositories.models import Month, Person, PersonDayAbsence, PontajProjection, Store
 from ..repositories.models import SiteDayAssignment as AssignmentRow
 
 
@@ -302,12 +303,22 @@ class CalendarService:
             SiteDayAssignment("", r.person_id, r.business_date, DayStatus(r.status), None)
             for r in absence_rows
         ]
-        dates = sorted({c.business_date for c in candidate.values()})
+        self._materialize_pontaj(
+            tenant_id=tenant_id,
+            month=month,
+            revision=new_revision,
+            domains=domains,
+            hours=hours,
+        )
+        dates = [
+            date(month.year, month.month, day)
+            for day in range(1, monthrange(month.year, month.month)[1] + 1)
+        ]
         people_all = sorted(
             {
                 p.id
                 for p in self.session.execute(
-                    select(Person).where(Person.tenant_id == tenant_id)
+                    select(Person).where(Person.tenant_id == tenant_id, Person.is_active.is_(True))
                 ).scalars()
             }
         )
@@ -315,7 +326,7 @@ class CalendarService:
             {
                 s.id
                 for s in self.session.execute(
-                    select(Store).where(Store.tenant_id == tenant_id)
+                    select(Store).where(Store.tenant_id == tenant_id, Store.is_active.is_(True))
                 ).scalars()
             }
         )
@@ -328,3 +339,48 @@ class CalendarService:
             derive_store_coverage(domains, stores_all, dates),
             derive_pontaj(person_cal, hours),
         )
+
+    def _materialize_pontaj(
+        self,
+        *,
+        tenant_id: str,
+        month: Month,
+        revision: int,
+        domains: list[SiteDayAssignment],
+        hours: HoursConfig,
+    ) -> None:
+        """Persist the full active-person x every-day-of-month Pontaj lattice.
+
+        Runs inside the caller's transaction right after the calendar CAS, so a
+        failed or rolled-back apply never leaves a projection behind. Rows are
+        immutable per ``(tenant, month, person, business_date, revision)``:
+        later revisions insert new rows and never touch earlier ones.
+        """
+
+        all_days = [
+            date(month.year, month.month, day)
+            for day in range(1, monthrange(month.year, month.month)[1] + 1)
+        ]
+        active_people = sorted(
+            {
+                p.id
+                for p in self.session.execute(
+                    select(Person).where(Person.tenant_id == tenant_id, Person.is_active.is_(True))
+                ).scalars()
+            }
+        )
+        for row in derive_pontaj(derive_person_calendar(domains, active_people, all_days), hours):
+            self.session.add(
+                PontajProjection(
+                    tenant_id=tenant_id,
+                    month_id=month.id,
+                    person_id=row.person_id,
+                    business_date=row.business_date,
+                    revision=revision,
+                    status=row.status.value,
+                    start_time=row.start,
+                    end_time=row.end,
+                    pause_minutes=row.pause_minutes,
+                    hours=row.hours,
+                )
+            )

@@ -25,7 +25,7 @@ composite columns would not match.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -40,6 +40,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    Time,
     UniqueConstraint,
     func,
     text,
@@ -119,6 +120,43 @@ class ManagerScope(Base, TimestampMixin):
             ["tenant_id", "store_id"],
             ["stores.tenant_id", "stores.id"],
             name="fk_manager_scopes_tenant_store",
+        ),
+    )
+
+
+class ScheduleImportContract(Base, TimestampMixin):
+    """Single-use server-issued contract embedded in an XLSX Manifest."""
+
+    __tablename__ = "schedule_import_contracts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    month_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("months.id"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    base_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    catalog_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_schedule_import_contracts_lookup",
+            "tenant_id",
+            "month_id",
+            "user_id",
+            "token_hash",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            ["users.tenant_id", "users.id"],
+            name="fk_schedule_import_contracts_tenant_user",
         ),
     )
 
@@ -332,6 +370,52 @@ class PersonDayAbsence(Base, TimestampMixin):
             name="fk_person_day_absences_tenant_person",
         ),
         CheckConstraint("status IN ('OFF', 'LEAVE')", name="absence_status_enum"),
+    )
+
+
+class PontajProjection(Base, TimestampMixin):
+    """Complete read-only Pontaj row materialized for a calendar revision."""
+
+    __tablename__ = "pontaj_projections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    month_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("months.id"), nullable=False, index=True
+    )
+    person_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    business_date: Mapped[date] = mapped_column(Date, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    pause_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hours: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "month_id",
+            "person_id",
+            "business_date",
+            "revision",
+            name="uq_pontaj_projection_revision_day",
+        ),
+        Index(
+            "ix_pontaj_projections_current",
+            "tenant_id",
+            "month_id",
+            "revision",
+            "business_date",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "person_id"],
+            ["people.tenant_id", "people.id"],
+            name="fk_pontaj_projections_tenant_person",
+        ),
+        CheckConstraint("status IN ('WORKING', 'OFF', 'LEAVE')", name="pontaj_status_enum"),
     )
 
 
@@ -686,12 +770,14 @@ __all__ = [
     "Tenant",
     "User",
     "ManagerScope",
+    "ScheduleImportContract",
     "Store",
     "Person",
     "StoreAssignment",
     "Month",
     "SiteDayAssignment",
     "PersonDayAbsence",
+    "PontajProjection",
     "SalesStoreDay",
     "SalesPersonDay",
     "EpayObservation",

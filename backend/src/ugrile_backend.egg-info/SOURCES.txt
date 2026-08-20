@@ -28,12 +28,14 @@ src/ugrile/repositories/assignments.py
 src/ugrile/repositories/base.py
 src/ugrile/repositories/models.py
 src/ugrile/repositories/months.py
+src/ugrile/repositories/pontaj.py
 src/ugrile/repositories/scopes.py
 src/ugrile/repositories/stores.py
 src/ugrile/repositories/tenants.py
 src/ugrile/services/__init__.py
 src/ugrile/services/auth.py
 src/ugrile/services/calendar.py
+src/ugrile/services/schedule_contract.py
 src/ugrile/services/schedule_xlsx.py
 src/ugrile/worker/__init__.py
 src/ugrile/worker/jobs.py

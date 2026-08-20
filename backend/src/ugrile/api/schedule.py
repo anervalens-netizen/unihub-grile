@@ -1,9 +1,19 @@
-"""S2 XLSX schedule template, preview and atomic apply endpoints."""
+"""S2 XLSX schedule template, preview, atomic apply and Pontaj endpoints.
+
+Every generated workbook is bound to a server-issued, single-use import
+contract (``schedule_import_contracts``). Preview validates the same contract
+without consuming it; apply locks the contract row, validates it against
+fresh server-side catalog/scope reads, applies the calendar and consumes the
+contract — all in one request transaction. A failed apply rolls the whole
+transaction back, so the contract stays usable and no partial calendar write
+survives.
+"""
 
 from __future__ import annotations
 
 from calendar import monthrange
 from datetime import date
+from decimal import Decimal
 from io import BytesIO
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -12,19 +22,27 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..api.deps import current_principal, db_session
-from ..api.schemas import CalendarProjectionOut, SchedulePreviewOut
+from ..api.schemas import (
+    CalendarProjectionOut,
+    PontajMonthOut,
+    PontajPersonTotalsOut,
+    PontajRowOut,
+    SchedulePreviewOut,
+)
 from ..domain.enums import DayStatus, WorkingKind
-from ..domain.errors import DomainError, StaleRevisionError, ValidationError
+from ..domain.errors import DomainError, ValidationError
 from ..repositories.models import (
     Month,
     Person,
     PersonDayAbsence,
+    ScheduleImportContract,
     Store,
 )
 from ..repositories.models import (
     SiteDayAssignment as AssignmentRow,
 )
 from ..repositories.months import MonthRepository
+from ..repositories.pontaj import PontajRepository
 from ..services.auth import (
     Principal,
     assert_manager_or_admin,
@@ -32,7 +50,8 @@ from ..services.auth import (
     effective_store_ids,
 )
 from ..services.calendar import CalendarChange, CalendarService
-from ..services.schedule_xlsx import build_template, parse_schedule
+from ..services.schedule_contract import consume_contract, issue_contract, validate_contract
+from ..services.schedule_xlsx import ParsedSchedule, build_template, parse_schedule
 
 router = APIRouter(prefix="/months", tags=["schedule"])
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -161,15 +180,27 @@ def schedule_template(
             "manager has no effective store/person scope",
             details={"month_id": month.id},
         )
+    token = issue_contract(
+        session,
+        tenant_id=principal.tenant_id,
+        month=month,
+        user_id=principal.user_id,
+        base_revision=month.revision,
+        stores=stores,
+        people=people,
+        allowed_by_date=allowed_by_date,
+    )
     data = build_template(
         tenant_id=principal.tenant_id,
         month_id=month.id,
         year=month.year,
         month=month.month,
         base_revision=month.revision,
+        contract_token=token,
         people=people,
         stores=stores,
         calendar=_calendar_for_scope(session, principal.tenant_id, month, people, allowed_by_date),
+        allowed_store_ids_by_date=allowed_by_date,
     )
     return StreamingResponse(
         BytesIO(data),
@@ -189,6 +220,39 @@ async def _read_upload(upload: UploadFile) -> bytes:
     if len(data) > 10 * 1024 * 1024:
         raise HTTPException(status_code=413, detail={"code": "XLSX_TOO_LARGE"})
     return data
+
+
+def _validate_contract_for_upload(
+    session: Session,
+    *,
+    parsed: ParsedSchedule,
+    principal: Principal,
+    month: Month,
+    stores: dict[str, str],
+    people: list[dict[str, str]],
+    allowed_by_date: dict[date, set[str]],
+    lock: bool,
+) -> ScheduleImportContract:
+    """Validate the uploaded Manifest contract from fresh server-side reads.
+
+    Raises the underlying :class:`DomainError`; callers decide whether to
+    surface it as a preview error or an HTTP rejection.
+    """
+
+    return validate_contract(
+        session,
+        token=parsed.contract_token,
+        tenant_id=principal.tenant_id,
+        month=month,
+        user_id=principal.user_id,
+        parsed_tenant_id=parsed.tenant_id,
+        parsed_month_id=parsed.month_id,
+        parsed_revision=parsed.base_revision,
+        stores=stores,
+        people=people,
+        allowed_by_date=allowed_by_date,
+        lock=lock,
+    )
 
 
 @router.post("/{month_id}/schedule/preview", response_model=SchedulePreviewOut)
@@ -213,15 +277,26 @@ async def schedule_preview(
         known_person_ids=known_people,
     )
     errors = list(parsed.errors)
-    if parsed.base_revision != month.revision:
+    warnings = list(parsed.warnings)
+    try:
+        _validate_contract_for_upload(
+            session,
+            parsed=parsed,
+            principal=principal,
+            month=month,
+            stores=stores,
+            people=people,
+            allowed_by_date=allowed_by_date,
+            lock=False,
+        )
+    except DomainError as exc:
         errors.append(
             {
-                "code": "STALE_REVISION",
-                "expected": month.revision,
-                "provided": parsed.base_revision,
+                "code": exc.code,
+                "message": exc.message,
+                "details": exc.details,
             }
         )
-    warnings = list(parsed.warnings)
     if not errors:
         try:
             result = CalendarService(session).preview(
@@ -277,34 +352,31 @@ async def schedule_apply(
         stores=stores,
         known_person_ids={row["person_id"] for row in people},
     )
-    errors = list(parsed.errors)
-    if parsed.base_revision != month.revision:
-        if not errors:
-            raise StaleRevisionError(
-                "stale schedule revision",
-                details={
-                    "expected": month.revision,
-                    "provided": parsed.base_revision,
-                },
-            )
-        errors.append(
-            {
-                "code": "STALE_REVISION",
-                "expected": month.revision,
-                "provided": parsed.base_revision,
-            }
-        )
-    if errors:
+    if parsed.errors:
         raise ValidationError(
-            "schedule preview contains blocking errors", details={"errors": errors}
+            "schedule contains blocking errors", details={"errors": parsed.errors}
         )
+    # Lock the contract row first: two concurrent applies of the same
+    # workbook cannot both pass validation, and a failure below rolls back
+    # every change including the consumption marker.
+    contract = _validate_contract_for_upload(
+        session,
+        parsed=parsed,
+        principal=principal,
+        month=month,
+        stores=stores,
+        people=people,
+        allowed_by_date=allowed_by_date,
+        lock=True,
+    )
     result = CalendarService(session).apply(
         month=month,
         tenant_id=principal.tenant_id,
         changes=parsed.changes,
-        expected_revision=parsed.base_revision,
+        expected_revision=contract.base_revision,
         allowed_store_ids_by_date=allowed_by_date,
     )
+    consume_contract(session, contract)
     return CalendarProjectionOut(
         month_id=result.month_id,
         revision=result.revision,
@@ -312,6 +384,80 @@ async def schedule_apply(
         person_calendar_count=len(result.person_calendar),
         coverage_count=len(result.coverage),
         pontaj_count=len(result.pontaj),
+    )
+
+
+@router.get("/{month_id}/pontaj", response_model=PontajMonthOut)
+def get_pontaj(
+    month_id: str,
+    session: Session = Depends(db_session),
+    principal: Principal = Depends(current_principal),
+) -> PontajMonthOut:
+    """Complete persistent Pontaj for the month's current/latest revision.
+
+    Rows are filtered by the caller's effective manager date scope: a row is
+    visible only when the person's home store is inside the scope on that
+    business date. Totals are per visible person.
+    """
+
+    month = MonthRepository(session).get(month_id)
+    assert_same_tenant(principal, month.tenant_id)
+    allowed_by_date = _allowed_by_date(session, principal, month)
+    repo = PontajRepository(session)
+    revision = repo.latest_revision(principal.tenant_id, month.id)
+    if revision is None:
+        return PontajMonthOut(month_id=month.id, revision=month.revision, rows=[], totals=[])
+    rows = repo.list_for_revision(principal.tenant_id, month.id, revision)
+    person_ids = {row.person_id for row in rows}
+    home_stores = {
+        person.id: person.home_store_id
+        for person in session.execute(
+            select(Person).where(Person.tenant_id == principal.tenant_id, Person.id.in_(person_ids))
+        ).scalars()
+    }
+    visible = [
+        row
+        for row in rows
+        if home_stores.get(row.person_id) in allowed_by_date.get(row.business_date, set())
+    ]
+    counts: dict[str, dict[str, int]] = {}
+    total_hours: dict[str, Decimal] = {}
+    for row in visible:
+        bucket = counts.setdefault(
+            row.person_id, {"working_days": 0, "leave_days": 0, "off_days": 0}
+        )
+        if row.status == DayStatus.WORKING.value:
+            bucket["working_days"] += 1
+            total_hours[row.person_id] = total_hours.get(row.person_id, Decimal(0)) + row.hours
+        elif row.status == DayStatus.LEAVE.value:
+            bucket["leave_days"] += 1
+        else:
+            bucket["off_days"] += 1
+    return PontajMonthOut(
+        month_id=month.id,
+        revision=revision,
+        rows=[
+            PontajRowOut(
+                person_id=row.person_id,
+                business_date=row.business_date,
+                status=DayStatus(row.status),
+                start_time=row.start_time,
+                end_time=row.end_time,
+                pause_minutes=row.pause_minutes,
+                hours=row.hours,
+            )
+            for row in visible
+        ],
+        totals=[
+            PontajPersonTotalsOut(
+                person_id=person_id,
+                working_days=bucket["working_days"],
+                leave_days=bucket["leave_days"],
+                off_days=bucket["off_days"],
+                total_hours=total_hours.get(person_id, Decimal(0)),
+            )
+            for person_id, bucket in sorted(counts.items())
+        ],
     )
 
 
