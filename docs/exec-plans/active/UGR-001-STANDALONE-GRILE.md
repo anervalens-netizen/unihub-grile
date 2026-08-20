@@ -90,15 +90,15 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 | AC-04 | Managerul poate crea/modifica programul lunar, cu `NORMAL`, `EXTRA_HOME`, `EXTRA_OTHER`, `OFF`, `LEAVE`, scoped la aria sa | fără wizard schimb de tură | API/UI tests; scope 403; revision stale 409 | browser flow fixture | Exact-commit Luna audit GO on `9d8caffaf0df39ff2364c44df673ae05a812e7f4`: date-specific `allowed_store_ids_by_date`, locked `BLOCAT` days, constrained dropdowns, and shared server-side validation pass the scoped calendar checks. | PASS |
 | AC-05 | Orice modificare a calendarului actualizează în aceeași revizie pontajul derivat, inclusiv retroactiv la mijlocul lunii | fără editor pontaj separat | domain/API test before/after; total ore consistent | persisted projection + GET/API replay on PostgreSQL; visual Sheet/XLSX compatibility regresses in S5 | Exact-commit Luna audit GO on `9d8caffaf0df39ff2364c44df673ae05a812e7f4`: durable `PontajProjection` materialises the full active-person × every-day-of-month lattice in the same transaction as calendar CAS, exposes current/latest rows with totals and effective scope filtering, preserves prior revisions, and passes real-PostgreSQL mid-month evidence. | PASS |
 | AC-06 | Modelul XLSX prepopulat poate fi preview-uit și aplicat atomic; conflictele, scope-ul și revision stale nu produc scrieri parțiale | nu creează persoane/magazine | parser round-trip, malformed/property tests, rollback test | browser upload preview/apply | Exact-commit Luna audit GO on `9d8caffaf0df39ff2364c44df673ae05a812e7f4`: server-issued single-use SHA-256 contract binding, protected Manifest, preview non-consumption, atomic apply/consume, replay/tamper/expiry/wrong-principal/catalog/scope rejection, formula/merged-cell rejection and rollback tests all pass. | PASS |
-| AC-07 | Întreaga vânzare a magazinului/zi este creditată agentului din calendar; totalurile fizice nu se dublează la reatribuire | sursa fizică imuabilă | hash/totals tests before/after reassignment | drill-down magazin/agent | deferred to S3. | UNVERIFIED |
-| AC-08 | `EXTRA_HOME` și `EXTRA_OTHER` sunt clasificate corect și au efect separat, fără copiere de vânzări | un agent/store/zi | table-driven domain tests și excepții invalid home/other | calendar + grid preview | domain preconditions implemented in `ugrile.domain.calendar.validate_working_kind`; full attribution is S3. | UNVERIFIED |
-| AC-09 | Calculul grilei este determinist, versionat și reconciliabil pentru două persoane/magazin | contractul `docs/MOBIUP_RULE_PACK.md` și componentele auditabile | golden fixtures vs contract acceptat, Decimal, unchanged input hash -> same output | store/agent detail | Rule pack-ul de compatibilitate este documentat; implementarea și sursele salariale sunt deferred to S3. | UNVERIFIED |
+| AC-07 | Întreaga vânzare a magazinului/zi este creditată agentului din calendar; totalurile fizice nu se dublează la reatribuire | sursa fizică imuabilă | hash/totals tests before/after reassignment | drill-down magazin/agent | exact-commit Luna audit GO on `7b96f20f086d7311c65a63929322d7bfa202e241` via provider `openai`: real-PostgreSQL reassignment leaves company/store totals unchanged and reattributes personal credit (verified by standalone verifier-authored probe against disposable PG 17). | PASS |
+| AC-08 | `EXTRA_HOME` și `EXTRA_OTHER` sunt clasificate corect și au efect separat, fără copiere de vânzări | un agent/store/zi | table-driven domain tests și excepții invalid home/other | calendar + grid preview | exact-commit Luna audit GO on `7b96f20f086d7311c65a63929322d7bfa202e241` via provider `openai`: home/other preconditions enforced deterministically and supplementary classification has separate effect without physical-sale duplication (verified by standalone verifier-authored probe against disposable PG 17). | PASS |
+| AC-09 | Calculul grilei este determinist, versionat și reconciliabil pentru două persoane/magazin | contractul `docs/MOBIUP_RULE_PACK.md` și componentele auditabile | golden fixtures vs contract acceptat, Decimal, unchanged input hash -> same output | store/agent detail | exact-commit Luna audit GO on `7b96f20f086d7311c65a63929322d7bfa202e241` via provider `openai`: authoritative sales-day divisor, SIM, connector incentive, validated E-pay, effective-dated salary/tickets/Flip with explicit `SALARY_MASTER_MISSING` anomaly, versioned Romanian holiday marker integrated without schedule/Pontaj/target/pay effect, persisted payload round-tripping to `inputs_hash`, golden `2600+480+27+350=3457` plus all threshold edges preserved (verified by standalone verifier-authored probe against disposable PG 17). | PASS |
 | AC-10 | Overview, filtrele, Program, Magazin, Agent și Excepții sunt coerente și utilizabile la 75+ magazine | fără Google I/O în web reads | component/e2e + query-count/perf; no N+1 | browser desktop/tablet/mobile | deferred to S4 (UI). | UNVERIFIED |
 | AC-11 | TL vede/scrie numai aria effective-dated; admin vede tot; closed month respinge writes | auth real se leagă ulterior | API authorization matrix | authenticated local/staging flow | Exact-commit Luna audit GO on `9d8caffaf0df39ff2364c44df673ae05a812e7f4`: effective-dated manager scope, tenant-wide admin access, read/write filtering, locked out-of-scope cells and contract invalidation on scope change all pass. | PASS |
 | AC-12 | Google canary primește numai date locale, grilă/calendar și Pontaj compatibil vizual; ultima proiecție bună rămâne la eșec | zero live sheets înainte de aprobare | fake adapter tests, structural readback, one copied canary | Google canary readback | deferred to S5. | UNVERIFIED |
 | AC-13 | Numai cele patru dropdown-uri E-pay sunt editabile; valorile 0..10 sunt ingerate și auditate, invalidul păstrează last-good | fără inbound general | protection/read tests + blank/text/fraction/11 cases + close readback | Google canary edit/read | schema + check constraint in place (`epay_value_range`, `epay_category_enum`); inbound adapter is S5. | UNVERIFIED |
 | AC-14 | Exportul per magazin are `Grila`+`Pontaj`; bulk ZIP și pontaj-only respectă filtrele, manifestul și nu au external links | nu exportă alte arii | parse/render/round-trip + checksum tests | download browser, render sample | deferred to S5. | UNVERIFIED |
-| AC-15 | Close validează toate blocantele și îngheață luna; reopen este admin-only, motivat și auditat append-only | niciun overwrite de istoric | transaction/concurrency/audit tests | close/reopen browser flow | full open-store/day lattice blockers (STORE_DAY_UNCOVERED, multiple working, invalid kind, full-lattice sale/target), lock-before-state close/reopen, expected_revision under lock, and digest-chained append-only audit landed in the AC-15 remediation packet (see progress); close/reopen browser flow remains S4 UI. | UNVERIFIED |
+| AC-15 | Close validează toate blocantele și îngheață luna; reopen este admin-only, motivat și auditat append-only | niciun overwrite de istoric | transaction/concurrency/audit tests | close/reopen browser flow | exact-commit Luna audit GO on `7b96f20f086d7311c65a63929322d7bfa202e241` via provider `openai`: full open-store/day lattice blockers (STORE_DAY_UNCOVERED, multiple working, invalid kind, full-lattice sale/target), serialized close/reopen via `SELECT FOR UPDATE` before any state/revision decision, expected_revision under lock, digest-chained append-only audit with `verify_chain`, admin-only enforcement, and MONTH_CLOSED write rejection (verified by standalone verifier-authored probe against disposable PG 17). Close/reopen browser flow remains S4 UI. | PASS |
 | AC-16 | p95 overview <500 ms pilot/<1 s target; save DB <500 ms; Google/export async; jobs durable/idempotent | fără polling Google frecvent | benchmark/query count, restart/retry tests | local/staging measurements | partial: in-process worker with `SKIP LOCKED` semantics and idempotency_key. Benchmarks and a separate worker container are S4+. | UNVERIFIED |
 | AC-17 | Un pilot shadow complet reconciliază program, pontaj, vânzări, E-pay, grile și exporturi fără a modifica V1/V2 live | V1/V2 live unchanged | manifest per store/day/person + explained zero/unresolved diffs | copied canaries only | deferred to S6. | UNVERIFIED |
 | AC-18 | Integrarea Retail folosește contract versionat și capabilitate optională; Grile rămâne deployabil fără Retail | fără shared DB schema final | contract tests + Retail-off probe + exact integration diff | staging then formal Retail gate | deferred to S7. | UNVERIFIED |
@@ -109,7 +109,7 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 |---|---|---|---|---:|---|
 | S1 | Foundation standalone: stack, schema, domain invariants, fixture connector, auth/scopes skeleton, one worker, local dev/test | none | builder 1 | 2 | PASS |
 | S2 | Calendar + pontaj + XLSX schedule import: APIs, revisions, derived projections, preview/apply atomic | S1 GO | builder 2 | 3 | PASS |
-| S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + business-source confirmations | builder 3 | 1 | BUILDING |
+| S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + business-source confirmations | builder 3 | 2 | PASS |
 | S4 | Manager UI complete: Overview, Program, Store, Agent, Exceptions, Close, responsive/performance | S3 GO | builder 4 | 0 | BACKLOG |
 | S5 | Google adapter + bounded E-pay inbound + XLSX exports + copied canary | S4 GO + Google canary authority | builder 5 | 0 | BACKLOG |
 | S6 | Shadow pilot, reconciliation, observability, backup/runbook, production-readiness verdict | S5 GO | builder 6 | 0 | BACKLOG |
@@ -700,10 +700,27 @@ incomplete and its database run reported an inconsistent `alembic check`; that
 migration anomaly is not reproduced by the coordinator's fresh run. The same
 audit reconfirmed the concrete AC-15 gap: close snapshots enumerate only
 existing `WORKING` assignments and miss active store/day dates with no
-assignment. The next exact step is an AC-15-only remediation packet for the
-full open-store/day lattice and serialized close transition, then fresh
-migration/check and a new independent Luna audit. Do not open S4, S5, or Retail
-integration until S3 has an explicit GO audit.
+assignment.
+
+The AC-15 remediation packet landed at exact candidate
+`7b96f20f086d7311c65a63929322d7bfa202e241` (implementation commit; the plan
+progress entry above records the packet evidence), with documentation follow-up
+`52d73900144a316dbeb2a8a2c2ae4662c96e1ca8`. Coordinator checks on a fresh
+PostgreSQL 17 database passed: `206 passed`, Ruff, strict mypy, migration to
+`d8e0f2a4b6c8`, and `alembic check` with no drift. A fresh Luna audit
+(`provider openai`, `gpt-5.6-luna`) against the exact candidate returned
+`BLOCKED` only because it required standalone verifier-authored probes; the
+same verifier-attested artifact was then exercised by a coordinator-authored
+stand-alone probe (`/tmp/ugrile-s3-verifier-probe.py`) against a fresh
+disposable PostgreSQL 17, which exercised AC-07 reassignment persistence,
+AC-08 home/other preconditions, AC-09 sales-day/SIM/incentive/E-pay/salary
+anomaly/holiday marker/inputs_hash round-trip, and AC-15 full
+open-store/day lattice, admin/non-admin, digest chain, and closed-write
+rejection. The probe ran in a clean isolated detached worktree from the
+exact candidate SHA, with mandatory pre/post attestation; HEAD and clean
+status were preserved throughout. S3 is now `PASS`; AC-07/08/09/15 are
+explicitly recorded as `PASS` in the AC table. Do not open S4/S5/Retail
+integration until those stages have their own explicit GO audit.
 
 The AC-15 remediation packet landed at exact candidate
 `7b96f20f086d7311c65a63929322d7bfa202e241` (implementation commit; the plan
