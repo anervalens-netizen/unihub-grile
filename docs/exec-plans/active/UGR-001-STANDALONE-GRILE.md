@@ -373,6 +373,37 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   explicit Luna workflow was cancelled before returning a verdict; neither
   attempt modified the candidate worktree. Fresh bounded Luna audit remains the
   only next gate.
+- 2026-08-20: AC-09 remediation builder packet landed in exact commit
+  `be009ce8b3d4f83c32deaca954b1dd156a7a4301` (ahead of `039d70c`, only the
+  pre-existing control-state edit was present in the worktree before the
+  packet). The five concrete Luna AC-09 findings are repaired: (1) per-day
+  target uses the connector `sales_days` divisor
+  (`target_day = monthly target / zile_vanzare_magazin`) with an explicit
+  `SALES_DAY_COUNT_MISSING` marker and deterministic calendar-length
+  fallback; (2) SIM quantity rides on `SalesStoreDay`, monthly incentive
+  comes from the versioned `IncentiveInput` row, and valid E-pay
+  observations flow via `latest_snapshot` — no more hardcoded
+  `sim_quantity=0`, `incentive=0`, `EpayObservationSnapshot.empty()` in the
+  persisted/API payload; (3) a missing effective-dated HR/payroll master is
+  an explicit deterministic `SALARY_MASTER_MISSING` anomaly marker (zero
+  substitution documented, never silent); (4) `HolidayCalendar`/
+  `HolidayOverride` are integrated into the canonical grid inputs with
+  informational-only semantics (no schedule/Pontaj/target/pay effect) plus a
+  minimal typed admin/read API (`GET/POST /months/{id}/holidays`,
+  `POST /months/{id}/holidays/override`); (5) `compute_and_persist` persists
+  the actual canonical inputs dict used for each snapshot
+  (`hash_inputs(payload["inputs"]) == inputs_hash` round-trips) instead of
+  the synthetic one-day zero payload. v1 connector types extend minimally
+  (`sim_quantity`, `sales_days`, `IncentiveRecord`) and Alembic 0006
+  (`c6d8e0f2a4b6`) adds `sales_store_day.sim_quantity`,
+  `store_targets.sales_days` and `incentive_inputs`; `alembic upgrade head`
+  + `alembic check` clean on PostgreSQL 17. Checks on the exact commit:
+  `185 passed` (174 baseline + 11 new: 8 service, 2 API, 1 PostgreSQL
+  integration), `ruff check src tests` clean, `mypy --strict src` clean on
+  56 source files. The new focused tests fail on the pre-remediation source.
+  AC-09 remains `UNVERIFIED` (only a read-only audit may mark it PASS);
+  AC-15's open-store/day close lattice and complete close-transition proof
+  gaps are NOT part of this packet and remain outstanding.
 
 ## Attempts, failures, and discoveries
 
@@ -605,9 +636,36 @@ The S3 implementation candidate is already committed at
 `3f82199e5d8d3c89d5b1b87e2da98c4fc2ac9099`; the documentation follow-up is
 `f3e935a`. The previous generic subagent audit was stopped before completion,
 and a first explicit Luna workflow attempt was cancelled before returning a
-verdict. The next exact step is a fresh bounded read-only GPT-5.6 Luna workflow
-through provider `openai` against the exact candidate. Do not open S4, S5, or
-Retail integration until S3 has an explicit GO audit.
+verdict. A fresh explicit Luna audit first returned `BLOCKED` because its
+PostgreSQL connection used the unavailable default endpoint; the coordinator
+reproduced the limitation and then independently ran a fresh disposable
+PostgreSQL 17 migration/check plus `9 passed` integration suite on the exact
+candidate. A second fresh Luna audit with that database returned `FAIL`:
+AC-07 and AC-08 passed, while AC-09 and AC-15 exposed concrete implementation
+gaps (authoritative grid input assembly/persistence, full open-store/day close
+lattice, and complete close transition proof). Its post-test identity
+reattestation was incomplete, so it is not a final acceptance gate; the
+concrete findings are recorded for remediation only. The first shared builder
+packet remained active across the next coordinator round without producing
+source changes or a handoff, so it was interrupted safely; the workspace still
+contains only this control-state edit. The next exact step is a fresh bounded
+builder packet repairing the demonstrated AC-09/AC-15 gaps,
+then a new exact candidate and fresh bounded read-only GPT-5.6 Luna audit
+through provider `openai`. Do not open S4, S5, or Retail integration until S3
+has an explicit GO audit.
+
+The AC-09 remediation packet landed at exact candidate
+`be009ce8b3d4f83c32deaca954b1dd156a7a4301` (implementation commit; the plan
+progress entry above records the packet evidence). The five concrete AC-09
+findings are repaired and the focused tests fail on the pre-remediation
+source; the remaining demonstrated gap from the second Luna audit is the
+AC-15 slice (full open-store/day close lattice and complete close transition
+proof), which this packet deliberately did not touch. The next exact step is
+a fresh bounded read-only GPT-5.6 Luna audit through provider `openai`
+against `be009ce8b3d4f83c32deaca954b1dd156a7a4301`; an AC-15 remediation
+packet follows if that audit (or its successor) demonstrates remaining close
+gaps. Do not open S4, S5, or Retail integration until S3 has an explicit GO
+audit.
 
 ## Resume procedure
 
