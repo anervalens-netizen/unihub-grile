@@ -7,14 +7,18 @@ external dependencies and uses a real FastAPI TestClient against an
 in-memory SQLite engine. The seeded store count is 80 (one over the
 contract minimum) so the per-store fan-out check is meaningful.
 
-The benchmark writes a raw numbers file under
-``.agent/evidence/UGR-001/S4/perf.txt`` for the handoff.
+The benchmark optionally writes a raw numbers file to a NON-TRACKED path
+for human handoff. The path is controlled by the ``UGR_S4_PERF_OUT``
+environment variable and defaults to ``tempfile.gettempdir() /
+ugrile-s4-perf.txt`` so the in-repo tracked tree is never mutated by the
+test run (verifier mandatory clean post-attestation).
 """
 
 from __future__ import annotations
 
 import os
 import statistics
+import tempfile
 import time
 from collections.abc import Iterable
 from datetime import date
@@ -124,11 +128,37 @@ def _percentile(samples: Iterable[float], fraction: float) -> float:
     return values[idx]
 
 
+def _default_perf_sink() -> Path:
+    """Return a non-tracked path for the perf summary.
+
+    The default lives under ``tempfile.gettempdir()`` so the pytest run
+    never touches the repository tracked tree. Callers can override via
+    the ``UGR_S4_PERF_OUT`` environment variable (used by the human
+    handoff: ``UGR_S4_PERF_OUT=/tmp/ugrile-s4-perf.txt pytest ...``).
+    """
+
+    raw = os.environ.get("UGR_S4_PERF_OUT")
+    if raw:
+        return Path(raw)
+    return Path(tempfile.gettempdir()) / "ugrile-s4-perf.txt"
+
+
 def _write_perf_evidence(*, samples: dict[str, list[float]]) -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    evidence_dir = repo_root / ".agent" / "evidence" / "UGR-001" / "S4"
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    target = evidence_dir / "perf.txt"
+    """Write a human-readable perf summary to a non-tracked path.
+
+    The target path is controlled by ``UGR_S4_PERF_OUT`` and defaults to
+    ``tempfile.gettempdir()/ugrile-s4-perf.txt``. The function silently
+    no-ops when ``UGR_S4_PERF_OUT`` is set to an empty string, which is
+    the documented opt-out for CI runs that only need the assertions.
+    The destination must never be inside the repository tracked tree
+    (verifier mandatory clean post-attestation).
+    """
+
+    raw = os.environ.get("UGR_S4_PERF_OUT", None)
+    if raw is not None and raw == "":
+        return
+    target = _default_perf_sink()
+    target.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for label, runs in samples.items():
         if not runs:
