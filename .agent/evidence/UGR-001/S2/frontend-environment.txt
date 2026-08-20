@@ -1,16 +1,16 @@
-UGR-001 S2 candidate cfba078fe9d129db6bfa7c6bf84f2fe98ba865b7
+UGR-001 S2 exact implementation commit 9d8caffaf0df39ff2364c44df673ae05a812e7f4
 
-No frontend files changed in S2. Existing frontend checks were replayed:
+No frontend files changed in S2. Existing frontend checks remain environment-
+limited:
 
   pnpm exec tsc --noEmit
-    FAIL: TS2688 cannot find type definitions for vite/client and vitest/globals
+    FAIL: missing vite/client and vitest/globals type definitions
   pnpm exec vitest run
     FAIL: cannot find @rollup/rollup-linux-x64-gnu
   pnpm run build
     FAIL at tsc with the same missing vite/client and vitest/globals types
 
-The local pnpm install is environment-limited by a root-owned node_modules/.pnpm
-store and missing optional packages. A frozen pnpm reinstall attempted from the
-local store but failed with EACCES and was not retried destructively. This is
-pre-existing frontend toolchain state; S2 is backend-scoped and changed no
-frontend source.
+The local pnpm install is environment-limited by the root-owned node_modules/.pnpm
+store and missing optional packages. No destructive reinstall was attempted.
+This is pre-existing frontend toolchain state; S2 is backend-scoped and changed
+no frontend source. It is not an S2 acceptance-criteria failure.

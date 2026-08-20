@@ -1,4 +1,4 @@
-UGR-001 S2 candidate cfba078fe9d129db6bfa7c6bf84f2fe98ba865b7
+UGR-001 S2 exact implementation commit 9d8caffaf0df39ff2364c44df673ae05a812e7f4
 
 Commands:
   backend/.venv/bin/ruff check backend/src backend/tests
@@ -7,8 +7,8 @@ Commands:
 
 Results:
   All checks passed!
-  Success: no issues found in 40 source files
-  git diff --check: clean
+  Success: no issues found in 42 source files
+  git diff --check: clean on the audited implementation commit
 
-The project dev dependencies include types-openpyxl==3.1.5.20260807;
-openpyxl imports are strict-mypy clean without suppression comments.
+The explicit GPT-5.6 Luna exact-commit audit independently confirmed Ruff and
+mypy results.

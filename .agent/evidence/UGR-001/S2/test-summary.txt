@@ -1,18 +1,22 @@
-UGR-001 S2 candidate cfba078fe9d129db6bfa7c6bf84f2fe98ba865b7
+UGR-001 S2 exact implementation commit 9d8caffaf0df39ff2364c44df673ae05a812e7f4
 
 Command:
   backend/.venv/bin/python -m pytest backend/tests -q
 
 Result:
-  49 passed, 1 warning
+  86 passed, 1 warning in 18.06s
+
+Independent exact-commit Luna audit confirmed the same result.
 
 Focused S2 coverage includes:
   - calendar OFF/LEAVE persistence, revision CAS and stale rejection;
   - effective-dated manager write/read scope;
-  - person/store/Pontaj projections and configurable hours;
-  - XLSX round-trip, per-person dropdowns, protected hidden technical lists;
-  - malformed/unknown/duplicate input, coverage/kind preview errors;
-  - prepopulation after apply and stale XLSX apply with HTTP 409;
+  - persistent full active-person x every-day Pontaj lattice and totals;
+  - immutable prior Pontaj revisions and rollback behavior;
+  - XLSX server-issued contract, protected Manifest, date-specific dropdowns,
+    locked BLOCAT cells and hidden technical lists;
+  - malformed/unknown/duplicate/formula/merged-cell input rejection;
+  - contract tamper, expiry, wrong-principal, catalog/scope change and replay;
   - no-write preview and atomic apply behavior.
 
 No live Retail, Google Sheets, employee, salary, or production data was used.

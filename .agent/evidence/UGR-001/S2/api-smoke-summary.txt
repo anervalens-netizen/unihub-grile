@@ -1,0 +1,17 @@
+UGR-001 S2 exact implementation commit 9d8caffaf0df39ff2364c44df673ae05a812e7f4
+
+A fresh PostgreSQL 17 scratch container was migrated through d4e6f8a0b2c4 and
+exercised through FastAPI TestClient with sanitized synthetic records only.
+
+Passed probes:
+  - admin template -> preview -> apply;
+  - 3 people x 31 August days = 93 persisted Pontaj rows;
+  - GET /months/{month_id}/pontaj returns the complete lattice;
+  - replay of the consumed workbook returns 409 CONTRACT_CONSUMED;
+  - Manifest base_revision tamper is rejected;
+  - partial manager scope renders out-of-scope S2 as locked BLOCAT;
+  - tampering that blocked cell is rejected in preview/apply with 403;
+  - invalid manager apply leaves the calendar revision unchanged.
+
+The scratch container and synthetic database were removed after the probe. No
+Retail, Google Sheets, production, credential, salary, or employee data was used.

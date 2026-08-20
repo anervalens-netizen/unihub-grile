@@ -1,0 +1,44 @@
+# UGR-001 S2 final independent audit
+
+Audit target:
+  repository: /opt/UniHub/unihub-grile
+  exact commit: 9d8caffaf0df39ff2364c44df673ae05a812e7f4
+  branch: main
+  worktree: clean
+
+Routing verification:
+  provider: openai
+  model: gpt-5.6-luna
+  session cost-meter: session-82272361-25ec-480e-8fdb-27044cc11175
+  session ledger source: openai / gpt-5.6-luna
+
+Verdict: GO / PASS
+
+Exact checks:
+  - ruff check backend/src backend/tests: PASS
+  - mypy --strict backend/src: PASS, 42 source files
+  - pytest backend/tests -q: PASS, 86 passed, 1 warning in 18.06s
+  - fresh PostgreSQL 17 alembic upgrade head: PASS through d4e6f8a0b2c4
+  - fresh PostgreSQL alembic check: PASS, no new upgrade operations
+  - scratch PostgreSQL integration: PASS, 6 passed in 5.14s
+
+Acceptance criteria:
+  - AC-04: PASS — revisioned calendar, effective-dated scope, locked BLOCAT,
+    date-specific dropdowns, server-side preview/apply validation.
+  - AC-05: PASS — complete persistent Pontaj lattice, same-transaction apply,
+    immutable prior revisions, readable totals/scope filtering, real PostgreSQL
+    mid-month before/after proof.
+  - AC-06: PASS — server-issued SHA-256 single-use contract, protected Manifest,
+    preview non-consumption, atomic apply/consume, replay/tamper/expiry/
+    wrong-principal/catalog/scope rejection and rollback.
+  - Relevant AC-11: PASS — tenant-safe effective-dated manager authorization,
+    admin tenant-wide access, read/write filtering and contract invalidation on
+    scope change.
+
+No concrete blocking file:line defect was identified. The audit did not touch
+Retail, legacy salary grids, live Google Sheets, production data, credentials,
+or persistent application data. No long-lived server or fragile concurrent HTTP
+probe was used.
+
+S3 remains blocked only by the documented business-source decisions: fixed
+salary/ticket source, Flip status, holiday list/effects, and close authority.

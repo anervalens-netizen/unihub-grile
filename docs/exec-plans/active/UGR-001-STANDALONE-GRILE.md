@@ -87,14 +87,14 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 | AC-01 | Aplicația standalone pornește local cu API, frontend, PostgreSQL și un singur worker; health/readiness sunt determinate fără Retail/Google | Retail și legacy Grile | build + test + local health; oprirea Retail/Google fixture nu blochează read UI | local compose/systemd dev probe | Independent audit on `153d283d6eacf47b354a07983b7b12cc0a8c4101`: health/readiness, worker entrypoint and single execution authority PASS; Compose startup statically PASS, live re-probe environment-limited by Docker DNS/apt resolution | PASS |
 | AC-02 | Schema și motorul impun max. un agent per magazin/zi și max. un magazin per agent/zi | datele fixture | teste concurente + constrângeri DB; conflictele sunt respinse determinist | API conflict 409 | Independent audit on `153d283d6eacf47b354a07983b7b12cc0a8c4101`: real PostgreSQL concurrent races 3/3 PASS, DB indexes and API 200/409/409 probes PASS | PASS |
 | AC-03 | Fixture connector versionat furnizează magazine, persoane, targete și vânzări magazin/zi fără import din codul/schema Retail | Stage 1–6 read-only Retail | search/import-boundary test + fixture ingest idempotent | ingest status local | Independent audit on `153d283d6eacf47b354a07983b7b12cc0a8c4101`: versioned targets, idempotent ingest, tenant-safe IDs/FKs, worker tenant payload and zero Retail imports PASS | PASS |
-| AC-04 | Managerul poate crea/modifica programul lunar, cu `NORMAL`, `EXTRA_HOME`, `EXTRA_OTHER`, `OFF`, `LEAVE`, scoped la aria sa | fără wizard schimb de tură | API/UI tests; scope 403; revision stale 409 | browser flow fixture | Remediation implemented in the uncommitted worktree: date-specific `allowed_store_ids_by_date` is passed into template generation, out-of-scope days render as locked `BLOCAT` (parses as no change), dropdowns are constrained to the writable stores, and preview/apply share one server-side per-date scope validation. Partial-month scope, tampered-blocked-cell and stale tests added. Awaiting fresh audit. | UNVERIFIED |
-| AC-05 | Orice modificare a calendarului actualizează în aceeași revizie pontajul derivat, inclusiv retroactiv la mijlocul lunii | fără editor pontaj separat | domain/API test before/after; total ore consistent | persisted projection + GET/API replay on PostgreSQL; visual Sheet/XLSX compatibility regresses in S5 | Remediation implemented in the uncommitted worktree: a durable `PontajProjection` model/migration materialises the full active-person × every-day-of-month lattice (OFF/LEAVE included) in the same transaction as the calendar CAS for both JSON and XLSX applies; `GET /months/{month_id}/pontaj` reads current/latest rows with per-person totals, filtered by effective manager date scope; previous revisions stay immutable. Real-PostgreSQL before/after mid-month test added. Awaiting fresh audit. | UNVERIFIED |
-| AC-06 | Modelul XLSX prepopulat poate fi preview-uit și aplicat atomic; conflictele, scope-ul și revision stale nu produc scrieri parțiale | nu creează persoane/magazine | parser round-trip, malformed/property tests, rollback test | browser upload preview/apply | Remediation implemented in the uncommitted worktree: every workbook is bound to a server-issued single-use contract (SHA-256 stored in `schedule_import_contracts`, bound to tenant/month/user/base revision/catalog hash/date-specific scope), embedded in the protected Manifest; preview validates without consuming, apply locks/validates/applies/consumes in one transaction with rollback on failure; modified manifest tenant/month/revision/token, wrong user/tenant, changed catalog/scope, expired or consumed tokens are rejected deterministically; formula and merged day cells are rejected. Tamper/stale/consumed-replay/atomic-rollback tests added. Awaiting fresh audit. | UNVERIFIED |
+| AC-04 | Managerul poate crea/modifica programul lunar, cu `NORMAL`, `EXTRA_HOME`, `EXTRA_OTHER`, `OFF`, `LEAVE`, scoped la aria sa | fără wizard schimb de tură | API/UI tests; scope 403; revision stale 409 | browser flow fixture | Exact-commit Luna audit GO on `9d8caffaf0df39ff2364c44df673ae05a812e7f4`: date-specific `allowed_store_ids_by_date`, locked `BLOCAT` days, constrained dropdowns, and shared server-side validation pass the scoped calendar checks. | PASS |
+| AC-05 | Orice modificare a calendarului actualizează în aceeași revizie pontajul derivat, inclusiv retroactiv la mijlocul lunii | fără editor pontaj separat | domain/API test before/after; total ore consistent | persisted projection + GET/API replay on PostgreSQL; visual Sheet/XLSX compatibility regresses in S5 | Exact-commit Luna audit GO on `9d8caffaf0df39ff2364c44df673ae05a812e7f4`: durable `PontajProjection` materialises the full active-person × every-day-of-month lattice in the same transaction as calendar CAS, exposes current/latest rows with totals and effective scope filtering, preserves prior revisions, and passes real-PostgreSQL mid-month evidence. | PASS |
+| AC-06 | Modelul XLSX prepopulat poate fi preview-uit și aplicat atomic; conflictele, scope-ul și revision stale nu produc scrieri parțiale | nu creează persoane/magazine | parser round-trip, malformed/property tests, rollback test | browser upload preview/apply | Exact-commit Luna audit GO on `9d8caffaf0df39ff2364c44df673ae05a812e7f4`: server-issued single-use SHA-256 contract binding, protected Manifest, preview non-consumption, atomic apply/consume, replay/tamper/expiry/wrong-principal/catalog/scope rejection, formula/merged-cell rejection and rollback tests all pass. | PASS |
 | AC-07 | Întreaga vânzare a magazinului/zi este creditată agentului din calendar; totalurile fizice nu se dublează la reatribuire | sursa fizică imuabilă | hash/totals tests before/after reassignment | drill-down magazin/agent | deferred to S3. | UNVERIFIED |
 | AC-08 | `EXTRA_HOME` și `EXTRA_OTHER` sunt clasificate corect și au efect separat, fără copiere de vânzări | un agent/store/zi | table-driven domain tests și excepții invalid home/other | calendar + grid preview | domain preconditions implemented in `ugrile.domain.calendar.validate_working_kind`; full attribution is S3. | UNVERIFIED |
 | AC-09 | Calculul grilei este determinist, versionat și reconciliabil pentru două persoane/magazin | contractul `docs/MOBIUP_RULE_PACK.md` și componentele auditabile | golden fixtures vs contract acceptat, Decimal, unchanged input hash -> same output | store/agent detail | Rule pack-ul de compatibilitate este documentat; implementarea și sursele salariale sunt deferred to S3. | UNVERIFIED |
 | AC-10 | Overview, filtrele, Program, Magazin, Agent și Excepții sunt coerente și utilizabile la 75+ magazine | fără Google I/O în web reads | component/e2e + query-count/perf; no N+1 | browser desktop/tablet/mobile | deferred to S4 (UI). | UNVERIFIED |
-| AC-11 | TL vede/scrie numai aria effective-dated; admin vede tot; closed month respinge writes | auth real se leagă ulterior | API authorization matrix | authenticated local/staging flow | Remediation implemented in the uncommitted worktree: partial-month effective scopes render locked `BLOCAT` cells instead of editable days, template choices and parsed changes are date-specific, and preview/apply share the same server-side scope; read endpoints (assignments, catalog, Pontaj) filter by effective manager date scope. Awaiting fresh audit. | UNVERIFIED |
+| AC-11 | TL vede/scrie numai aria effective-dated; admin vede tot; closed month respinge writes | auth real se leagă ulterior | API authorization matrix | authenticated local/staging flow | Exact-commit Luna audit GO on `9d8caffaf0df39ff2364c44df673ae05a812e7f4`: effective-dated manager scope, tenant-wide admin access, read/write filtering, locked out-of-scope cells and contract invalidation on scope change all pass. | PASS |
 | AC-12 | Google canary primește numai date locale, grilă/calendar și Pontaj compatibil vizual; ultima proiecție bună rămâne la eșec | zero live sheets înainte de aprobare | fake adapter tests, structural readback, one copied canary | Google canary readback | deferred to S5. | UNVERIFIED |
 | AC-13 | Numai cele patru dropdown-uri E-pay sunt editabile; valorile 0..10 sunt ingerate și auditate, invalidul păstrează last-good | fără inbound general | protection/read tests + blank/text/fraction/11 cases + close readback | Google canary edit/read | schema + check constraint in place (`epay_value_range`, `epay_category_enum`); inbound adapter is S5. | UNVERIFIED |
 | AC-14 | Exportul per magazin are `Grila`+`Pontaj`; bulk ZIP și pontaj-only respectă filtrele, manifestul și nu au external links | nu exportă alte arii | parse/render/round-trip + checksum tests | download browser, render sample | deferred to S5. | UNVERIFIED |
@@ -108,7 +108,7 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 | Stage | Scope / livrabil mare | Depends on | Owner | Attempts | State |
 |---|---|---|---|---:|---|
 | S1 | Foundation standalone: stack, schema, domain invariants, fixture connector, auth/scopes skeleton, one worker, local dev/test | none | builder 1 | 2 | PASS |
-| S2 | Calendar + pontaj + XLSX schedule import: APIs, revisions, derived projections, preview/apply atomic | S1 GO | builder 2 | 3 | BUILDING |
+| S2 | Calendar + pontaj + XLSX schedule import: APIs, revisions, derived projections, preview/apply atomic | S1 GO | builder 2 | 3 | PASS |
 | S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + business-source confirmations | builder 3 | 0 | BLOCKED |
 | S4 | Manager UI complete: Overview, Program, Store, Agent, Exceptions, Close, responsive/performance | S3 GO | builder 4 | 0 | BACKLOG |
 | S5 | Google adapter + bounded E-pay inbound + XLSX exports + copied canary | S4 GO + Google canary authority | builder 5 | 0 | BACKLOG |
@@ -348,8 +348,11 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   + 8 real PostgreSQL integration incl. the new before/after mid-month Pontaj
   test), ruff clean, `mypy --strict` clean on 42 source files, fresh Alembic
   chain lands at `d4e6f8a0b2c4` on PostgreSQL 17 with `alembic check` reporting
-  zero drift. The tree is intentionally left uncommitted for the Luna
-  verification pass.
+  zero drift. The implementation was committed as `9d8caffaf0df39ff2364c44df673ae05a812e7f4`.
+- 2026-08-20: Explicit GPT-5.6 Luna final gate through provider `openai` audited
+  exact commit `9d8caffaf0df39ff2364c44df673ae05a812e7f4` read-only and returned
+  GO/PASS for AC-04, AC-05, AC-06 and relevant AC-11. S2 is now PASS; S3
+  remains BLOCKED only by the four documented business-source decisions.
 
 ## Attempts, failures, and discoveries
 
@@ -493,6 +496,10 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   sandbox was limited by external Docker DNS/apt resolution, while the
   committed Compose routing is statically verified and the developer-host
   proof is captured in `.agent/evidence/UGR-001/S1/compose-stack-proof.txt`.
+- S2 final audit on exact commit `9d8caffaf0df39ff2364c44df673ae05a812e7f4`:
+  explicit GPT-5.6 Luna via provider `openai` returned GO/PASS for AC-04,
+  AC-05, AC-06 and relevant AC-11; `86 passed`, Ruff, mypy, fresh PostgreSQL
+  migration/check and integration `6 passed`.
 
 ## Risks and remaining work
 
@@ -510,31 +517,28 @@ S7 gate: AC-18 plus a separately approved cutover contract.
 
 ## Next exact step
 
-S1 remains GO/PASS. S2 attempt 3 has implemented all three NO-GO remediations in
-the uncommitted worktree (HEAD `9635f4114e674ff6e693d5e3895cc46a7f8bcc13`) and
-stopped for the independent audit:
+S2 is GO/PASS at exact commit `9d8caffaf0df39ff2364c44df673ae05a812e7f4`.
+The explicit GPT-5.6 Luna read-only audit through provider `openai` returned GO
+for AC-04, AC-05, AC-06 and relevant AC-11 on a clean worktree:
 
-1. XLSX tamper-proof import contract: server-issued single-use token stored only
+1. XLSX contract remediation passed: server-issued single-use token stored only
    as SHA-256, bound to tenant/month/user/base revision/catalog hash/date-specific
-   scope, embedded in the protected Manifest; preview validates without consuming;
-   apply locks, validates, applies and consumes in one transaction; replay and all
-   tamper/expiry/wrong-user/tenant/catalog/scope changes are rejected; formula and
-   merged day cells are rejected.
-2. Date-specific manager scope in template generation: out-of-scope days render
-   as locked `BLOCAT` cells (parse as no change), editable choices are
-   constrained, preview/apply share one server-side per-date validation.
-3. Persistent Pontaj: `PontajProjection` rows materialised for every calendar
-   apply (JSON and XLSX) in the same transaction as the calendar CAS, previous
-   revisions immutable, readable via `GET /months/{month_id}/pontaj` with
-   per-person totals and effective-scope filtering.
-4. Evidence ready for re-audit: `86` pytest (78 SQLite + 8 PostgreSQL
-   integration incl. real-PostgreSQL mid-month before/after Pontaj replay), ruff
-   clean, `mypy --strict` clean on 42 source files, fresh Alembic chain through
-   `0004_schedule_contracts_pontaj` (`d4e6f8a0b2c4`) with `alembic check` zero
-   drift. The worktree is left uncommitted for the Luna verification pass.
+   scope, protected Manifest, preview non-consumption, atomic apply/consume,
+   replay/tamper/expiry/wrong-principal/catalog/scope rejection, and
+   formula/merged-cell rejection.
+2. Date-specific manager scope passed: out-of-scope days are locked `BLOCAT`,
+   parse as no change, editable choices are constrained by date, and
+   preview/apply share server-side validation.
+3. Persistent Pontaj passed: full active-person × every-day lattice, same
+   transaction as calendar CAS, immutable prior revisions, readable endpoint
+   with totals/effective scope filtering, and real-PostgreSQL mid-month proof.
+4. Audit evidence: `86 passed`, Ruff clean, mypy clean on 42 source files,
+   fresh Alembic chain through `d4e6f8a0b2c4` with zero drift, and PostgreSQL
+   integration `6 passed`.
 
-Stop after the fresh independent S2 gate passes; S3 stays blocked until the
-audit verdict and the four business-source decisions are confirmed.
+S3 remains BLOCKED until the four documented business-source decisions are
+confirmed: fixed salary/ticket source, `Flip`, holiday list/effects, and close
+authority. No S3 implementation starts before those decisions.
 
 ## Resume procedure
 
