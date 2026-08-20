@@ -1,0 +1,33 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+node_modules/
+dist/
+coverage/
+.coverage
+htmlcov/
+outputs/
+tmp/
+*.log
+*.sqlite3
+*.xlsx
+*.zip
+
+# Evidence is opt-in: do not accidentally commit raw logs, employee data, or
+# copied Google artifacts. Add only sanitized summaries explicitly when needed.
+.agent/evidence/**
+!.agent/evidence/.gitkeep
+
+# Credentials and provider files must never enter Git.
+config/google/
+credentials*.json
+token*.json
+service-account*.json
+
