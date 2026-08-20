@@ -82,9 +82,9 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 
 | ID | Observable behavior | Must not change | Verification and expected result | Runtime proof | Evidence | Status |
 |---|---|---|---|---|---|---|
-| AC-01 | Aplicația standalone pornește local cu API, frontend, PostgreSQL și un singur worker; health/readiness sunt determinate fără Retail/Google | Retail și legacy Grile | build + test + local health; oprirea Retail/Google fixture nu blochează read UI | local compose/systemd dev probe | Audit `b9e1b3d`: API/Postgres și buildurile trec; workerul declarat iese imediat, proxy-ul web Compose indică greșit localhost, iar API poate consuma joburi | FAIL |
-| AC-02 | Schema și motorul impun max. un agent per magazin/zi și max. un magazin per agent/zi | datele fixture | teste concurente + constrângeri DB; conflictele sunt respinse determinist | API conflict 409 | Audit `b9e1b3d`: indexuri PostgreSQL și probe API 200/409/409 confirmate; testul concurent obligatoriu lipsește și testul menționat în comentariu nu există | FAIL |
-| AC-03 | Fixture connector versionat furnizează magazine, persoane, targete și vânzări magazin/zi fără import din codul/schema Retail | Stage 1–6 read-only Retail | search/import-boundary test + fixture ingest idempotent | ingest status local | Audit `b9e1b3d`: zero import Retail confirmat; targets lipsesc; IDs store/person nu sunt tenant-scoped; workerul ignoră tenantul jobului | FAIL |
+| AC-01 | Aplicația standalone pornește local cu API, frontend, PostgreSQL și un singur worker; health/readiness sunt determinate fără Retail/Google | Retail și legacy Grile | build + test + local health; oprirea Retail/Google fixture nu blochează read UI | local compose/systemd dev probe | Independent audit on `153d283d6eacf47b354a07983b7b12cc0a8c4101`: health/readiness, worker entrypoint and single execution authority PASS; Compose startup statically PASS, live re-probe environment-limited by Docker DNS/apt resolution | PASS |
+| AC-02 | Schema și motorul impun max. un agent per magazin/zi și max. un magazin per agent/zi | datele fixture | teste concurente + constrângeri DB; conflictele sunt respinse determinist | API conflict 409 | Independent audit on `153d283d6eacf47b354a07983b7b12cc0a8c4101`: real PostgreSQL concurrent races 3/3 PASS, DB indexes and API 200/409/409 probes PASS | PASS |
+| AC-03 | Fixture connector versionat furnizează magazine, persoane, targete și vânzări magazin/zi fără import din codul/schema Retail | Stage 1–6 read-only Retail | search/import-boundary test + fixture ingest idempotent | ingest status local | Independent audit on `153d283d6eacf47b354a07983b7b12cc0a8c4101`: versioned targets, idempotent ingest, tenant-safe IDs/FKs, worker tenant payload and zero Retail imports PASS | PASS |
 | AC-04 | Managerul poate crea/modifica programul lunar, cu `NORMAL`, `EXTRA_HOME`, `EXTRA_OTHER`, `OFF`, `LEAVE`, scoped la aria sa | fără wizard schimb de tură | API/UI tests; scope 403; revision stale 409 | browser flow fixture | partial: S1 seeder endpoints accept `NORMAL`/`EXTRA_HOME`/`EXTRA_OTHER`; `OFF`/`LEAVE` and the UI flow belong to S2. | UNVERIFIED |
 | AC-05 | Orice modificare a calendarului actualizează în aceeași revizie pontajul derivat, inclusiv retroactiv la mijlocul lunii | fără editor pontaj separat | domain/API test before/after; total ore consistent | UI + XLSX/Sheet preview | partial: schema carries revision; projection engine is S2. | UNVERIFIED |
 | AC-06 | Modelul XLSX prepopulat poate fi preview-uit și aplicat atomic; conflictele, scope-ul și revision stale nu produc scrieri parțiale | nu creează persoane/magazine | parser round-trip, malformed/property tests, rollback test | browser upload preview/apply | deferred to S2. | UNVERIFIED |
@@ -105,8 +105,8 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 
 | Stage | Scope / livrabil mare | Depends on | Owner | Attempts | State |
 |---|---|---|---|---:|---|
-| S1 | Foundation standalone: stack, schema, domain invariants, fixture connector, auth/scopes skeleton, one worker, local dev/test | none | builder 1 | 2 | BUILDING |
-| S2 | Calendar + pontaj + XLSX schedule import: APIs, revisions, derived projections, preview/apply atomic | S1 GO | builder 2 | 0 | BACKLOG |
+| S1 | Foundation standalone: stack, schema, domain invariants, fixture connector, auth/scopes skeleton, one worker, local dev/test | none | builder 1 | 2 | PASS |
+| S2 | Calendar + pontaj + XLSX schedule import: APIs, revisions, derived projections, preview/apply atomic | S1 GO | builder 2 | 0 | READY |
 | S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + formula confirmations | builder 3 | 0 | BACKLOG |
 | S4 | Manager UI complete: Overview, Program, Store, Agent, Exceptions, Close, responsive/performance | S3 GO | builder 4 | 0 | BACKLOG |
 | S5 | Google adapter + bounded E-pay inbound + XLSX exports + copied canary | S4 GO + Google canary authority | builder 5 | 0 | BACKLOG |
@@ -271,18 +271,20 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   `2` vitest, tsc, Vite build). PostgreSQL migration and sequential API
   conflicts were reproduced independently, so the failure is architectural and
   contractual rather than a generic build failure.
-- 2026-08-20: S1 attempt 2 builder delivered the remediation. Single coherent
-  commit on `main` ahead of `b9e1b3d`. Alembic chain lands as
+- 2026-08-20: S1 attempt 2 builder delivered the remediation in exact commit
+  `153d283d6eacf47b354a07983b7b12cc0a8c4101`. Alembic chain lands as
   `0001_initial_schema` (1e5c879d0851) then
   `0002_composite_tenant_fks_and_targets` (b9fbb01f8cd0); backend pytest
   `36 passed` (33 SQLite + 3 real PostgreSQL integration including concurrent
   AC-02 races); `ruff` and `mypy --strict` clean on 35 source files; frontend
   `tsc` and `pnpm build` clean; `python -m ugrile.worker.worker` runs the
-  durable loop and drains the outbox; Compose web proxy
-  `http://api:8080` reaches the FastAPI container end-to-end; evidence
-  re-emitted under `.agent/evidence/UGR-001/S1/` is internally consistent
-  against the candidate commit. Stage stays `BUILDING` until a fresh
-  GO/NO-GO audit on the new artifact.
+  durable loop and drains the outbox; Compose web proxy is configured for
+  `http://api:8080`; evidence re-emitted under `.agent/evidence/UGR-001/S1/`
+  is internally consistent against the candidate commit.
+- 2026-08-20: GPT-5.6 Luna read-only audit returned GO for S1 attempt 2;
+  AC-01/02/03 PASS and S2 moved to READY. Fresh Compose startup in this
+  sandbox was limited by external Docker DNS/apt resolution, not a source
+  defect.
 
 ## Attempts, failures, and discoveries
 
@@ -356,6 +358,14 @@ S7 gate: AC-18 plus a separately approved cutover contract.
     worker payload/tenant correctness, then prove two-tenant isolation on
     PostgreSQL.
 
+- 2026-08-20 — S1 attempt-2 exact artifact
+  `153d283d6eacf47b354a07983b7b12cc0a8c4101`: **PASS / GO**.
+  - AC-01 PASS: health/readiness, dedicated worker entrypoint, single execution authority and Compose proxy configuration verified; fresh Compose boot was environment-limited by Docker DNS/apt resolution only.
+  - AC-02 PASS: real PostgreSQL concurrent store-day/person-day races and cross-tenant FK test passed 3/3; API conflict probes remain 200/409/409.
+  - AC-03 PASS: versioned targets, tenant-scoped IDs/composite FKs, idempotent fixture ingest, worker tenant payload and Retail import boundary all verified.
+  - Independent auditor: GPT-5.6 Luna, read-only, confidence high; frontend/Compose replay limitations are environment caveats, not code failures.
+  - S1 closes PASS; S2 is READY. No S2 implementation was started.
+
 ## Evidence index
 
 - Contract decisions: `docs/PRODUCT_CONTRACT.md`.
@@ -389,16 +399,22 @@ S7 gate: AC-18 plus a separately approved cutover contract.
 
 ## Integration, regression, and deployment
 
-- Integrated diff: foundation commit ahead of `planning-baseline-20260820`;
-  see `.agent/evidence/UGR-001/S1/README.md` for the live verification steps.
-- Global checks: backend `pytest` 28 passed; frontend `vitest` 2 passed;
-  `ruff check`, `mypy --strict`, `tsc --noEmit` all clean.
+- Integrated diff: exact candidate `153d283d6eacf47b354a07983b7b12cc0a8c4101`
+  ahead of `planning-baseline-20260820`; see
+  `.agent/evidence/UGR-001/S1/README.md` for the live verification steps.
+- Global checks on candidate `153d283d6eacf47b354a07983b7b12cc0a8c4101`:
+  backend `pytest` 36 passed (33 SQLite + 3 real PostgreSQL integration),
+  frontend `vitest` 2 passed, `ruff check`, `mypy --strict`, `tsc --noEmit`,
+  and Vite build all passed in the captured handoff evidence.
 - Published artifact/SHA: NOT IN SCOPE.
-- Runtime health/logs/user flow: `/healthz` and `/readyz` return `ok` and the
-  current Alembic head against an ephemeral Postgres 17 container; the worker
-  processes a typed NOOP job through `POST /worker/run`; the fixture ingest
-  applies 2 stores + 3 people + 3 sales rows idempotently under the caller
-  tenant.
+- Runtime health/logs/user flow: `/healthz`, `/readyz`, and `/version` return
+  `ok` with Alembic head `b9fbb01f8cd0`; the dedicated
+  `python -m ugrile.worker.worker` process drains typed NOOP/FIXTURE_INGEST jobs;
+  the fixture ingest applies 2 stores + 3 people + 3 sales + 2 targets
+  idempotently under the requested tenant. Fresh Compose replay in this
+  sandbox was limited by external Docker DNS/apt resolution, while the
+  committed Compose routing is statically verified and the developer-host
+  proof is captured in `.agent/evidence/UGR-001/S1/compose-stack-proof.txt`.
 
 ## Risks and remaining work
 
@@ -415,22 +431,19 @@ S7 gate: AC-18 plus a separately approved cutover contract.
 
 ## Next exact step
 
-Return S1 attempt 2 to one builder. It must remediate only the demonstrated gaps:
+S1 is GO/PASS on exact candidate
+`153d283d6eacf47b354a07983b7b12cc0a8c4101`; S2 is now READY. Return S2 to one
+builder and implement only the S2 contract:
 
-1. make Store/Person identity and all foreign references tenant-safe (IDs plus
-   composite tenant integrity or an equivalent DB-enforced design); query/upsert
-   by tenant + stable code and add a two-tenant isolation regression;
-2. add versioned targets to connector types, fixture, persistence and idempotent
-   ingest;
-3. pass the job tenant/payload into fixture ingest; make the dedicated worker
-   command actually run and keep job execution under one authority;
-4. fix Compose web-to-API routing and prove the whole local stack/read UI;
-5. add a real concurrent PostgreSQL AC-02 test and remove the nonexistent test
-   reference;
-6. replace contradictory evidence with one sanitized exact-commit result set.
+1. implement revisioned calendar use cases and manager scope;
+2. derive person calendar, store coverage and Pontaj from one authority;
+3. implement XLSX schedule template, preview, validation and atomic CAS apply;
+4. prove mid-month edits update Pontaj in the same revision;
+5. keep hours/pause configurable and document any still-unconfirmed value.
 
-Stop after one coherent remediation commit and the complete S1 handoff. Do not
-start S2.
+The S2 builder must stop after one coherent commit and complete handoff. Do not
+start S3; formula, hours/pause, holidays and close-authority confirmations remain
+required before S3.
 
 ## Resume procedure
 

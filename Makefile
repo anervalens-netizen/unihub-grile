@@ -103,7 +103,7 @@ coverage-test: ## Trigger an AC-02 conflict (409) through the API
 		-H "Content-Type: application/json" \
 		-H "X-Ugrile-Identity: user_admin" \
 		-H "X-Ugrile-Tenant: tenant_acme" \
-		-d '{"month_id":"month_tenantacme_2026-08","store_id":"store_bucuresti_center","person_id":"person_alice","business_date":"2026-08-01","working_kind":"NORMAL"}' || true
+		-d '{"month_id":"month_tenantacme_2026-08","store_id":"store_acme_bucuresticenter","person_id":"person_acme_alice","business_date":"2026-08-01","working_kind":"NORMAL"}' || true
 
 .PHONY: smoke
 smoke: pg-up migrate api ## Boot stack + verify health/ready (background API)

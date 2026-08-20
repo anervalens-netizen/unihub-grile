@@ -7,7 +7,7 @@ transitions` section.
 
 | File | What it proves |
 |---|---|
-| `health-probe.txt` | `/healthz`, `/readyz`, `/version`, `/` return JSON with status `ok`, the live Alembic head (`b9fbb01f8cd0`) and the app version. No auth required. |
+| `health-probe.txt` | `/healthz` and `/version` report liveness/app status; `/readyz` reports the live Alembic head (`b9fbb01f8cd0`); `/` reports the service and tenant count. No auth required. |
 | `schema-evidence.txt` | `\dt` listing, `alembic_version`, the two partial unique indexes on `site_day_assignments` (`uq_site_day_one_working`, `uq_person_day_one_working`), the new composite foreign keys on `people`/`stores`/`site_day_assignments`/`sales_*`/`epay_observations`/`grid_calculations`/`sheet_*`/`store_assignments`, and the versioned `store_targets` table. |
 | `ingest-fixture.txt` | `POST /ingest/fixture` lands 2 stores + 3 people + 3 sales + 2 targets under each tenant through the durable worker; `store_targets` carries `version=1`. |
 | `ac02-conflict-probe.txt` | End-to-end conflict probes via the API: (1) Alice NORMAL on `store_acme_bucuresticenter` on `2026-08-01` succeeds (200); (2) Bob on the same store-day is rejected (409 `COVERAGE_INVARIANT` / `MULTIPLE_AGENTS_PER_STORE_DAY`); (3) Alice on `store_acme_clujnord` for the same day is rejected (409 `COVERAGE_INVARIANT` / `MULTIPLE_STORES_PER_AGENT_DAY`). The IDs are tenant-scoped. |
