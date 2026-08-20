@@ -109,7 +109,7 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 |---|---|---|---|---:|---|
 | S1 | Foundation standalone: stack, schema, domain invariants, fixture connector, auth/scopes skeleton, one worker, local dev/test | none | builder 1 | 2 | PASS |
 | S2 | Calendar + pontaj + XLSX schedule import: APIs, revisions, derived projections, preview/apply atomic | S1 GO | builder 2 | 3 | PASS |
-| S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + business-source confirmations | builder 3 | 0 | READY |
+| S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + business-source confirmations | builder 3 | 1 | BUILDING |
 | S4 | Manager UI complete: Overview, Program, Store, Agent, Exceptions, Close, responsive/performance | S3 GO | builder 4 | 0 | BACKLOG |
 | S5 | Google adapter + bounded E-pay inbound + XLSX exports + copied canary | S4 GO + Google canary authority | builder 5 | 0 | BACKLOG |
 | S6 | Shadow pilot, reconciliation, observability, backup/runbook, production-readiness verdict | S5 GO | builder 6 | 0 | BACKLOG |
@@ -368,6 +368,11 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   read-only audit verdict is deferred to an independent Luna gate and
   S3 remains `UNVERIFIED` in the AC table per the same audit-required
   process used at S1 and S2.
+- 2026-08-20: The first post-handoff generic subagent audit was stopped before
+  completion after an unreliable shared-client/concurrency probe. A subsequent
+  explicit Luna workflow was cancelled before returning a verdict; neither
+  attempt modified the candidate worktree. Fresh bounded Luna audit remains the
+  only next gate.
 
 ## Attempts, failures, and discoveries
 
@@ -596,12 +601,13 @@ commit:
 S3 remains `UNVERIFIED` in the AC table pending the independent Luna gate;
 this is by design — only a read-only audit can mark the stage PASS.
 
-S3 is now READY after the four business-source decisions were confirmed in
-`docs/MOBIUP_RULE_PACK.md` and `docs/PRODUCT_CONTRACT.md`. The next exact step
-is to implement only S3 standalone: sales attribution, supplementary
-classification, the versioned rule-pack/grid engine, and admin-only close/reopen.
-Do not open S4, S5, or Retail integration until S3 has its own exact-commit
-read-only GO audit.
+The S3 implementation candidate is already committed at
+`3f82199e5d8d3c89d5b1b87e2da98c4fc2ac9099`; the documentation follow-up is
+`f3e935a`. The previous generic subagent audit was stopped before completion,
+and a first explicit Luna workflow attempt was cancelled before returning a
+verdict. The next exact step is a fresh bounded read-only GPT-5.6 Luna workflow
+through provider `openai` against the exact candidate. Do not open S4, S5, or
+Retail integration until S3 has an explicit GO audit.
 
 ## Resume procedure
 
