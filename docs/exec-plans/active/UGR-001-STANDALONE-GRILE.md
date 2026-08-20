@@ -353,6 +353,21 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   exact commit `9d8caffaf0df39ff2364c44df673ae05a812e7f4` read-only and returned
   GO/PASS for AC-04, AC-05, AC-06 and relevant AC-11. S2 is now PASS; S3
   remains BLOCKED only by the four documented business-source decisions.
+- 2026-08-20: S3 implementation pass delivered in exact commit
+  `3f82199e5d8d3c89d5b1b87e2da98c4fc2ac9099` from clean main ahead of
+  `c9fabc5` (the S3 decision documentation commit). One coherent revertible
+  commit; S1/S2 behaviour and existing tests preserved (86 baseline tests
+  still pass). Backend checks land on PostgreSQL 17: `174 passed`
+  (78 SQLite + 9 SQLite API + 3 S3 PG integration = 90 SQLite unit/service
+  + 87 new S3 tests including 3 real-PostgreSQL integration tests for
+  AC-07 reassignment, AC-15 admin-only close/reopen with audit chain and
+  AC-15 close-blocked on missing sale). `ruff check src tests` clean;
+  `mypy --strict src` clean on 55 source files; `alembic upgrade head`
+  lands at `e7f3a9b1c2d4` on PostgreSQL 17; `alembic check` reports
+  `No new upgrade operations detected.` Stage moves to `BUILDING`; final
+  read-only audit verdict is deferred to an independent Luna gate and
+  S3 remains `UNVERIFIED` in the AC table per the same audit-required
+  process used at S1 and S2.
 
 ## Attempts, failures, and discoveries
 
@@ -535,6 +550,51 @@ for AC-04, AC-05, AC-06 and relevant AC-11 on a clean worktree:
 4. Audit evidence: `86 passed`, Ruff clean, mypy clean on 42 source files,
    fresh Alembic chain through `d4e6f8a0b2c4` with zero drift, and PostgreSQL
    integration `6 passed`.
+
+S3 builder pass landed at exact commit
+`3f82199e5d8d3c89d5b1b87e2da98c4fc2ac9099`. AC-07/08/09/15 S3 slices are
+implemented and tested end-to-end. Stage 3 evidence on the candidate
+commit:
+
+1. Sales attribution (AC-07): each `SalesStoreDay` appears exactly once in
+   company/store totals; reassignment preserves the company total and only
+   changes personal credit; `EXTRA_HOME`/`EXTRA_OTHER` do not duplicate
+   physical sales; `SalesPersonDayProjection` rows are keyed by
+   `(month, revision, generation)` and prior revisions stay immutable.
+2. EXTRA_HOME / EXTRA_OTHER (AC-08): home/other preconditions enforced in
+   pure `domain/calendar.validate_working_kind` (S1) and the new
+   `domain/attribution.attribute_sales`; table-driven coverage of invalid
+   and valid home/other pairs in `tests/domain/test_coverage.py`.
+3. Rule-pack/grid engine (AC-09): versioned `RulePackV1` coefficients,
+   `Decimal` arithmetic with `ROUND_HALF_UP`, canonical inputs/outputs
+   hashes; golden fixtures include the V2 example `2600 + 480 + 27 + 350
+   = 3457`, progress thresholds (`79.99%/80%/99.99%/100%/119.99%/120%`),
+   `EXTRA_HOME` fixed pay without double commission, `EXTRA_OTHER`
+   `0.79` and above-threshold edges, SIM and E-pay categories at `0/1/10`,
+   target zero, missing sale, uncovered day, and same payload → same
+   result. Grid service consumes Pontaj projections, sales projections
+   and the salary master; `GridCalculation` snapshots are persisted per
+   `(month, person, rule_pack_version, revision)` with inputs/outputs
+   hashes.
+4. Close/reopen core (AC-15): admin-only enforcement, typed
+   `CloseBlockerCode` enum (S3 blocks the four deterministic conditions
+   that only require S1/S2 data; S4/S5 blockers are added as typed
+   codes but deferred), deterministic blocker detection, append-only
+   `MonthCloseEvent` audit chain with previous/new state and revision,
+   reopen requires admin + reason (>=4 chars), closed-month writes
+   rejected by the existing `MONTH_CLOSED` path. `SHEET_CANARY_REQUIRED`
+   and `EXTERNAL_RECONCILIATION_REQUIRED` blockers are typed but deferred
+   to their integration stage so no business blocker is bypassed.
+5. Audit evidence: `174 passed` (including 87 new S3 tests across domain,
+   service, API and PostgreSQL integration); `ruff check src tests`
+   clean; `mypy --strict src` clean on 55 source files; `alembic upgrade
+   head` lands at `e7f3a9b1c2d4` on PostgreSQL 17; `alembic check`
+   reports zero drift. The S1/S2 baseline of 86 tests still passes; the
+   S2 PostgreSQL suite (3 tests) still passes; no S1/S2 file changed in a
+   behaviour-affecting way.
+
+S3 remains `UNVERIFIED` in the AC table pending the independent Luna gate;
+this is by design — only a read-only audit can mark the stage PASS.
 
 S3 is now READY after the four business-source decisions were confirmed in
 `docs/MOBIUP_RULE_PACK.md` and `docs/PRODUCT_CONTRACT.md`. The next exact step
