@@ -163,11 +163,17 @@ magazin în prima versiune.
 8. target zero, vânzare lipsă și zi neacoperită ca anomalii explicite;
 9. reproducere din același payload/hash cu rezultat identic.
 
-## 9. Decizii încă necesare înainte de S3
+## 9. Decizii confirmate înainte de S3
 
-- sursa exactă pentru salariul fix și tichete în connectorul standalone
-  (recomandat: condiții effective-dated din Retail/HR, nu editare TL);
-- dacă ajustarea legacy `Flip` rămâne în produsul nou;
-- lista sărbătorilor și dacă influențează targetul, orele sau plata;
-- cine execută `close`: recomandat TL pregătește/validează, admin închide și
-  redeschide în prima versiune.
+- Salariul fix și tichetele vin dintr-un master HR/payroll effective-dated;
+  Grile citește snapshot-ul versionat și nu permite editare TL.
+- Ajustarea legacy `Flip` rămâne activă în produsul nou și trebuie inclusă în
+  golden fixtures/calculul versionat.
+- Sărbătorile folosesc un calendar legal România versionat, cu override admin;
+  efectul inițial este doar marker informativ — nu modifică automat programul,
+  Pontajul, targetul sau plata.
+- `close` este executat numai de admin în prima versiune; reopen-ul rămâne
+  admin-only și auditat.
+
+Aceste decizii deschid analiza S3, fără a autoriza încă integrarea Retail,
+modificarea surselor legacy sau operații pe date live.

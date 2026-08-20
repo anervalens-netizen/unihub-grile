@@ -149,12 +149,17 @@ stabile ascunse/tehnice, nu potrivire liberă după nume.
 - calcul din codul POS ca identitate personală;
 - integrare directă în Retail înainte ca aplicația standalone să treacă pilotul.
 
-## 11. Întrebări rămase înainte de Stage 3
+## 11. Decizii confirmate înainte de Stage 3
 
-Formula legacy și Pontajul standard sunt acum documentate din sursele V1/V2.
-Mai trebuie confirmate doar autoritățile/datele care nu pot fi deduse din formule:
+Formula legacy și Pontajul standard sunt documentate din sursele V1/V2, iar
+următoarele autorități au fost confirmate pentru Stage 3:
 
-- sursa effective-dated pentru salariul fix și tichete;
-- dacă ajustarea legacy `Flip` rămâne activă;
-- lista sărbătorilor și efectul lor în pontaj/calcul;
-- politica exactă: cine poate executa close (TL sau numai admin).
+- salariul fix și tichetele: master HR/payroll effective-dated;
+- ajustarea legacy `Flip`: rămâne activă și versionată în calcul;
+- sărbătorile: calendar legal România versionat cu override admin, inițial doar
+  marker informativ fără efect automat asupra programului, Pontajului, targetului
+  sau plății;
+- close: numai admin în prima versiune; reopen admin-only și auditat.
+
+Aceste decizii nu deschid integrarea Retail sau accesul la date live; ele doar
+permit definirea și testarea contractului S3 standalone.

@@ -109,7 +109,7 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 |---|---|---|---|---:|---|
 | S1 | Foundation standalone: stack, schema, domain invariants, fixture connector, auth/scopes skeleton, one worker, local dev/test | none | builder 1 | 2 | PASS |
 | S2 | Calendar + pontaj + XLSX schedule import: APIs, revisions, derived projections, preview/apply atomic | S1 GO | builder 2 | 3 | PASS |
-| S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + business-source confirmations | builder 3 | 0 | BLOCKED |
+| S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + business-source confirmations | builder 3 | 0 | READY |
 | S4 | Manager UI complete: Overview, Program, Store, Agent, Exceptions, Close, responsive/performance | S3 GO | builder 4 | 0 | BACKLOG |
 | S5 | Google adapter + bounded E-pay inbound + XLSX exports + copied canary | S4 GO + Google canary authority | builder 5 | 0 | BACKLOG |
 | S6 | Shadow pilot, reconciliation, observability, backup/runbook, production-readiness verdict | S5 GO | builder 6 | 0 | BACKLOG |
@@ -503,9 +503,9 @@ S7 gate: AC-18 plus a separately approved cutover contract.
 
 ## Risks and remaining work
 
-- Formula de compatibilitate și Pontajul sunt documentate. Înainte de S3 mai
-  trebuie confirmate sursa salariului/tichetelor, `Flip`, sărbătorile și close
-  authority.
+- Formula de compatibilitate și Pontajul sunt documentate. Pentru S3 sunt
+  confirmate master-ul HR/payroll effective-dated, `Flip` activ, calendarul legal
+  România ca marker informativ cu override admin și close admin-only.
 - Google anonymous protection must be proven on a copied canary; documentation is
   not proof.
 - The one-agent/store/day assumption is a hard business invariant. If reality
@@ -536,9 +536,12 @@ for AC-04, AC-05, AC-06 and relevant AC-11 on a clean worktree:
    fresh Alembic chain through `d4e6f8a0b2c4` with zero drift, and PostgreSQL
    integration `6 passed`.
 
-S3 remains BLOCKED until the four documented business-source decisions are
-confirmed: fixed salary/ticket source, `Flip`, holiday list/effects, and close
-authority. No S3 implementation starts before those decisions.
+S3 is now READY after the four business-source decisions were confirmed in
+`docs/MOBIUP_RULE_PACK.md` and `docs/PRODUCT_CONTRACT.md`. The next exact step
+is to implement only S3 standalone: sales attribution, supplementary
+classification, the versioned rule-pack/grid engine, and admin-only close/reopen.
+Do not open S4, S5, or Retail integration until S3 has its own exact-commit
+read-only GO audit.
 
 ## Resume procedure
 
