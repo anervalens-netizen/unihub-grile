@@ -1,0 +1,18 @@
+UGR-001 S2 candidate cfba078fe9d129db6bfa7c6bf84f2fe98ba865b7
+
+Command:
+  backend/.venv/bin/python -m pytest backend/tests -q
+
+Result:
+  49 passed, 1 warning
+
+Focused S2 coverage includes:
+  - calendar OFF/LEAVE persistence, revision CAS and stale rejection;
+  - effective-dated manager write/read scope;
+  - person/store/Pontaj projections and configurable hours;
+  - XLSX round-trip, per-person dropdowns, protected hidden technical lists;
+  - malformed/unknown/duplicate input, coverage/kind preview errors;
+  - prepopulation after apply and stale XLSX apply with HTTP 409;
+  - no-write preview and atomic apply behavior.
+
+No live Retail, Google Sheets, employee, salary, or production data was used.

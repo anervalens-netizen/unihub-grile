@@ -31,6 +31,9 @@ tmp/
 !.agent/evidence/UGR-001/S1/
 !.agent/evidence/UGR-001/S1/README.md
 !.agent/evidence/UGR-001/S1/*.txt
+!.agent/evidence/UGR-001/S2/
+!.agent/evidence/UGR-001/S2/README.md
+!.agent/evidence/UGR-001/S2/*.txt
 
 # Credentials and provider files must never enter Git.
 config/google/

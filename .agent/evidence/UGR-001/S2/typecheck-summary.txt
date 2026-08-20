@@ -1,0 +1,14 @@
+UGR-001 S2 candidate cfba078fe9d129db6bfa7c6bf84f2fe98ba865b7
+
+Commands:
+  backend/.venv/bin/ruff check backend/src backend/tests
+  backend/.venv/bin/mypy --strict backend/src
+  git diff --check
+
+Results:
+  All checks passed!
+  Success: no issues found in 40 source files
+  git diff --check: clean
+
+The project dev dependencies include types-openpyxl==3.1.5.20260807;
+openpyxl imports are strict-mypy clean without suppression comments.

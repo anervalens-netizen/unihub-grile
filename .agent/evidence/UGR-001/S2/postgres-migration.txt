@@ -1,0 +1,15 @@
+UGR-001 S2 candidate cfba078fe9d129db6bfa7c6bf84f2fe98ba865b7
+
+Fresh PostgreSQL 17 scratch container, temporary port only:
+
+  DATABASE_URL=postgresql+psycopg://... .venv/bin/alembic upgrade head
+  DATABASE_URL=postgresql+psycopg://... .venv/bin/alembic check
+
+Results:
+  upgrade: PASS
+  chain: 1e5c879d0851 -> b9fbb01f8cd0 -> c3a1b7e2d4f6
+  alembic check: No new upgrade operations detected
+  public.manager_scopes: present
+
+The scratch container and database were removed after verification. No
+persistent application database was reset or modified.
