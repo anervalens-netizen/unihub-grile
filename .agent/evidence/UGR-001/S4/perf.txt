@@ -1,0 +1,8 @@
+S4 perf benchmark — offline, no network
+Seeded fixture: 80 stores + 5-day calendar (31 days in the lattice)
+Thresholds: overview/program/exceptions p95 < 1000ms, save p95 < 500ms
+
+overview: n=12 mean=2.7ms p50=2.5ms p95=3.8ms max=4.2ms
+program: n=12 mean=2.4ms p50=2.3ms p95=2.6ms max=2.7ms
+exceptions: n=12 mean=2.5ms p50=2.5ms p95=2.8ms max=2.8ms
+save: n=12 mean=294.6ms p50=319.5ms p95=332.3ms max=361.6ms

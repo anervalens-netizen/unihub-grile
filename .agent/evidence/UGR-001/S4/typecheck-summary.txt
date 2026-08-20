@@ -1,0 +1,16 @@
+S4 typecheck summary — fresh worktree.
+
+Backend (mypy --strict):
+    src/ugrile/main.py + src/ugrile/api/s4.py + src/ugrile/services/overview.py
+    + 55 existing source files.
+    Result: Success: no issues found in 58 source files.
+
+Frontend (tsc --noEmit):
+    Result: clean (no output).
+    Note: pnpm install on this sandbox was blocked by the root-owned pnpm
+    virtual store (no internet, EACCES on .pnpm/). The fix was a manual
+    symlink of the missing native binary
+    (frontend/node_modules/@rollup/rollup-linux-x64-gnu) plus
+    frontend/node_modules/{vite,vitest,react,react-dom} into the user-
+    writable top-level node_modules so pnpm exec can resolve them. After
+    that workaround tsc + vitest + vite build all run.

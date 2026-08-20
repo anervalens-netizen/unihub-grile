@@ -713,7 +713,9 @@ class OutboxJob(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_outbox_idempotency"),
         CheckConstraint(
-            "kind IN ('FIXTURE_INGEST', 'TENANT_BOOTSTRAP', 'NOOP', 'FIXTURE_INGEST_BY_TENANT')",
+            "kind IN ('FIXTURE_INGEST', 'TENANT_BOOTSTRAP', 'NOOP', "
+            "'FIXTURE_INGEST_BY_TENANT', 'EXPORT_XLSX_STORE', 'EXPORT_XLSX_BULK', "
+            "'EXPORT_PONTAJ_ONLY', 'GOOGLE_PROJECTION_STORE')",
             name="outbox_kind_enum",
         ),
         CheckConstraint(

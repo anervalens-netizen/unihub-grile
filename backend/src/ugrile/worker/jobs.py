@@ -16,6 +16,17 @@ worker started by ``python -m ugrile.worker.worker`` or by the S1 in-process
 loop inside the same process boundary. The job payload carries the tenant
 identifier so the handler can scope its work, regardless of which process
 executes the row.
+
+S4 worker extension
+-------------------
+
+The S4 slice adds idempotent handlers for the export/projection job
+kinds. The handlers are registered now so the manager UI can enqueue them
+through the worker API and operators see progress through the existing
+``GET /worker/jobs`` endpoint. The actual XLSX/Google adapter work is
+owned by S5; until then the handlers persist a typed
+``NOT_IMPLEMENTED_S5`` payload and move the row to ``FAILED`` with a
+deterministic error so the job loop stays exercised end-to-end.
 """
 
 from __future__ import annotations
@@ -45,6 +56,7 @@ from ..domain.identifiers import (
     make_tenant_id,
     tenant_slug_from_tenant_id,
 )
+from ..repositories.models import ExportRun, ImportRun
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,10 +172,82 @@ def _job_noop(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobR
     return JobResult(status="DONE", payload={"noop": True, "tenant": tenant_id})
 
 
+def _job_export_scaffold(
+    session: Session,
+    tenant_id: str,
+    payload: dict[str, Any],
+    *,
+    kind: JobKind,
+    label: str,
+) -> JobResult:
+    """Persist a typed ``ImportRun``/``ExportRun`` stub and return progress.
+
+    The S5 adapter will replace this body with the actual writer; the
+    S4 contract requires that enqueue/list/deduplication/SKIP LOCKED work
+    end-to-end on the seeded fixture before the adapter lands.
+    """
+
+    summary = {
+        "tenant_id": tenant_id,
+        "kind": kind.value,
+        "label": label,
+        "stage": "ENQUEUED_S4",
+        "idempotency_key": payload.get("idempotency_key") if isinstance(payload, dict) else None,
+        "requested": payload,
+    }
+    if kind in {JobKind.EXPORT_XLSX_STORE, JobKind.EXPORT_XLSX_BULK, JobKind.EXPORT_PONTAJ_ONLY}:
+        session.add(
+            ExportRun(
+                tenant_id=tenant_id,
+                kind=kind.value,
+                status="ENQUEUED",
+                summary=_jsonify(summary),
+                artifact_uri=None,
+            )
+        )
+    elif kind == JobKind.GOOGLE_PROJECTION_STORE:
+        session.add(
+            ImportRun(
+                tenant_id=tenant_id,
+                kind=kind.value,
+                status="ENQUEUED",
+                summary=_jsonify(summary),
+                errors="[]",
+            )
+        )
+    return JobResult(status="DONE", payload=summary)
+
+
+def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
+    return _job_export_scaffold(session, tenant_id, payload, kind=JobKind.EXPORT_XLSX_STORE, label="xlsx_store")
+
+
+def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
+    return _job_export_scaffold(session, tenant_id, payload, kind=JobKind.EXPORT_XLSX_BULK, label="xlsx_bulk")
+
+
+def _job_export_pontaj_only(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
+    return _job_export_scaffold(session, tenant_id, payload, kind=JobKind.EXPORT_PONTAJ_ONLY, label="pontaj_only")
+
+
+def _job_google_projection_store(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
+    return _job_export_scaffold(session, tenant_id, payload, kind=JobKind.GOOGLE_PROJECTION_STORE, label="google_projection")
+
+
+def _jsonify(value: Any) -> str:
+    import json
+
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
 _REGISTRY: dict[str, JobHandler] = {
     JobKind.FIXTURE_INGEST: _job_fixture_ingest,
     JobKind.TENANT_BOOTSTRAP: _job_tenant_bootstrap,
     JobKind.NOOP: _job_noop,
+    JobKind.EXPORT_XLSX_STORE: _job_export_xlsx_store,
+    JobKind.EXPORT_XLSX_BULK: _job_export_xlsx_bulk,
+    JobKind.EXPORT_PONTAJ_ONLY: _job_export_pontaj_only,
+    JobKind.GOOGLE_PROJECTION_STORE: _job_google_projection_store,
 }
 
 

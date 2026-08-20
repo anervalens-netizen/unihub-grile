@@ -1,0 +1,21 @@
+S4 backend test summary — fresh worktree on the candidate commit.
+
+Command:
+    .venv/bin/python -m pytest tests/ -q --tb=no
+
+Result:
+    234 passed, 1 skipped (SQLite tolerates duplicate idempotency keys), 1 warning
+    (sqlite3 deprecation, unrelated to S4).
+
+S4-specific tests (all pass):
+    tests/api/test_s4_overview.py  5 passed
+    tests/api/test_s4_program.py   7 passed
+    tests/api/test_s4_exceptions.py 3 passed
+    tests/api/test_s4_close.py     5 passed
+    tests/api/test_s4_query_count.py 3 passed (asserts no N+1 fan-out)
+    tests/api/test_s4_perf.py      1 passed (writes perf.txt evidence)
+    tests/worker/test_s4_jobs.py   4 passed, 1 skipped (PostgreSQL-only)
+
+Ruff / mypy:
+    ruff check src tests -> All checks passed!
+    mypy --strict src -> Success: no issues found in 58 source files

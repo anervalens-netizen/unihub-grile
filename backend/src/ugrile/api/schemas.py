@@ -341,6 +341,135 @@ class CloseEventOut(BaseModel):
     event_digest: str
 
 
+# ---------------------------------------------------------------------------
+# S4 Manager UI schemas
+# ---------------------------------------------------------------------------
+
+
+class OverviewKpiOut(BaseModel):
+    stores_total: int
+    stores_covered: int
+    days_uncovered: int
+    conflicts: int
+    extra_home_days: int
+    extra_other_days: int
+    sales_unattributed: int
+    epay_invalid: int
+    epay_fresh: bool
+    sheet_sync_total: int
+    sheet_sync_stale: int
+    sheet_sync_error: int
+
+
+class OverviewManagerRowOut(BaseModel):
+    user_id: str
+    display_name: str
+    stores_covered: int
+    stores_total: int
+    days_uncovered: int
+    last_sync: str | None
+
+
+class OverviewNeedsAttentionOut(BaseModel):
+    code: str
+    severity: int
+    title: str
+    detail: str
+    store_id: str | None
+    person_id: str | None
+    business_date: date | None
+
+
+class OverviewOut(BaseModel):
+    month_id: str
+    year: int
+    month: int
+    state: MonthState
+    revision: int
+    rule_pack_version: str | None
+    kpis: OverviewKpiOut
+    managers: list[OverviewManagerRowOut]
+    needs_attention: list[OverviewNeedsAttentionOut]
+
+
+class ProgramCellOut(BaseModel):
+    business_date: date
+    person_id: str | None
+    store_id: str | None
+    status: str
+    working_kind: str | None
+    display_name: str | None
+    home_store_id: str | None
+    badge: str | None
+    locked: bool
+
+
+class ProgramRowOut(BaseModel):
+    row_id: str
+    label: str
+    home_store_id: str | None
+    cells: list[ProgramCellOut]
+
+
+class ProgramGridOut(BaseModel):
+    month_id: str
+    year: int
+    month: int
+    revision: int
+    dates: list[date]
+    rows: list[ProgramRowOut]
+    legend: list[str]
+
+
+class ExceptionOut(BaseModel):
+    code: str
+    severity: int
+    title: str
+    detail: str
+    blocking_close: bool
+    store_id: str | None
+    person_id: str | None
+    business_date: date | None
+    action_hint: str
+
+
+class ChecklistItemOut(BaseModel):
+    code: str
+    severity: int
+    title: str
+    detail: str
+    blocking: bool
+
+
+class CloseChecklistOut(BaseModel):
+    month_id: str
+    revision: int
+    state: MonthState
+    blockers: list[ChecklistItemOut]
+    generated_at: str | None
+    export_summary: list[dict[str, object]]
+    job_summary: list[dict[str, object]]
+    expected_revision: int
+
+
+class CalendarCellEditIn(BaseModel):
+    person_id: str = Field(min_length=1)
+    business_date: date
+    status: DayStatus
+    store_id: str | None = None
+    working_kind: WorkingKind | None = None
+
+
+class ReopenWithReasonIn(BaseModel):
+    reason: str = Field(min_length=4, max_length=512)
+    expected_revision: int | None = None
+
+
+class JobEnqueueIn(BaseModel):
+    kind: str = Field(min_length=1, max_length=64)
+    idempotency_key: str | None = Field(default=None, max_length=128)
+
+
 __all__ = [
     "AssignmentCreate",
     "AssignmentOut",
@@ -348,13 +477,17 @@ __all__ = [
     "AttributionRowOut",
     "BlockerOut",
     "CalendarApplyIn",
+    "CalendarCellEditIn",
     "CalendarChangeIn",
     "CalendarProjectionOut",
+    "ChecklistItemOut",
+    "CloseChecklistOut",
     "CloseEventOut",
     "CloseIn",
     "CloseOutcomeOut",
     "ConflictOut",
     "CoverageReport",
+    "ExceptionOut",
     "GridCalculationOut",
     "GridComputeOut",
     "HealthReport",
@@ -364,13 +497,22 @@ __all__ = [
     "HolidayOverrideIn",
     "IngestRequest",
     "IngestResult",
+    "JobEnqueueIn",
     "JobOut",
     "MonthOut",
+    "OverviewKpiOut",
+    "OverviewManagerRowOut",
+    "OverviewNeedsAttentionOut",
+    "OverviewOut",
     "PersonOut",
     "PontajMonthOut",
     "PontajPersonTotalsOut",
     "PontajRowOut",
+    "ProgramCellOut",
+    "ProgramGridOut",
+    "ProgramRowOut",
     "ReopenIn",
+    "ReopenWithReasonIn",
     "SalaryMasterOut",
     "SalaryUpsertIn",
     "SchedulePreviewOut",

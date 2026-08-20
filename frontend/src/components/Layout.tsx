@@ -11,7 +11,9 @@ export function Layout({ children, header }: LayoutProps) {
       {header}
       <main className="app-main">{children}</main>
       <footer className="app-footer">
-        <span className="muted">Stage S1 · Foundation · 2026-08-20</span>
+        <span className="muted">
+          Stage S4 · Manager UI · {new Date().getFullYear()}
+        </span>
       </footer>
     </div>
   );

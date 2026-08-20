@@ -49,11 +49,23 @@ class ConnectorGeneration(StrEnum):
 
 
 class JobKind(StrEnum):
-    """Recognised job kinds for the durable worker."""
+    """Recognised job kinds for the durable worker.
+
+    The S5-bound kinds (``EXPORT_XLSX_STORE``, ``EXPORT_XLSX_BULK``,
+    ``EXPORT_PONTAJ_ONLY``, ``GOOGLE_PROJECTION_STORE``) are registered now
+    so the worker loop, idempotency, and ``SKIP LOCKED`` discipline are
+    exercised end-to-end on the seeded fixture before the Google and XLSX
+    adapter code lands. Their handlers raise ``NotImplementedError`` at S4
+    and will be replaced in S5 without touching the queue.
+    """
 
     FIXTURE_INGEST = "FIXTURE_INGEST"
     TENANT_BOOTSTRAP = "TENANT_BOOTSTRAP"
     NOOP = "NOOP"
+    EXPORT_XLSX_STORE = "EXPORT_XLSX_STORE"
+    EXPORT_XLSX_BULK = "EXPORT_XLSX_BULK"
+    EXPORT_PONTAJ_ONLY = "EXPORT_PONTAJ_ONLY"
+    GOOGLE_PROJECTION_STORE = "GOOGLE_PROJECTION_STORE"
 
 
 class EpayCategory(StrEnum):
