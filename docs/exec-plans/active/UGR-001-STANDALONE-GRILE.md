@@ -99,7 +99,7 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 | AC-13 | Numai cele patru dropdown-uri E-pay sunt editabile; valorile 0..10 sunt ingerate și auditate, invalidul păstrează last-good | fără inbound general | protection/read tests + blank/text/fraction/11 cases + close readback | Google canary edit/read | S5 contract repairs on `b3d0089`: `record_readback` enforces `len(observations) == len(working_agents)*2` (exactly four cells for a 2-agent store) and rejects when a `person_id` is not in the store/month's working agents. Independent MiniMax M3 verifier on exact `b3d0089`: 4 valid obs → 200/valid=4; 3 obs → 422; non-working `person_id` → 422; mixed valid+invalid ("abc", −3) → 200/invalid=2 with `raw_value` preserved; `freshness.is_fresh=True / fresh_count=4` after the last-valid readback (last-good retention confirmed). | PASS |
 | AC-14 | Exportul per magazin are `Grila`+`Pontaj`; bulk ZIP și pontaj-only respectă filtrele, manifestul și nu au external links | nu exportă alte arii | parse/render/round-trip + checksum tests | download browser, render sample | S5 contract repairs on `b3d0089`: `render_store_export` produces Grila V2 cards (rows 6/7/9/10) + Pontaj C8:AG31 (day 1..31 in D..AG, blocks of 8/11, AH total, weekend highlight); per-magazin filtering excludes other stores' people/calendar; `render_bulk_export` writes a manifest.json with `generation`, `rule_pack_version`, and per-entry `checksum_sha256`; `render_pontaj_only_export` honours `store_ids`. Independent MiniMax M3 verifier on exact `b3d0089` confirmed via openpyxl introspection: Grila V2 cards at rows 6/7/9/10 with the two-card band; Pontaj C8:AG31 with day1=D4, day31=AG34, AH="Total ore (AH)"; strict per-store filtering (no `po_a`/`po_b` leakage); bulk ZIP manifest contains `generation`/`rule_pack_version`/`entries[*].checksum_sha256`; pontaj-only `store_ids=[store_x]` returns single-sheet `['Pontaj']` workbook. | PASS |
 | AC-15 | Close validează toate blocantele și îngheață luna; reopen este admin-only, motivat și auditat append-only | niciun overwrite de istoric | transaction/concurrency/audit tests | close/reopen browser flow | exact-commit Luna audit GO on `7b96f20f086d7311c65a63929322d7bfa202e241` via provider `openai`: full open-store/day lattice blockers (STORE_DAY_UNCOVERED, multiple working, invalid kind, full-lattice sale/target), serialized close/reopen via `SELECT FOR UPDATE` before any state/revision decision, expected_revision under lock, digest-chained append-only audit with `verify_chain`, admin-only enforcement, and MONTH_CLOSED write rejection (verified by standalone verifier-authored probe against disposable PG 17). S5a wires the three deferred blockers (`EPAY_FRESH_READBACK_REQUIRED`, `SHEET_CANARY_REQUIRED`, `EXTERNAL_RECONCILIATION_REQUIRED`) as informational items in the close checklist without bypassing the S3 ones. S4 candidate at `0e852ea` adds the real checklist → explicit confirmation → close POST → refresh + audit timeline UI; round 3 verifier confirmed `GET /months/{id}/close-checklist` returns blockers + `expected_revision` on the disposable PG17. Admin-only reasoned reopen preserved. | PASS |
-| AC-16 | p95 overview <500 ms pilot/<1 s target; save DB <500 ms; Google/export async; jobs durable/idempotent | fără polling Google frecvent | benchmark/query count, restart/retry tests | local/staging measurements | S5 contract repairs on `b3d0089`: export endpoints are enqueue-only (`POST /months/{id}/export/{store,bulk,pontaj-only}` returns `job_id` immediately with no XLSX bytes); the durable worker (`SKIP LOCKED` + idempotency_key) renders the workbook, writes artifact bytes to a non-tracked path, and persists an `ExportRun` with `status=DONE` + `artifact_uri`; `GET /months/{id}/export/jobs/{job_id}` returns the persisted status + artifact_uri. Independent MiniMax M3 verifier on exact `b3d0089` confirmed: enqueue returns JSON body (no XLSX zip), worker wrote the artifact to `/tmp/.../ugrile-s5-exports/...xlsx`, `ExportRun.status=DONE` and `artifact_uri` set. Caveat to address in a follow-up: `POST /export/*` returns `OutboxJob.id` while `GET /export/jobs/{id}` reads `ExportRun.id` (independent autoincrement sequences → polling with the enqueue `job_id` always returns 404); the verifier discovered `ExportRun.id` from the DB. The underlying async-export guarantee still holds; the polling API contract is broken. | PASS |
+| AC-16 | p95 overview <500 ms pilot/<1 s target; save DB <500 ms; Google/export async; jobs durable/idempotent | fără polling Google frecvent | benchmark/query count, restart/retry tests | local/staging measurements | S5 polling-contract repair on `0b2f10c` (on top of `b3d0089`): the API now pre-creates a PENDING `ExportRun` at enqueue, returns its `id` as the synchronous `job_id`, and passes it to the durable worker as `payload.export_run_id`; the three export handlers update the pre-created row to `DONE` (with `artifact_uri` + `checksum_sha256`) on success or `FAILED` (with `errors`) on any exception before re-raising. Polling with the enqueue `job_id` now reads the same row the worker wrote. End-to-end contract covered by 6 new focused API tests on `0b2f10c` against SQLite (PENDING→DONE transition, `artifact_uri == hint`, xlsx/zip bytes, `sha256(summary.checksum_sha256) == sha256(file)`). Previous S5 verdict on `b3d0089` was premature on the polling contract and is reverted. Read-only audit on `0b2f10c` against a disposable PG17 is the next step; AC-16 stays UNVERIFIED until that audit confirms the contract end-to-end. | UNVERIFIED |
 | AC-17 | Un pilot shadow complet reconciliază program, pontaj, vânzări, E-pay, grile și exporturi fără a modifica V1/V2 live | V1/V2 live unchanged | manifest per store/day/person + explained zero/unresolved diffs | copied canaries only | deferred to S6. | UNVERIFIED |
 | AC-18 | Integrarea Retail folosește contract versionat și capabilitate optională; Grile rămâne deployabil fără Retail | fără shared DB schema final | contract tests + Retail-off probe + exact integration diff | staging then formal Retail gate | deferred to S7. | UNVERIFIED |
 
@@ -111,7 +111,7 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 | S2 | Calendar + pontaj + XLSX schedule import: APIs, revisions, derived projections, preview/apply atomic | S1 GO | builder 2 | 3 | PASS |
 | S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + business-source confirmations | builder 3 | 2 | PASS |
 | S4 | Manager UI complete: Overview, Program, Store, Agent, Exceptions, Close, responsive/performance | S3 GO | builder 4 | 2 | PASS |
-| S5 | Google adapter + bounded E-pay inbound + XLSX exports + copied canary | S4 GO + Google canary authority | builder 5 | 2 | PASS |
+| S5 | Google adapter + bounded E-pay inbound + XLSX exports + copied canary | S4 GO + Google canary authority | builder 5 | 3 | BUILDING |
 | S6 | Shadow pilot, reconciliation, observability, backup/runbook, production-readiness verdict | S5 GO | builder 6 | 0 | BACKLOG |
 | S7 | Versioned Retail integration, optional navigation/auth, formal migration/cutover | S6 GO + Retail stable + explicit opening | future | 0 | BACKLOG |
 
@@ -1069,6 +1069,63 @@ Resume note for the morning user:
   Verdict: S5 ACCEPTED on `b3d0089` via the MiniMax M3 fallback verifier.
   AC-12/13/14/16 are now PASS pending the AC-16 follow-up noted above.
   Live Google canary remains blocked by contract.
+
+- 2026-08-21 S5 polling-contract repair on `0b2f10c9a3c1869c74552f7a88babb8a2b5e61d4`
+  (on top of `b3d0089`). The user pointed out that the previous S5
+  verdict was premature: AC-16's polling contract was known to be broken
+  (enqueue returned `OutboxJob.id`, GET read `ExportRun` by id; two
+  independent autoincrement sequences) and was left in the AC table as
+  a "follow-up caveat". The user explicitly directed: do not declare
+  S5 / AC-16 PASS until (1) the polling id is unified, (2) the
+  end-to-end enqueue → poll same id → DONE → artifact + checksum path
+  is proven, and (3) a short read-only audit confirms it.
+  Fix landed on `0b2f10c`:
+  - `services/xlsx_export.py`: `create_pending_export_run` +
+    `finalize_export_run` (UPDATE by id, with `errors` merge); legacy
+    `record_export_run` kept as INSERT for direct callers.
+  - `api/s5b.py`: `_enqueue_export` pre-creates the `ExportRun`, returns
+    its `id` as `job_id`, threads `export_run_id` through the
+    `OutboxJob` payload. Polling endpoint now raises
+    `NotFoundError(EXPORT_JOB_NOT_FOUND)` on a missing id (404).
+  - `worker/jobs.py`: three export handlers wrap the body in
+    `try/except → _mark_export_run_failed → raise`, so the pre-created
+    `ExportRun` transitions to `FAILED` with `errors` populated on any
+    failure path; success path calls `finalize_export_run(... DONE,
+    artifact_uri, summary{checksum_sha256,...})`. New helpers
+    `_resolve_export_run_id`, `_mark_export_run_failed`,
+    `_resolve_artifact_uri`.
+  - `tests/api/test_s5b_export.py`: rewritten to actually run the worker
+    in-process via `run_once` and assert the enqueue-then-poll contract
+    end-to-end (PENDING → DONE, `artifact_uri == hint`, xlsx/zip bytes,
+    `sha256(file) == summary.checksum_sha256`). New tests:
+    `test_export_store_enqueues_with_export_run_id_and_artifact_hint`,
+    `test_export_store_polling_returns_done_with_artifact_and_checksum`,
+    `test_export_bulk_polling_returns_done_with_zip_artifact`,
+    `test_export_pontaj_only_polling_returns_done_with_xlsx`,
+    `test_export_job_polling_marks_failed_when_handler_raises`,
+    `test_export_job_polling_404_for_unknown_id`,
+    `test_export_default_idempotency_key_is_stable`.
+  - `tests/worker/test_s4_jobs.py`: pre-creates the `ExportRun` so the
+    existing S4 contract test exercises the
+    missing-month → OutboxJob-FAILED + ExportRun-FAILED path.
+  Local evidence: ruff clean, mypy --strict clean on the 3 changed
+  source files; full backend `pytest` 285 passed, 2 skipped (PG-only
+  paths), 0 failed. The S4 perf benchmark is known to be intermittent
+  on a single run (per the plan's own perf-noise caveat) and passed on
+  the re-run that produced the same `285 passed` count.
+  AC-12/13/14/15/16 status as of this entry:
+  - AC-12/13/14/15: PASS (unchanged).
+  - AC-16: UNVERIFIED; fix applied on `0b2f10c`, read-only audit
+    against a disposable PG17 is the next exact step. Do not open S6
+    or re-mark S5 / AC-16 PASS until the audit returns GO on
+    `0b2f10c`. The audit scope is narrow: enqueue → poll same id →
+    DONE → artifact exists → `sha256(file) == summary.checksum_sha256`,
+    plus the FAILED-on-bad-input path and the `EXPORT_JOB_NOT_FOUND`
+    404 path. Browser proof remains UNVERIFIED (Vite EACCES on
+    `frontend/dist` is a separate ownership blocker).
+  Live Google canary remains blocked by contract (zero live sheets).
+  Vite build blocker preserved as-is and remains a separate local
+  ownership issue.
 
 ## Resume procedure
 
