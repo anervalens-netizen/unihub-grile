@@ -1,44 +1,145 @@
 # UniHub Grile
 
-Aplicație standalone pentru program, pontaj, suplimentare, atribuirea vânzărilor,
-grile salariale și proiecția lor în Google Sheets.
+UniHub Grile este modulul de program, pontaj și calcul al grilelor salariale care
+va fi integrat ulterior în UniHub Retail. **În etapa curentă se dezvoltă și se
+validează complet separat**, astfel încât integrarea finală în Retail să fie în
+principal o operație de conectare a unor contracte/adaptoare stabile, nu o a
+doua dezvoltare majoră.
 
-Stare curentă: **S1–S5 PASS; S6 READY; S7 BACKLOG**.
+## Obiectiv curent
 
-Stackul local pornește determinist `migrate → API/worker → web`, fără instalări
-de pachete la runtime. Fluxul fixture verificat este Program → Pontaj → calcul
-grilă → export asincron → polling → download XLSX. Google live și Retail rămân
-neatinse; canary-ul Google copiat se autorizează separat.
+Ținta programului este un **Standalone Plugin Candidate >= 8.5/10, gata pentru
+test pe server**, fără nicio modificare în repository-ul sau runtime-ul
+`anervalens-netizen/unihub-retail`.
 
-## Principiul de bază
+Retail poate fi inspectat read-only pentru compatibilitate: arhitectură, auth,
+capabilities, modele de date, convenții UI și contracte. Până când utilizatorul
+deschide explicit milestone-ul de integrare, Grile nu trebuie să modifice,
+oprească, deployeze, rebase-uiască sau să introducă dependențe runtime în Retail.
 
-Managerul lucrează în aplicație. Agentul primește Google Sheet-ul magazinului,
-cu grila și calendarul în mod funcțional read-only. Singurele intrări permise în
-Sheet sunt cele două cantități E-pay pentru fiecare agent.
+## Ce face Grile
+
+- program lunar pe magazin și persoană;
+- `NORMAL`, `EXTRA_HOME`, `EXTRA_OTHER`, `OFF`, `LEAVE`;
+- pontaj derivat din calendar;
+- atribuire deterministă a vânzării magazin/zi către agentul planificat;
+- calcul salarial versionat prin rule pack Mobiup;
+- E-pay validat și auditat;
+- excepții și close/reopen de lună;
+- Google Sheets ca proiecție controlată + input E-pay limitat;
+- import/export XLSX;
+- worker durabil pentru operațiile asincrone.
+
+PostgreSQL și motorul Grile sunt autoritatea pentru program, pontaj, atribuire,
+calcul și close. Google Sheets nu este baza de date a aplicației și nu conține
+autoritatea formulelor financiare.
+
+## Stare
+
+Aplicația are deja un nucleu funcțional important: model de domeniu, calendar cu
+revision/CAS, pontaj, atribuire, rule pack, grile, close/reopen, Google/XLSX și un
+frontend standalone apropiat vizual de UniHub Retail.
+
+**Nu este încă server-test-ready sau production-ready.** Programul curent
+prioritizează autorizarea/scope-ul, siguranța financiară la close, reziliența
+workerului, maturizarea frontendului, CI/observability, productionizarea
+Google/XLSX și contractele de integrare Retail.
+
+Statusul taskurilor nu se deduce din acest README și nici din vechile etichete
+`S1…S7`. Se citește exclusiv din Master Tracker.
+
+## Surse canonice
+
+Ordinea de autoritate este:
+
+1. [Program Plan — issue #3](https://github.com/anervalens-netizen/unihub-grile/issues/3)
+2. [Master Tracker — issue #4](https://github.com/anervalens-netizen/unihub-grile/issues/4)
+3. [Contract produs](docs/PRODUCT_CONTRACT.md)
+4. [Arhitectură](ARCHITECTURE.md)
+5. [Mobiup rule pack](docs/MOBIUP_RULE_PACK.md)
+6. [UX / Google / XLSX](docs/UX_EXCEL_SPEC.md)
+7. [Contract integrare Retail](docs/RETAIL_INTEGRATION_CONTRACT.md)
+8. [Quality gates](docs/QUALITY_GATES.md)
+9. [Reguli pentru agenți](AGENTS.md)
+10. [Comenzi și operare locală](docs/operations/local-commands.md)
+
+Documentele istorice pot demonstra decizii sau teste anterioare, dar nu pot
+contrazice planul #3 sau trackerul #4.
+
+## Arhitectura dorită
 
 ```text
-Retail sau alt sistem client
+               dezvoltare curentă
+
+ Fixture/Contract adapters
           |
-          | contract versionat: magazine, persoane, vânzări, targete
           v
-     UniHub Grile
-       |      |
-       |      +--> Manager UI: calendar, excepții, close, import/export
-       |
-       +---------> Google Sheets: proiecție + input E-pay restrâns
++-------------------------------+
+|       UniHub Grile            |
+| API -> services -> domain     |
+|          |                    |
+|     PostgreSQL                |
+|          |                    |
+|        worker                 |
+|       /       \               |
+| Google Sheets  XLSX           |
++-------------------------------+
+
+         integrare ulterioară
+
+ UniHub Retail
+  | identity/capabilities
+  | catalog/scope
+  | sales/targets/incentives
+  v
+ Retail adapters -> aceleași contracte Grile
 ```
 
-## Documente canonice
+Domain-ul Grile nu trebuie să știe dacă inputul provine din fixture sau din
+Retail. Aceasta este condiția principală pentru un plug-in final cu risc mic.
 
-- [Arhitectură](ARCHITECTURE.md)
-- [Contract produs și reguli business](docs/PRODUCT_CONTRACT.md)
-- [Reguli Mobiup: grilă și Pontaj](docs/MOBIUP_RULE_PACK.md)
-- [UX, import și export Excel](docs/UX_EXCEL_SPEC.md)
-- [Tracker activ](docs/exec-plans/active/UGR-001-STANDALONE-GRILE.md)
-- [Reguli ExecPlan](.agent/PLANS.md)
+## Workflow de lucru
 
-## Pentru agentul care implementează
+Pentru orice batch de dezvoltare:
 
-Nu porni din conversații. Citește documentele de mai sus, apoi implementează
-numai etapa marcată `READY` în tracker. Predă commitul exact, comenzile și
-rezultatele cerute de acea etapă. Evaluarea GO/NO-GO se face ulterior, read-only.
+1. citește issue #3 și #4;
+2. selectează taskurile `READY` cu prioritatea cea mai mare;
+3. inspectează `main` și codul relevant;
+4. lucrează pe branch/PR focalizat;
+5. rulează verificările relevante înainte de merge;
+6. PR-ul enumeră task IDs, contractele schimbate, testele și limitările;
+7. după merge, trackerul #4 se actualizează imediat cu dovezi și următorul pas.
+
+Nu se creează trackere paralele. Nu se marchează un task complet doar pentru că
+există cod; este necesară dovada cerută de quality gates.
+
+## Quick start local
+
+```bash
+make install
+make pg-up
+make migrate
+make test
+make build
+```
+
+Pentru API și frontend:
+
+```bash
+make api
+make web
+```
+
+Detalii și limitări: `docs/operations/local-commands.md`.
+
+## Gate final înainte de test pe server
+
+Candidate-ul poate fi declarat gata numai dacă:
+
+- scorul total este `>= 8.5/10`;
+- nu există P0/P1 deschis pe correctness, authorization, data loss sau close;
+- CI obligatoriu este verde pe exact commitul candidat;
+- reconcilierea shadow nu are diferențe salariale neexplicate;
+- fluxurile principale sunt validate end-to-end;
+- contractul de integrare Retail este complet;
+- `unihub-retail` a rămas nemodificat pe durata acestui program.
