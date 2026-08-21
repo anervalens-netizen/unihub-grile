@@ -1,44 +1,88 @@
-# ExecPlan rules
+# UniHub Grile — planning and tracking rules
 
-Use one ExecPlan for substantial, multi-session, multi-component work. Keep one
-canonical active plan per objective and update it as the living source of truth.
+## Canonical program state
 
-## Required properties
+For the current multi-session program there are exactly two canonical planning
+artifacts:
 
-- A fresh session must be able to resume from the repository, plan, evidence
-  pointers, and Git history without the original conversation.
-- Record baseline, objective, non-goals, dependencies, acceptance criteria,
-  progress, attempts, decisions, evidence, risks, and next exact step.
-- Every acceptance criterion starts `UNVERIFIED`.
-- Update after each material attempt, discovery, failure, decision, commit, audit
-  verdict, integration, or deployment event.
+1. GitHub issue **#3** — program plan, scope, milestones, sequence and final gate.
+2. GitHub issue **#4** — master task/status/evidence tracker.
 
-## State model
+Do not create another repository-level active plan or tracker for the same
+objective. `docs/exec-plans/active/UGR-001-STANDALONE-GRILE.md` is retained only
+as a supersession pointer/history marker.
 
-Task states: `BACKLOG -> READY -> BUILDING -> VERIFYING -> PASS`. Any state may
-become `BLOCKED`. An audit `FAIL` returns the task to `BUILDING` and increments
-attempts.
+## Resume rule
 
-Overall outcomes: `DONE`, `PARTIAL`, or `BLOCKED`. `DONE` requires all criteria
-to be `PASS`, relevant regression checks, and required runtime proof.
+A fresh agent/session must be able to resume by reading:
 
-## GO/NO-GO rule
+1. issue #3;
+2. issue #4;
+3. `README.md` and `AGENTS.md`;
+4. the canonical domain/architecture document relevant to the selected task;
+5. current Git history/PRs.
 
-- The builder never self-authorizes `PASS`.
-- The builder provides the exact commit plus listed evidence.
-- A later read-only reviewer checks the contract against that artifact and issues
-  `GO` (`PASS`), `NO-GO` (`FAIL`), or `BLOCKED`.
-- The primary reviewer records the verdict in the plan.
+Conversation memory is optional context, not the source of truth.
 
-## Evidence hygiene
+## Task state
 
-Store concise commands, hashes, counts, and sanitized artifacts. Never store
-credentials, Google Sheet IDs, personal data, production rows, or unnecessary
-raw logs.
+Issue #4 uses checkboxes for completion plus concise status notes when needed.
+Operational states may be:
+
+`BACKLOG -> READY -> IN_PROGRESS -> VERIFYING -> DONE`
+
+Any task may become `BLOCKED`.
+
+A checkbox becomes `[x]` only after the required evidence exists. Code presence
+alone is not completion.
+
+## Evidence rule
+
+Evidence must match the claim:
+- pure rule: deterministic/golden tests;
+- DB/concurrency: real PostgreSQL;
+- auth/scope: positive + adversarial negative tests;
+- frontend runtime/visual: browser when required;
+- XLSX: parse produced workbook;
+- Google: fake structural tests + bounded canary at the appropriate gate;
+- deployment: actual runtime probe;
+- performance: measured representative fixture.
+
+Always record what could not be verified. Never convert an unavailable verifier
+into an inferred PASS.
+
+## GitHub delivery loop
+
+For a material batch:
+
+1. choose READY task IDs from issue #4;
+2. inspect current `main` and relevant files;
+3. work on a focused branch/PR;
+4. run targeted checks;
+5. PR body lists task IDs, changed contracts, evidence and limitations;
+6. merge only when mandatory checks pass;
+7. update issue #4 immediately after merge with exact evidence and next READY.
+
+Issue #3 changes only for real scope/architecture/sequence decisions. Routine
+progress belongs in #4.
+
+## Retail boundary
+
+Throughout this program, `unihub-retail` is read-only reference material. No
+plan, task or agent may interpret inspection permission as write/deploy
+permission. Actual Retail integration starts in a separate user-approved program
+after `SERVER-TEST-READY`.
 
 ## Stagnation
 
-Never repeat an unchanged failed approach. After two attempts without measurable
-progress, record cause analysis and replan once. If the replanned approach also
-stalls, mark `BLOCKED` with the exact unblock condition.
+Do not repeat an unchanged failed approach. After two attempts without measurable
+progress, record cause analysis and replan once. If the replanned path also
+stalls, mark the task BLOCKED with the exact unblock condition.
 
+## Change control
+
+If implementation discovers a contradiction with issue #3 or canonical product
+contracts, stop treating the old assumption as authoritative. Update the plan,
+tracker and affected canonical document explicitly in the same decision batch.
+Older stage evidence remains historical and cannot silently override the current
+program.
