@@ -699,12 +699,17 @@ class ExceptionService:
         )
         entries: list[ExceptionEntry] = []
         for blocker in validation.blockers:
-            if (
-                scoped_ids is not None
-                and blocker.store_id is not None
-                and blocker.store_id not in scoped_ids
-            ):
-                continue
+            if scoped_ids is not None and blocker.store_id is not None:
+                if blocker.business_date is not None:
+                    allowed_for_date = (
+                        manager_scope_store_ids.get(blocker.business_date, set())
+                        if manager_scope_store_ids is not None
+                        else set()
+                    )
+                    if blocker.store_id not in allowed_for_date:
+                        continue
+                elif blocker.store_id not in scoped_ids:
+                    continue
             entries.append(
                 ExceptionEntry(
                     code=blocker.code,

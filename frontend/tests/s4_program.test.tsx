@@ -101,10 +101,24 @@ describe("Program page", () => {
     expect(afterCalls).toBeGreaterThanOrEqual(beforeCalls);
   });
 
-  it("does not POST to /program/cell from the page itself (cell editor is separate)", async () => {
+  it("posts an unlocked cell through the revisioned endpoint", async () => {
     const { api, posts } = makeApi();
     render(<Program api={api} months={[MONTH]} monthsError={null} />);
     await screen.findByText("store_x · Demo Store");
-    expect(posts.length).toBe(0);
+    fireEvent.click(screen.getByRole("button", { name: /Demo Store pe 2026-08-01/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Salvează" }));
+    expect(posts[0]?.path).toBe(`/months/${MONTH.id}/program/cell?expected_revision=0`);
+  });
+
+  it("shows a stale-revision conflict without replacing the editor or grid", async () => {
+    const { api } = makeApi();
+    (api.post as ReturnType<typeof vi.fn>).mockRejectedValueOnce({ status: 409, message: "conflict" });
+    render(<Program api={api} months={[MONTH]} monthsError={null} />);
+    await screen.findByText("store_x · Demo Store");
+    fireEvent.click(screen.getByRole("button", { name: /Demo Store pe 2026-08-01/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Salvează" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/revizie stale/i);
+    expect(screen.getByRole("button", { name: "Salvează" })).toBeInTheDocument();
+    expect(screen.getByText("store_x · Demo Store")).toBeInTheDocument();
   });
 });

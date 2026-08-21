@@ -3,6 +3,7 @@ import {
   type ApiClient,
   type ChecklistItem,
   type CloseChecklist,
+  type CloseOutcome,
   type MonthSummary,
 } from "../api/client";
 import { MonthSelector } from "../components/MonthSelector";
@@ -35,6 +36,9 @@ export function Close({ api, months, monthsError }: CloseProps) {
   const [error, setError] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [reopenError, setReopenError] = useState<string | null>(null);
+  const [closeError, setCloseError] = useState<string | null>(null);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [closing, setClosing] = useState(false);
 
   useEffect(() => {
     setMonthId((current) => current ?? months[0]?.id ?? null);
@@ -67,6 +71,24 @@ export function Close({ api, months, monthsError }: CloseProps) {
 
   const trimmedReason = reason.trim();
   const reasonValid = trimmedReason.length >= 4;
+
+  function handleClose() {
+    if (!monthId || !checklist || checklist.blockers.some((item) => item.blocking)) return;
+    setClosing(true);
+    setCloseError(null);
+    api.post<CloseOutcome>(`/months/${monthId}/close`, { expected_revision: checklist.expected_revision })
+      .then(() => Promise.all([
+        api.get<CloseChecklist>(`/months/${monthId}/close-checklist`),
+        api.get<CloseEventOut[]>(`/months/${monthId}/close-events`),
+      ]))
+      .then(([nextChecklist, events]) => {
+        setChecklist(nextChecklist);
+        setTimeline(events);
+        setConfirmClose(false);
+      })
+      .catch((e: unknown) => setCloseError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setClosing(false));
+  }
 
   function handleReopen() {
     if (!monthId) return;
@@ -121,6 +143,21 @@ export function Close({ api, months, monthsError }: CloseProps) {
                 ))}
               </ul>
             )}
+          </section>
+          <section className="close-action" aria-label="Închidere lună">
+            <h3>Închidere lună</h3>
+            <p className="muted">Confirmă explicit după verificarea checklist-ului. Revizia trimisă este {checklist.expected_revision}.</p>
+            {checklist.blockers.some((item) => item.blocking) && <p className="error-text">Închiderea este blocată până la rezolvarea tuturor condițiilor blocante.</p>}
+            {!confirmClose ? (
+              <button type="button" className="primary" disabled={checklist.blockers.some((item) => item.blocking) || checklist.state === "CLOSED"} onClick={() => setConfirmClose(true)}>Pregătește închiderea</button>
+            ) : (
+              <div role="alertdialog" aria-label="Confirmare închidere">
+                <p>Închizi luna la revizia {checklist.expected_revision}? Această acțiune este auditabilă și îngheață luna.</p>
+                <button type="button" className="primary" onClick={handleClose} disabled={closing}>{closing ? "Închid…" : "Confirmă închiderea"}</button>
+                <button type="button" onClick={() => setConfirmClose(false)} disabled={closing}>Renunță</button>
+              </div>
+            )}
+            {closeError && <p className="error" role="alert">{closeError}</p>}
           </section>
           <section className="close-reopen" aria-label="Reopen admin">
             <h3>Reopen (admin-only)</h3>

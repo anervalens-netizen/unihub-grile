@@ -13,6 +13,7 @@ The grid router exposes:
 
 from __future__ import annotations
 
+from calendar import monthrange
 from datetime import date
 from decimal import Decimal
 
@@ -44,7 +45,7 @@ from ..repositories.models import (
 from ..repositories.months import MonthRepository
 from ..repositories.salary import SalaryRepository
 from ..services.attribution import AttributionService
-from ..services.auth import Principal, assert_admin, assert_same_tenant
+from ..services.auth import Principal, assert_admin, assert_same_tenant, effective_store_ids
 from ..services.grid import GridService
 
 router = APIRouter(prefix="/months", tags=["grid"])
@@ -80,18 +81,40 @@ def compute_grid(
 @router.get("/{month_id}/grid", response_model=list[GridCalculationOut])
 def get_grid(
     month_id: str,
+    store_id: str | None = None,
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> list[GridCalculationOut]:
     month = _month_or_404(session, month_id, principal)
+    month_dates = [
+        date(month.year, month.month, day)
+        for day in range(1, monthrange(month.year, month.month)[1] + 1)
+    ]
+    allowed_by_date = {
+        business_date: effective_store_ids(session, principal, business_date)
+        for business_date in month_dates
+    }
+    allowed_stores = set().union(*allowed_by_date.values()) if allowed_by_date else set()
+    if store_id is not None:
+        allowed_stores &= {store_id}
     rows = list(
         session.execute(
             select(GridCalculation).where(
                 GridCalculation.tenant_id == principal.tenant_id,
                 GridCalculation.month_id == month.id,
+                GridCalculation.store_id.in_(allowed_stores),
             ).order_by(GridCalculation.person_id)
         ).scalars()
     )
+    # A calculation is month-scoped but may contain rows whose attribution dates
+    # cross a date-effective manager boundary. Keep a row only when its store is
+    # authorized on at least one day represented by the calculation payload.
+    if principal.role.value != "ADMIN":
+        rows = [
+            row
+            for row in rows
+            if row.store_id in allowed_stores
+        ]
     return [GridCalculationOut.model_validate(row) for row in rows]
 
 
@@ -141,6 +164,7 @@ def list_salary(
 @router.get("/{month_id}/attribution", response_model=AttributionMonthOut)
 def get_attribution(
     month_id: str,
+    store_id: str | None = None,
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> AttributionMonthOut:
@@ -150,6 +174,13 @@ def get_attribution(
         month=month,
         revision=month.revision,
     )
+    allowed_by_date = {
+        date(month.year, month.month, day): effective_store_ids(
+            session, principal, date(month.year, month.month, day)
+        )
+        for day in range(1, monthrange(month.year, month.month)[1] + 1)
+    }
+    allowed = set().union(*allowed_by_date.values()) if allowed_by_date else set()
     rows = [
         AttributionRowOut(
             person_id=row.person_id,
@@ -162,6 +193,7 @@ def get_attribution(
             revision=row.revision,
         )
         for row in summary.attributed
+        if row.store_id in allowed and (store_id is None or row.store_id == store_id)
     ]
     return AttributionMonthOut(
         month_id=month.id,

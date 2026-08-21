@@ -40,13 +40,15 @@ from ..api.schemas import (
     OverviewNeedsAttentionOut,
     OverviewOut,
     ProgramCellOut,
+    ProgramChoiceOut,
+    ProgramChoicesOut,
     ProgramGridOut,
     ProgramRowOut,
     ReopenWithReasonIn,
 )
-from ..domain.enums import DayStatus, MonthState
+from ..domain.enums import DayStatus, MonthState, WorkingKind
 from ..domain.errors import DomainError, ScopeError
-from ..repositories.models import Month, PontajProjection, SiteDayAssignment
+from ..repositories.models import Month, Person, PontajProjection, SiteDayAssignment
 from ..repositories.months import MonthRepository
 from ..services.auth import (
     Principal,
@@ -127,6 +129,39 @@ def get_overview(
 # ---------------------------------------------------------------------------
 # Program (per magazine / per agenti)
 # ---------------------------------------------------------------------------
+
+
+@router.get("/{month_id}/program/choices", response_model=ProgramChoicesOut)
+def get_program_choices(
+    month_id: str,
+    business_date: date,
+    store_id: str,
+    session: Session = Depends(db_session),
+    principal: Principal = Depends(current_principal),
+) -> ProgramChoicesOut:
+    month = MonthRepository(session).get(month_id)
+    assert_same_tenant(principal, month.tenant_id)
+    if business_date.year != month.year or business_date.month != month.month:
+        raise ScopeError("business date is outside requested month", details={"business_date": business_date.isoformat()})
+    allowed = effective_store_ids(session, principal, business_date)
+    if store_id not in allowed:
+        raise ScopeError("requested store is outside manager scope", details={"store_id": store_id, "business_date": business_date.isoformat()})
+    people = list(session.execute(select(Person).where(
+        Person.tenant_id == principal.tenant_id,
+        Person.is_active.is_(True),
+        Person.home_store_id.in_(allowed),
+    ).order_by(Person.display_name)).scalars())
+    choices = [
+        ProgramChoiceOut(
+            person_id=person.id,
+            display_name=person.display_name,
+            home_store_id=person.home_store_id,
+            allowed_store_ids=sorted(allowed),
+            working_kinds=[WorkingKind.NORMAL, WorkingKind.EXTRA_HOME, WorkingKind.EXTRA_OTHER],
+        )
+        for person in people
+    ]
+    return ProgramChoicesOut(month_id=month.id, business_date=business_date, store_id=store_id, choices=choices)
 
 
 @router.get("/{month_id}/program", response_model=ProgramGridOut)

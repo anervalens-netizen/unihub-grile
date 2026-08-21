@@ -421,6 +421,21 @@ class ProgramGridOut(BaseModel):
     legend: list[str]
 
 
+class ProgramChoiceOut(BaseModel):
+    person_id: str
+    display_name: str
+    home_store_id: str
+    allowed_store_ids: list[str]
+    working_kinds: list[WorkingKind]
+
+
+class ProgramChoicesOut(BaseModel):
+    month_id: str
+    business_date: date
+    store_id: str
+    choices: list[ProgramChoiceOut]
+
+
 class ExceptionOut(BaseModel):
     code: str
     severity: int
@@ -580,6 +595,8 @@ __all__ = [
     "PontajPersonTotalsOut",
     "PontajRowOut",
     "ProgramCellOut",
+    "ProgramChoiceOut",
+    "ProgramChoicesOut",
     "ProgramGridOut",
     "ProgramRowOut",
     "ReopenIn",

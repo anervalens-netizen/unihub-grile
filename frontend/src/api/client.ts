@@ -22,7 +22,7 @@ export interface ApiClient {
   healthz(): Promise<HealthReport>;
   readyz(): Promise<HealthReport>;
   get<T>(path: string, init?: RequestInit): Promise<T>;
-  post<T>(path: string, body: unknown, init?: RequestInit): Promise<T>;
+  post<T>(path: string, body?: unknown, init?: RequestInit): Promise<T>;
 }
 
 export interface ClientConfig {
@@ -100,6 +100,21 @@ export interface ProgramRow {
   cells: ProgramCell[];
 }
 
+export interface ProgramChoice {
+  person_id: string;
+  display_name: string;
+  home_store_id: string;
+  allowed_store_ids: string[];
+  working_kinds: string[];
+}
+
+export interface ProgramChoices {
+  month_id: string;
+  business_date: string;
+  store_id: string;
+  choices: ProgramChoice[];
+}
+
 export interface ProgramGrid {
   month_id: string;
   year: number;
@@ -158,6 +173,102 @@ export interface MonthSummary {
   state: string;
   revision: number;
   closed_at: string | null;
+}
+
+export interface StoreSummary {
+  id: string;
+  tenant_id: string;
+  company_code: string;
+  internal_code: string;
+  external_code: string | null;
+  name: string;
+  is_active: boolean;
+}
+
+export interface PersonSummary {
+  id: string;
+  tenant_id: string;
+  internal_code: string;
+  external_code: string | null;
+  display_name: string;
+  home_store_id: string;
+  is_active: boolean;
+}
+
+export interface AttributionRow {
+  person_id: string;
+  store_id: string;
+  business_date: string;
+  amount: number | string;
+  currency: string;
+  generation: string;
+  working_kind: string;
+  revision: number;
+}
+
+export interface AttributionResponse {
+  month_id: string;
+  revision: number;
+  total_rows: number;
+  company_total: number | string;
+  rows: AttributionRow[];
+  anomalies: Record<string, unknown>[];
+}
+
+export interface GridCalculation {
+  id: number;
+  tenant_id: string;
+  month_id: string;
+  store_id: string;
+  person_id: string;
+  rule_pack_version: string;
+  revision: number;
+  inputs_hash: string;
+  outputs_hash: string;
+  payload: string;
+}
+
+export interface EpayFreshness {
+  store_id: string;
+  is_fresh: boolean;
+  fresh_count: number;
+  expected_count: number;
+  threshold: string;
+}
+
+export interface EpayReadbackItem {
+  person_id: string;
+  category: string;
+  value: number | null;
+  raw_value: string | null;
+  is_valid: boolean;
+}
+
+export interface EpayReadback {
+  store_id: string;
+  month_id: string;
+  observed_at: string;
+  valid_count: number;
+  invalid_count: number;
+  items: EpayReadbackItem[];
+}
+
+export interface SheetProjection {
+  store_id: string;
+  generation: string;
+  last_success_generation: string | null;
+  last_run_at: string | null;
+  last_error: string | null;
+  failures: number;
+  payload: { grila: Record<string, unknown>; pontaj: Record<string, unknown> } | null;
+}
+
+export interface CloseOutcome {
+  month_id: string;
+  revision: number;
+  new_state: string;
+  audit_event_id: number;
+  blockers: Array<Record<string, unknown>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +330,7 @@ export function createApiClient(config: ClientConfig): ApiClient {
     healthz: () => request<HealthReport>("GET", "/healthz"),
     readyz: () => request<HealthReport>("GET", "/readyz"),
     get: <T>(path: string, init?: RequestInit) => request<T>("GET", path, undefined, init),
-    post: <T>(path: string, body: unknown, init?: RequestInit) =>
+    post: <T>(path: string, body?: unknown, init?: RequestInit) =>
       request<T>("POST", path, body, init),
   };
 }

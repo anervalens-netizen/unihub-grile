@@ -888,6 +888,83 @@ Resume note for the morning user:
   limit on the proof method.
 
 
+## Current handoff / contract freeze (2026-08-21)
+
+- Resume source is exact clean `main` HEAD
+  `b3d0089c83723d5db04b8293050005cef553b910`; S1–S3 are PASS and S5
+  contract-repair implementation is present. No Retail, S6 or S7 work is opened.
+- The only candidate-affecting workstream opened in this round is the remaining
+  S4 manager UI contract repair. Frozen required behavior: (1) Program cell
+  selection/edit/save calls the existing `/program/cell` authority and surfaces
+  stale-revision `409` without losing the current grid; (2) Close presents the
+  real checklist → explicit confirm → close action, refreshes immutable audit
+  timeline, and keeps reopen admin-only/reasoned; (3) Magazin and Agent expose
+  the contract fields and actions from `docs/UX_EXCEL_SPEC.md` without leaking
+  other stores/people; (4) Overview respects the manager's effective scope and
+  does not render tenant-wide manager/store information. Existing backend
+  authorization, calendar, close, S5 export/E-pay/canary invariants and all
+  S1–S3 behavior are protected.
+- Proof target: one coherent S4 repair candidate, focused frontend/API tests and
+  static checks, followed by a fresh read-only GPT-5.6 Luna audit against the
+  exact candidate. Playwright/browser probing is unavailable in this sandbox and
+  must be reported as a limitation, not silently treated as proof. Google remains
+  fake/copy-canary only; no live Sheet writes are authorized.
+- CBP preflight: `RUNTIME_PROFILE=trusted DSH`; builder route for this packet
+  is the explicitly authorized `workflow > agent(provider=openai,
+  model=gpt-5.6-luna)` after MiniMax returned no artifact; final verifier route
+  remains a separate fresh clean-context `workflow > agent(provider=openai,
+  model=gpt-5.6-luna)`; verifier inheritance is `NO`; workspace mode is
+  `SHARED_WORKSPACE` with one writer total; plan is visible to the next
+  coordinator session.
+- Current overall state remains `ACTIVE`; S4 is `BUILDING`, AC-10/AC-16 and
+  the UI portions of AC-04/11/15 remain `UNVERIFIED` until independent audit.
+- 2026-08-21 builder preflight attempt: the mandatory MiniMax-M3 workflow
+  returned no artifact/result before making source changes; `git status` still
+  shows only this plan edit and no implementation writer is active. The cost
+  ledger confirms MiniMax is configured/used today, but does not identify this
+  failed packet as a completed builder. Runtime-procedure amendment authorized
+  explicitly by the user: use `workflow > agent(provider=openai,
+  model=gpt-5.6-luna)` for this builder packet, then use a separate fresh Luna
+  child for final verification. This changes only the builder route, not the
+  frozen behavior, protected boundaries, or verifier-independence requirement.
+-  2026-08-21 fallback builder material: Program now has an inline editor that
+  posts the existing revisioned `/program/cell` endpoint and retains the grid on
+  errors; Close now gates explicit confirmation on blocking checklist items and
+  refreshes checklist/timeline after close; Magazin and Agent request their
+  contract read models/actions and filter store/person data; Overview hides
+  empty out-of-scope manager rows. Frontend tests and typecheck pass. Production
+  build is currently blocked by pre-existing root-owned `frontend/dist` files
+  (`EACCES` during Vite cleanup); no browser proof is available.
+- Builder-reported read-only probe result: FAIL. It identified an Agent call
+  to a nonexistent E-pay person endpoint, unsupported/mismatched Magazin
+  catalog fields and placeholder target/forecast/preview content, insufficient
+  date-effective Program option scoping, and missing focused tests for Program
+  save/stale retention, Close close/refresh, Magazin, and Agent. This is builder
+  evidence, not the final acceptance verdict; do not mark S4 PASS. The next
+  safe action is a new coherent repair packet addressing these exact findings,
+  without broadening into S5/S6/S7.
+- 2026-08-21 Luna-route remediation attempt: source repair completed in the
+  shared packet. Agent now derives identity/store from the scoped program and
+  uses only month-scoped attribution/grid/freshness/projection routes; Magazin
+  uses the actual S5 routes and StoreOut/PersonOut/GridCalculationOut payload
+  shapes, removes target/forecast/preview placeholders, and posts only the real
+  export/sync actions; Program options derive from current grid rows rather than
+  broad catalogs; the previous no-POST test now verifies the real cell POST.
+  Focused frontend tests pass (17/17) and typecheck passes. Build remains blocked
+  by pre-existing root-owned frontend/dist files (EACCES unlink); no acceptance
+  PASS is claimed and independent verification remains required.
+- Builder-reported remaining gaps after that remediation: focused tests still do
+  not cover stale-409 retention, Close confirmation/refresh, Magazin or Agent;
+  Program choices derived only from visible/current grid rows are not a
+  date-effective catalog proof; backend grid/attribution filtering currently
+  uses month-start scope and needs careful date-effective review. These are
+  implementation gaps for the next coherent builder pass, not acceptance
+  verdicts.
+
+- 2026-08-21 final S4 frontend hardening: Program explicitly recognizes ApiError-shaped HTTP 409 and keeps the editor/grid while rendering a stale-revision conflict; focused test uses a mocked 409 with no refresh POST assertion. Close tests cover blocking preparation, explicit confirmation, expected_revision close POST, and post-close checklist/events refresh. Magazin/Agent tests exercise the actual catalog/month-scoped routes, response fields, scoped actions, and reject fabricated endpoint patterns. Frontend Vitest (22/22), typecheck, and diff check pass. Vite build attempted and remains blocked by pre-existing root-owned `frontend/dist` EACCES; no browser proof and no acceptance PASS claim. Independent clean-context verification remains required.
+
+- 2026-08-21 S4 hardening continuation: fixed brittle Close assertion by selecting the audit action element and made Magazin heading accessible/queryable as a single labelled heading. Focused frontend suite passes `22/22` across the frontend suite; `pnpm exec tsc --noEmit` passes. Backend focused pytest cannot start in the current shell because `sqlalchemy` is unavailable (`ModuleNotFoundError`), and `ruff` is unavailable; no backend verdict is claimed. Date-effective grid scope now unions all month dates instead of using month-start scope, and exception filtering uses the blocker date where present. Attribution response filtering remains month-start based in the current diff and still requires correction to row-date scope plus authoritative choices endpoint/schema and out-of-scope error behavior. Vite/browser proof remains unavailable. Preserve this uncommitted shared tree without commit/deploy; do not mark S4 PASS.
+
 ## Resume procedure
 
 1. Read `AGENTS.md`, `README.md`, `ARCHITECTURE.md`, product/UX contracts, and

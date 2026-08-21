@@ -26,6 +26,26 @@ const MONTH: MonthSummary = {
   closed_at: null,
 };
 
+const CLEAR_CHECKLIST: CloseChecklist = {
+  ...{
+    month_id: MONTH.id,
+    revision: 0,
+    state: "OPEN",
+    blockers: [],
+    generated_at: null,
+    export_summary: [],
+    job_summary: [],
+    expected_revision: 0,
+  },
+};
+
+const CLOSED_CHECKLIST: CloseChecklist = {
+  ...CLEAR_CHECKLIST,
+  revision: 1,
+  expected_revision: 1,
+  state: "CLOSED",
+};
+
 const CHECKLIST: CloseChecklist = {
   month_id: MONTH.id,
   revision: 0,
@@ -45,16 +65,16 @@ const CHECKLIST: CloseChecklist = {
   expected_revision: 0,
 };
 
-function makeApi(): ApiClient {
+function makeApi(checklist: CloseChecklist = CHECKLIST): ApiClient {
   return {
     healthz: vi.fn(),
     readyz: vi.fn(),
     get: vi.fn(async (path: string) => {
-      if (path.endsWith("/close-checklist")) return CHECKLIST;
+      if (path.endsWith("/close-checklist")) return checklist;
       if (path.endsWith("/close-events")) return [];
       throw new Error(`unexpected GET ${path}`);
     }),
-    post: vi.fn(async () => CHECKLIST),
+    post: vi.fn(async () => checklist),
   } as unknown as ApiClient;
 }
 
@@ -85,5 +105,39 @@ describe("Close page reopen reason validation", () => {
     render(<Close api={api} months={[MONTH]} monthsError={null} />);
     expect(await screen.findByText(/Audit timeline/)).toBeTruthy();
     expect(screen.getByText(/Niciun eveniment/)).toBeTruthy();
+  });
+
+  it("blocks preparation while checklist blockers remain", async () => {
+    const api = makeApi();
+    render(<Close api={api} months={[MONTH]} monthsError={null} />);
+    expect(await screen.findByRole("button", { name: /Pregătește închiderea/i })).toBeDisabled();
+  });
+
+  it("prepares, confirms, posts expected_revision, and refreshes checklist/events", async () => {
+    let checklistCalls = 0;
+    const events = [{
+      id: 1, month_id: MONTH.id, action: "CLOSE", previous_state: "OPEN", new_state: "CLOSED",
+      revision_before: 0, revision_after: 1, actor_id: "admin", reason: null, blockers: "[]",
+      previous_event_digest: null, event_digest: "digest-close",
+    }];
+    const api = {
+      healthz: vi.fn(), readyz: vi.fn(),
+      get: vi.fn(async (path: string) => {
+        if (path.endsWith("/close-checklist")) return checklistCalls++ === 0 ? CLEAR_CHECKLIST : CLOSED_CHECKLIST;
+        if (path.endsWith("/close-events")) return checklistCalls > 1 ? events : [];
+        throw new Error(`unexpected GET ${path}`);
+      }),
+      post: vi.fn(async (path: string, body: unknown) => {
+        expect(path).toBe(`/months/${MONTH.id}/close`);
+        expect(body).toEqual({ expected_revision: 0 });
+        return { month_id: MONTH.id, revision: 1, new_state: "CLOSED", audit_event_id: 1, blockers: [] };
+      }),
+    } as unknown as ApiClient;
+    render(<Close api={api} months={[MONTH]} monthsError={null} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Pregătește închiderea/i }));
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Confirmă închiderea/i }));
+    expect(await screen.findByText("CLOSE", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.getAllByText(/CLOSED/).length).toBeGreaterThan(0);
   });
 });

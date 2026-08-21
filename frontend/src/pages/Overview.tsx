@@ -68,6 +68,7 @@ interface OverviewBodyProps {
 
 function OverviewBody({ report }: OverviewBodyProps) {
   const { kpis, managers, needs_attention } = report;
+  const scopedManagers = managers.filter((row) => row.stores_total > 0);
   return (
     <div className="overview-grid">
       <KpiCard
@@ -141,7 +142,7 @@ function OverviewBody({ report }: OverviewBodyProps) {
             </tr>
           </thead>
           <tbody>
-            {managers.map((row) => (
+            {scopedManagers.map((row) => (
               <tr key={row.user_id}>
                 <td>{row.display_name}</td>
                 <td>

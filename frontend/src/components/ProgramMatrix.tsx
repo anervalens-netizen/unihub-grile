@@ -9,6 +9,15 @@ export interface ProgramMatrixProps {
   rowHeight?: number;
   /** Called when the user clicks a cell (skipped when the cell is locked). */
   onCellClick?: (rowId: string, cell: ProgramCell) => void;
+  /** Optional controlled editor for an unlocked cell. */
+  editing?: { rowId: string; businessDate: string } | null;
+  editValue?: { personId: string; storeId: string; status: string; workingKind: string };
+  people?: Array<{ id: string; label: string; homeStoreId: string }>;
+  stores?: Array<{ id: string; label: string }>;
+  onEditChange?: (value: { personId: string; storeId: string; status: string; workingKind: string }) => void;
+  onSave?: () => void;
+  onCancelEdit?: () => void;
+  saving?: boolean;
 }
 
 interface RowRange {
@@ -28,6 +37,14 @@ export function ProgramMatrix({
   viewportHeight = 480,
   rowHeight = 36,
   onCellClick,
+  editing,
+  editValue,
+  people = [],
+  stores = [],
+  onEditChange,
+  onSave,
+  onCancelEdit,
+  saving = false,
 }: ProgramMatrixProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -88,6 +105,14 @@ export function ProgramMatrix({
               row={row}
               rowHeight={rowHeight}
               onCellClick={onCellClick}
+              editing={editing}
+              editValue={editValue}
+              people={people}
+              stores={stores}
+              onEditChange={onEditChange}
+              onSave={onSave}
+              onCancelEdit={onCancelEdit}
+              saving={saving}
             />
           ))}
           <div
@@ -107,9 +132,17 @@ interface ProgramMatrixRowProps {
   row: ProgramRow;
   rowHeight: number;
   onCellClick?: (rowId: string, cell: ProgramCell) => void;
+  editing?: { rowId: string; businessDate: string } | null;
+  editValue?: { personId: string; storeId: string; status: string; workingKind: string };
+  people: Array<{ id: string; label: string; homeStoreId: string }>;
+  stores: Array<{ id: string; label: string }>;
+  onEditChange?: (value: { personId: string; storeId: string; status: string; workingKind: string }) => void;
+  onSave?: () => void;
+  onCancelEdit?: () => void;
+  saving: boolean;
 }
 
-function ProgramMatrixRow({ row, rowHeight, onCellClick }: ProgramMatrixRowProps) {
+function ProgramMatrixRow({ row, rowHeight, onCellClick, editing, editValue, people, stores, onEditChange, onSave, onCancelEdit, saving }: ProgramMatrixRowProps) {
   return (
     <div className="program-matrix-row" style={{ height: rowHeight }} role="row">
       <span
@@ -118,27 +151,39 @@ function ProgramMatrixRow({ row, rowHeight, onCellClick }: ProgramMatrixRowProps
       >
         {row.label}
       </span>
-      {row.cells.map((cell) => (
-        <button
-          key={cell.business_date}
-          type="button"
-          className={`program-matrix-cell badge-${cell.badge ?? "UNCOVERED"} ${
-            cell.locked ? "locked" : ""
-          }`}
-          disabled={cell.locked}
-          aria-label={`${row.label} pe ${cell.business_date}: ${cell.badge ?? "fără acoperire"}`}
-          title={`${row.label} pe ${cell.business_date}: ${
-            cell.display_name ?? "fără agent"
-          } (${cell.badge ?? "UNCOVERED"})${
-            cell.locked ? " · BLOCAT" : ""
-          }`}
-          onClick={() => onCellClick?.(row.row_id, cell)}
-        >
-          {cell.badge === "NORMAL" || cell.badge === "EXTRA_HOME" || cell.badge === "EXTRA_OTHER"
-            ? shortName(cell.display_name)
-            : cell.badge ?? ""}
-        </button>
-      ))}
+      {row.cells.map((cell) => {
+        const isEditing = editing?.rowId === row.row_id && editing.businessDate === cell.business_date;
+        if (isEditing && !cell.locked && editValue && onEditChange) {
+          return (
+            <div key={cell.business_date} className="program-matrix-cell program-cell-editor">
+              <select aria-label="Agent pentru celulă" value={editValue.personId} onChange={(event) => onEditChange({ ...editValue, personId: event.target.value })}>
+                {people.map((person) => <option key={person.id} value={person.id}>{person.label}</option>)}
+              </select>
+              <select aria-label="Magazin pentru celulă" value={editValue.storeId} onChange={(event) => onEditChange({ ...editValue, storeId: event.target.value })}>
+                {stores.map((store) => <option key={store.id} value={store.id}>{store.label}</option>)}
+              </select>
+              <select aria-label="Clasificare" value={editValue.workingKind} onChange={(event) => onEditChange({ ...editValue, workingKind: event.target.value })}>
+                <option value="NORMAL">Normal</option><option value="EXTRA_HOME">Extra aici</option><option value="EXTRA_OTHER">Extra alt magazin</option>
+              </select>
+              <button type="button" className="primary" onClick={onSave} disabled={saving}>{saving ? "Salvez…" : "Salvează"}</button>
+              <button type="button" onClick={onCancelEdit} disabled={saving}>Anulează</button>
+            </div>
+          );
+        }
+        return (
+          <button
+            key={cell.business_date}
+            type="button"
+            className={`program-matrix-cell badge-${cell.badge ?? "UNCOVERED"} ${cell.locked ? "locked" : ""}`}
+            disabled={cell.locked}
+            aria-label={`${row.label} pe ${cell.business_date}: ${cell.badge ?? "fără acoperire"}`}
+            title={`${row.label} pe ${cell.business_date}: ${cell.display_name ?? "fără agent"} (${cell.badge ?? "UNCOVERED"})${cell.locked ? " · BLOCAT" : ""}`}
+            onClick={() => onCellClick?.(row.row_id, cell)}
+          >
+            {cell.badge === "NORMAL" || cell.badge === "EXTRA_HOME" || cell.badge === "EXTRA_OTHER" ? shortName(cell.display_name) : cell.badge ?? ""}
+          </button>
+        );
+      })}
     </div>
   );
 }
