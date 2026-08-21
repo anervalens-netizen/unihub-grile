@@ -66,13 +66,13 @@ export function App() {
       header={
         <div className="topbar-inner">
           <div className="topbar-copy">
-            <span className="eyebrow">MANAGER WORKSPACE</span>
+            <span className="eyebrow">UNIHUB GRILE</span>
             <h1>{pageMeta.title}</h1>
             <p>{pageMeta.subtitle}</p>
           </div>
           <div className="topbar-status" aria-label="Stare sistem">
             <span className={`status-dot status-${systemState}`} aria-hidden="true" />
-            <span>{systemState === "online" ? "Sistem operațional" : systemState === "offline" ? "API indisponibil" : "Verific sistemul"}</span>
+            <span>{systemState === "online" ? "Online" : systemState === "offline" ? "API offline" : "Verificare"}</span>
             {health?.app_version && <small>v{health.app_version}</small>}
           </div>
         </div>
@@ -99,23 +99,9 @@ function PageRouter({ api, route, months, monthsError }: PageRouterProps) {
     case "close":
       return <Close api={api} months={months} monthsError={monthsError} />;
     case "store":
-      return (
-        <Magazin
-          api={api}
-          storeId={route.segments[0] ?? null}
-          months={months}
-          monthsError={monthsError}
-        />
-      );
+      return <Magazin api={api} storeId={route.segments[0] ?? null} months={months} monthsError={monthsError} />;
     case "agent":
-      return (
-        <Agent
-          api={api}
-          personId={route.segments[0] ?? null}
-          months={months}
-          monthsError={monthsError}
-        />
-      );
+      return <Agent api={api} personId={route.segments[0] ?? null} months={months} monthsError={monthsError} />;
     case "overview":
     default:
       return <Overview api={api} months={months} monthsError={monthsError} />;
@@ -125,16 +111,16 @@ function PageRouter({ api, route, months, monthsError }: PageRouterProps) {
 function getPageMeta(route: Route): { title: string; subtitle: string } {
   switch (route.name) {
     case "program":
-      return { title: "Calendar operațional", subtitle: "Planificare, suplimentare și acoperire într-o singură matrice." };
+      return { title: "Program", subtitle: "Planificare și acoperire operațională." };
     case "exceptions":
-      return { title: "Excepții și control", subtitle: "Tot ce necesită intervenție înainte să devină problemă." };
+      return { title: "Excepții", subtitle: "Diferențe și situații care necesită intervenție." };
     case "close":
-      return { title: "Închidere lună", subtitle: "Validare, audit și blocarea perioadei cu trasabilitate." };
+      return { title: "Management", subtitle: "Închidere, validare și audit lunar." };
     case "store":
-      return { title: "Control magazin", subtitle: "Calendar, agenți, vânzări, pontaj și grilă într-un singur spațiu." };
+      return { title: "Magazin", subtitle: "Program, agenți, pontaj și grilă." };
     case "agent":
-      return { title: "Control agent", subtitle: "Program și rezultate individuale, fără schimbarea contextului." };
+      return { title: "Agent", subtitle: "Program și rezultate individuale." };
     default:
-      return { title: "Command Center", subtitle: "Imagine de ansamblu asupra rețelei și acces direct la fiecare magazin." };
+      return { title: "Grile & Program", subtitle: "Control centralizat pentru rețea." };
   }
 }
