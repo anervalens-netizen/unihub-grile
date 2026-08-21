@@ -208,6 +208,15 @@ def _job_export_scaffold(
     return JobResult(status="DONE", payload=summary)
 
 
+def _write_bytes(uri: str, payload: bytes) -> None:
+    """Persist the rendered workbook bytes to ``uri`` (a non-tracked path)."""
+    import os
+
+    os.makedirs(os.path.dirname(uri), exist_ok=True)
+    with open(uri, "wb") as fh:
+        fh.write(payload)
+
+
 def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
     """S5b real writer for per-store XLSX export."""
     from ..repositories.months import MonthRepository
@@ -232,7 +241,16 @@ def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, 
     envelope = render_store_export(
         session, tenant_id=tenant_id, month=month, store_id=store_id
     )
-    artifact_uri = payload.get("artifact_uri") or envelope.filename
+    artifact_uri = payload.get("artifact_uri_hint") or payload.get("artifact_uri")
+    if not artifact_uri:
+        # Worker generates a stable non-tracked path; the API hint is preferred
+        # because the API knows the canonical filename.
+        import os
+        import tempfile
+
+        base = os.environ.get("UGR_S5_EXPORT_DIR") or tempfile.gettempdir()
+        artifact_uri = os.path.join(base, "ugrile-s5-exports", envelope.filename)
+    _write_bytes(artifact_uri, envelope.bytes_)
     record_export_run(
         session,
         tenant_id=tenant_id,
@@ -245,6 +263,7 @@ def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, 
         payload={
             "filename": envelope.filename,
             "checksum_sha256": envelope.checksum,
+            "artifact_uri": artifact_uri,
             "summary": envelope.summary,
         },
     )
@@ -277,7 +296,14 @@ def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, A
         month=month,
         store_ids=[str(s) for s in store_ids] if store_ids else None,
     )
-    artifact_uri = payload.get("artifact_uri") or envelope.filename
+    artifact_uri = payload.get("artifact_uri_hint") or payload.get("artifact_uri")
+    if not artifact_uri:
+        import os
+        import tempfile
+
+        base = os.environ.get("UGR_S5_EXPORT_DIR") or tempfile.gettempdir()
+        artifact_uri = os.path.join(base, "ugrile-s5-exports", envelope.filename)
+    _write_bytes(artifact_uri, envelope.bytes_)
     record_export_run(
         session,
         tenant_id=tenant_id,
@@ -290,6 +316,7 @@ def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, A
         payload={
             "filename": envelope.filename,
             "checksum_sha256": envelope.checksum,
+            "artifact_uri": artifact_uri,
             "summary": envelope.summary,
         },
     )
@@ -315,10 +342,21 @@ def _job_export_pontaj_only(session: Session, tenant_id: str, payload: dict[str,
             "tenant mismatch in EXPORT_PONTAJ_ONLY payload",
             details={"month_tenant": month.tenant_id, "tenant": tenant_id},
         )
+    store_ids = payload.get("store_ids")
     envelope = render_pontaj_only_export(
-        session, tenant_id=tenant_id, month=month
+        session,
+        tenant_id=tenant_id,
+        month=month,
+        store_ids=[str(s) for s in store_ids] if store_ids else None,
     )
-    artifact_uri = payload.get("artifact_uri") or envelope.filename
+    artifact_uri = payload.get("artifact_uri_hint") or payload.get("artifact_uri")
+    if not artifact_uri:
+        import os
+        import tempfile
+
+        base = os.environ.get("UGR_S5_EXPORT_DIR") or tempfile.gettempdir()
+        artifact_uri = os.path.join(base, "ugrile-s5-exports", envelope.filename)
+    _write_bytes(artifact_uri, envelope.bytes_)
     record_export_run(
         session,
         tenant_id=tenant_id,
@@ -331,6 +369,7 @@ def _job_export_pontaj_only(session: Session, tenant_id: str, payload: dict[str,
         payload={
             "filename": envelope.filename,
             "checksum_sha256": envelope.checksum,
+            "artifact_uri": artifact_uri,
             "summary": envelope.summary,
         },
     )

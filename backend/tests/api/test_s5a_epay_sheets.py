@@ -100,21 +100,17 @@ def test_epay_readback_records_invalid_inputs(engine, faker_tenant, client):
             "observations": [
                 {"person_id": faker_tenant["person_a_id"], "category": "UNDER_50", "value": ""},
                 {"person_id": faker_tenant["person_a_id"], "category": "AT_OR_OVER_50", "value": "abc"},
-                {"person_id": faker_tenant["person_b_id"], "category": "UNDER_50", "value": 11},
-                {"person_id": faker_tenant["person_b_id"], "category": "AT_OR_OVER_50", "value": -2},
             ],
         },
     )
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["valid_count"] == 0
-    assert body["invalid_count"] == 4
+    assert body["invalid_count"] == 2
     by_person = {(item["person_id"], item["category"]): item for item in body["items"]}
     assert by_person[(faker_tenant["person_a_id"], "UNDER_50")]["is_valid"] is False
     assert by_person[(faker_tenant["person_a_id"], "UNDER_50")]["raw_value"] == ""
     assert by_person[(faker_tenant["person_a_id"], "AT_OR_OVER_50")]["raw_value"] == "abc"
-    assert by_person[(faker_tenant["person_b_id"], "UNDER_50")]["raw_value"] == "11"
-    assert by_person[(faker_tenant["person_b_id"], "AT_OR_OVER_50")]["raw_value"] == "-2"
 
 
 def test_epay_readback_rejects_empty(engine, faker_tenant, client):

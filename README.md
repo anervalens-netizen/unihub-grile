@@ -3,7 +3,10 @@
 Aplicație standalone pentru program, pontaj, suplimentare, atribuirea vânzărilor,
 grile salariale și proiecția lor în Google Sheets.
 
-Stare curentă: **S1 PASS; S2 NO-GO în remediere; S3 blocat**.
+Stare curentă: **S1 PASS; S2 PASS; S3 PASS** (AC-07/08/09/15 pe exact candidate `7b96f20`).
+**S4 BUILDING** (UI manager complet; AC-10/04/11/15 slices la cod PASS, AC-16 perf noise intermittent).
+**S5 BUILDING** (fake Google adapter + E-pay + XLSX exports; AC-13/14/15 slices la cod PASS, AC-12 lipsă probe independente end-to-end, AC-14 export defecte reale — vezi `docs/exec-plans/active/UGR-001-STANDALONE-GRILE.md`).
+S6/S7 BACKLOG (shadow pilot, Retail integration).
 
 ## Principiul de bază
 

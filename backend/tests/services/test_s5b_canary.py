@@ -150,6 +150,78 @@ def test_read_store_canary_returns_no_projection_when_absent(session, faker_tena
     )
     assert result.last_error == "NO_PROJECTION"
     assert result.matched == 0
+    # AC-12 fail-closed: missing projection must NOT silently pass.
+    assert result.ok is False
+
+
+def test_provider_failure_appends_separate_failed_row(session, faker_tenant, monkeypatch):
+    """When the fake adapter fails, it appends a NEW FAILED row instead
+    of mutating the DONE last-good row. The canary readback continues
+    to see the DONE row as the source of truth.
+    """
+
+    month_id, _ = _seed_projection(session, faker_tenant)
+    rows = list(
+        session.execute(
+            select(SheetProjectionRun).where(
+                SheetProjectionRun.tenant_id == faker_tenant["tenant_id"],
+                SheetProjectionRun.store_id == faker_tenant["store_id"],
+            )
+        ).scalars()
+    )
+    assert len(rows) == 1 and rows[0].status == "DONE"
+    # Now flip the provider into failing mode and call the writer directly.
+    monkeypatch.setenv("UGR_S5_GOOGLE_FAIL", "1")
+    from ugrile.connectors.google import GoogleAdapterError, write_store_projection
+
+
+    try:
+        write_store_projection(
+            session,
+            tenant_id=faker_tenant["tenant_id"],
+            store_id=faker_tenant["store_id"],
+            generation="FIXTURE_V1",
+            payload={
+                "grila": {
+                    "rows": [
+                        {
+                            "business_date": "2026-08-01",
+                            "person_id": faker_tenant["person_a_id"],
+                            "status": "WORKING",
+                            "working_kind": "NORMAL",
+                            "revision": 1,
+                        }
+                    ]
+                },
+                "pontaj": {"rows": []},
+            },
+        )
+        raise AssertionError("expected GoogleAdapterError on provider failure")
+    except GoogleAdapterError:
+        pass
+    session.commit()
+    rows_after = list(
+        session.execute(
+            select(SheetProjectionRun)
+            .where(
+                SheetProjectionRun.tenant_id == faker_tenant["tenant_id"],
+                SheetProjectionRun.store_id == faker_tenant["store_id"],
+            )
+            .order_by(SheetProjectionRun.id)
+        ).scalars()
+    )
+    assert len(rows_after) == 2
+    statuses = [r.status for r in rows_after]
+    assert statuses == ["DONE", "FAILED"]
+    # Canary readback still sees the DONE row as source of truth.
+    result = read_store_canary(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        month_id=month_id,
+    )
+    assert result.ok is True
+    assert result.last_error is None
 
 
 def test_list_active_store_ids_returns_active_only(session, faker_tenant):

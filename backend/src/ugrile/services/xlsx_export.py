@@ -1,24 +1,43 @@
 """XLSX export service (AC-14).
 
-Renders three kinds of workbook from the persisted read models:
+Renders three deterministic workbook kinds from the persisted read
+models (PontajProjection, GridCalculation, SiteDayAssignment,
+PontajHoursSnapshot semantics) following the contract documented in
+``docs/MOBIUP_RULE_PACK.md §7`` (Pontaj standard) and the V2 Grila
+card layout (2 agents per standard store, salary/projection cards,
+calendar, holidays, supplementary).
 
-* per-magazin ``Grila`` + ``Pontaj`` — visual layout mirroring the V2 sheet
-  (salary/projection cards, calendar, holidays) and the Pontaj lattice
-  (days 1..31 plus total). Monetary values use Romanian ``#,##0.00 lei``
-  format; dates use ``dd/mm/yyyy``; the Pontaj total row uses ``AH``.
+Layout summary
+--------------
 
-* bulk ZIP — deterministic per-store filenames, single ``manifest.json``
-  with tenant, month, revision, generation, rule pack version and a
-  SHA-256 for each entry. No external links, no live Google I/O.
+``Grila`` tab — V2 card layout:
 
-* pontaj-only — single ``Pontaj`` tab with the same lattice plus totals.
+* Row 1-4: magazin header (nume, cod intern, luna, schema, revision).
+* Row 6: card-1 header (Persoana 1 + components).
+* Row 7: card-1 row (componente salariale + proiecție).
+* Row 9: card-2 header (Persoana 2 + components).
+* Row 10: card-2 row.
+* Row 12: header calendar lunar (days 1..31 in coloanele C..AG).
+* Row 13: card-1 calendar (assignment per day + working_kind badge).
+* Row 14: card-2 calendar.
 
-Inputs are the persisted projections (``PontajProjection``,
-``GridCalculation``, ``SalesPersonDayProjection``, ``EpayObservation``),
-not the live Google adapter. The fake adapter (S5a) writes the
-structural payload to ``sheet_projection_runs`` and is the only writer
-of any projection artifact; this service is the local writer of the
-deterministic XLSX files.
+``Pontaj`` tab — standard Mobiup C8:AG31:
+
+* Row 1: header (Persoana + day 1..31 in D..AG + Total ore in AH).
+* Row 2: blank / spacer.
+* Row 8, 11, 14, 17, 20, 23, 26, 29: per-block day rows (Net hours),
+  followed by interval (row r+1) and pause (row r+2).
+* Standard two-agent store uses rows 8 and 11 only; the remaining six
+  block-start rows stay present but empty so the contract layout
+  survives any future agent count.
+* Total at column AH per active block: ``AHr = SUM(Cr:AGr)``.
+
+Per-store export filters assignments/pontaj to the store's own grid
+cells; bulk and pontaj-only honour the same per-store scope and the
+contract filter (firmă/manager/magazin from the request payload).
+
+No external links, no live Google writes, deterministic SHA-256 checksums
+in the bulk manifest.
 """
 
 from __future__ import annotations
@@ -30,7 +49,7 @@ import zipfile
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, time, timedelta
 from decimal import Decimal
 
 from openpyxl import Workbook
@@ -39,20 +58,35 @@ from openpyxl.worksheet.worksheet import Worksheet
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..domain.enums import ConnectorGeneration
-from ..domain.rule_pack import RULE_PACK_VERSION
 from ..repositories.models import (
     ExportRun,
     GridCalculation,
     Month,
     Person,
     PontajProjection,
-    SalesStoreDay,
+    SiteDayAssignment,
     Store,
 )
 
-SCHEMA = "UGRILE-S5-XLSX-V1"
+SCHEMA = "UGRILE-S5-XLSX-V2"
 MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+# Standard Pontaj block rows (8, 11, 14, 17, 20, 23, 26, 29).
+PONTAJ_BLOCK_STARTS: tuple[int, ...] = (8, 11, 14, 17, 20, 23, 26, 29)
+
+# Standard shift per docs/MOBIUP_RULE_PACK.md §7 for NORMAL/EXTRA_HOME/EXTRA_OTHER.
+STANDARD_INTERVAL_START = time(10, 0)
+STANDARD_INTERVAL_END = time(22, 0)
+STANDARD_PAUSE_MINUTES = 60
+STANDARD_NET_HOURS = Decimal("11")
+
+# Column layout (1-indexed). Day 1 starts at column D = 4; the standard
+# Pontaj contract places day 31 at column AG = 34, and column AH = 35 holds
+# the total monthly hours.
+DAY_1_COL = 4   # column D
+DAY_31_COL = 34  # column AG (day 31)
+TOTAL_COL = 35   # column AH (monthly total)
+WEEKEND_FILL = PatternFill("solid", fgColor="FFE699")
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +95,9 @@ class ExportEnvelope:
     filename: str
     checksum: str
     summary: dict[str, object]
+
+
+# --- formatting helpers ---
 
 
 def _romanian_money(value: Decimal | int | float | None) -> str:
@@ -98,37 +135,6 @@ def _checksum(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _determine_generation(
-    session: Session,
-    *,
-    tenant_id: str,
-    year: int,
-    month: int,
-) -> str:
-    """Return the canonical connector generation for the bulk export.
-
-    Prefer the unique generation carried by ``SalesStoreDay`` rows for the
-    tenant/month when exactly one exists; otherwise fall back to
-    ``FIXTURE_V1`` (the only connector generation at S5). The fallback
-    is acceptable because no live connector is wired yet.
-    """
-
-    rows = list(
-        session.execute(
-            select(SalesStoreDay.generation)
-            .distinct()
-            .where(
-                SalesStoreDay.tenant_id == tenant_id,
-                func.extract("year", SalesStoreDay.business_date) == year,
-                func.extract("month", SalesStoreDay.business_date) == month,
-            )
-        ).scalars()
-    )
-    if len(rows) == 1:
-        return rows[0]
-    return ConnectorGeneration.FIXTURE_V1.value
-
-
 def _header_fill() -> PatternFill:
     return PatternFill("solid", fgColor="1F5FBF")
 
@@ -142,21 +148,77 @@ def _thin_border() -> Border:
     return Border(left=side, right=side, top=side, bottom=side)
 
 
+# --- Grila tab (V2 cards layout) ---
+
+
+def _grila_agents_for_store(
+    session: Session,
+    *,
+    tenant_id: str,
+    store_id: str,
+    month_id: str,
+) -> list[Person]:
+    """Return the two agents the V2 Grila card layout expects.
+
+    The standard two-agent store uses the first two distinct persons
+    that have at least one WORKING assignment on this store/month,
+    sorted by internal_code for determinism. Rows 13 and 14 (calendar)
+    and rows 6-7 + 9-10 (cards) are reserved only for these two agents.
+    """
+    rows = list(
+        session.execute(
+            select(SiteDayAssignment.person_id)
+            .where(
+                SiteDayAssignment.tenant_id == tenant_id,
+                SiteDayAssignment.month_id == month_id,
+                SiteDayAssignment.store_id == store_id,
+                SiteDayAssignment.status == "WORKING",
+            )
+            .distinct()
+        ).scalars()
+    )
+    if not rows:
+        return []
+    persons = list(
+        session.execute(
+            select(Person).where(
+                Person.tenant_id == tenant_id, Person.id.in_(rows)
+            )
+        ).scalars()
+    )
+    persons.sort(key=lambda p: (p.internal_code or "", p.id))
+    return persons[:2]
+
+
 def _write_grila_tab(
     ws: Worksheet,
     *,
     month: Month,
     store: Store,
-    grid_rows: list[GridCalculation],
+    agents: list[Person],
+    grid_by_person: dict[str, GridCalculation],
+    assignments_by_person_day: dict[tuple[str, date], SiteDayAssignment],
+    sales_by_person_day: dict[tuple[str, date], Decimal],
     holiday_labels: dict[date, str],
+    month_year: int,
+    month_month: int,
 ) -> None:
     ws.title = "Grila"
+    days_in_month = (date(month_year, month_month % 12 + 1, 1) - timedelta(days=1)).day if month_month < 12 else 31
+    days_in_month = (date(month_year + (1 if month_month == 12 else 0), 1 if month_month == 12 else month_month + 1, 1) - timedelta(days=1)).day
+    # Header block
     ws["A1"] = f"Magazin: {store.name}"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = f"Cod intern: {store.internal_code}"
-    ws["A3"] = f"Luna: {month.year:04d}-{month.month:02d}  Revizie: {month.revision}"
-    ws["A4"] = f"Schema: {SCHEMA}"
-    headers = [
+    ws["A3"] = f"Companie: {store.company_code}"
+    ws["A4"] = (
+        f"Luna: {month_year:04d}-{month_month:02d}  "
+        f"Revizie: {month.revision}  Schema: {SCHEMA}"
+    )
+    # Two-agent cards (rows 6..10), one card per agent.
+    card_header_fill = _header_fill()
+    card_header_font = _header_font()
+    card_columns = [
         "Persoana",
         "Acord global",
         "Salariu fix",
@@ -172,115 +234,290 @@ def _write_grila_tab(
         "Total salariu",
         "Salariu cash",
     ]
-    for col, header in enumerate(headers, start=1):
-        cell = ws.cell(row=6, column=col, value=header)
+    for card_idx in range(2):
+        if card_idx >= len(agents):
+            break
+        header_row = 6 + card_idx * 3
+        data_row = header_row + 1
+        ws.cell(row=header_row, column=1, value=f"Card #{card_idx + 1}").font = Font(bold=True)
+        for col, header in enumerate(card_columns, start=1):
+            cell = ws.cell(row=header_row, column=col, value=header)
+            cell.fill = card_header_fill
+            cell.font = card_header_font
+            cell.border = _thin_border()
+        agent = agents[card_idx]
+        grid = grid_by_person.get(agent.id)
+        ws.cell(row=data_row, column=1, value=agent.display_name or agent.internal_code).border = _thin_border()
+        if grid is None:
+            for col in range(2, 1 + len(card_columns)):
+                ws.cell(row=data_row, column=col, value="").border = _thin_border()
+        else:
+            payload = json.loads(grid.payload or "{}")
+            components = payload.get("components", {}) if isinstance(payload, dict) else {}
+            values = [
+                components.get("acord_global", "Acord curent"),
+                _romanian_money(components.get("salary")),
+                _romanian_money(components.get("tickets")),
+                _romanian_money(components.get("main_commission")),
+                _romanian_money(components.get("main_bonus")),
+                _romanian_money(components.get("extra_fixed_pay")),
+                _romanian_money(components.get("extra_other_commission")),
+                _romanian_money(components.get("sim_commission")),
+                _romanian_money(components.get("epay_commission")),
+                _romanian_money(components.get("incentive")),
+                _romanian_money(components.get("flip")),
+                _romanian_money(components.get("total_salary")),
+                _romanian_money(components.get("salary_cash")),
+            ]
+            for col, value in enumerate(values, start=2):
+                cell = ws.cell(row=data_row, column=col, value=value)
+                cell.border = _thin_border()
+                cell.alignment = Alignment(horizontal="right")
+    # Calendar block — rows 13..14, columns D..AG (day 1..31) with badges.
+    cal_header_row = 12
+    for col in range(1, 2):
+        ws.cell(row=cal_header_row, column=col, value="Calendar").font = Font(bold=True)
+    for day in range(1, 32):
+        cell = ws.cell(row=cal_header_row, column=DAY_1_COL + day - 1, value=day)
         cell.fill = _header_fill()
         cell.font = _header_font()
         cell.border = _thin_border()
-    row = 7
-    for grid in grid_rows:
-        ws.cell(row=row, column=1, value=grid.person_id).border = _thin_border()
-        payload = json.loads(grid.payload or "{}")
-        components = payload.get("components", {}) if isinstance(payload, dict) else {}
-        values = [
-            _romanian_money(components.get("salary")),
-            _romanian_money(components.get("tickets")),
-            _romanian_money(components.get("main_commission")),
-            _romanian_money(components.get("main_bonus")),
-            _romanian_money(components.get("extra_fixed_pay")),
-            _romanian_money(components.get("extra_other_commission")),
-            _romanian_money(components.get("sim_commission")),
-            _romanian_money(components.get("epay_commission")),
-            _romanian_money(components.get("incentive")),
-            _romanian_money(components.get("flip")),
-            _romanian_money(components.get("total_salary")),
-            _romanian_money(components.get("salary_cash")),
-        ]
-        for col, value in enumerate(values, start=3):
-            cell = ws.cell(row=row, column=col, value=value)
-            cell.border = _thin_border()
-            cell.alignment = Alignment(horizontal="right")
-        row += 1
+    for card_idx in range(2):
+        if card_idx >= len(agents):
+            break
+        row = 13 + card_idx
+        agent = agents[card_idx]
+        ws.cell(row=row, column=1, value=agent.display_name or agent.internal_code).border = _thin_border()
+        for day in range(1, 32):
+            target = date(month_year, month_month, day) if day <= days_in_month else None
+            day_cell = ws.cell(row=row, column=DAY_1_COL + day - 1)
+            day_cell.border = _thin_border()
+            day_cell.alignment = Alignment(horizontal="center")
+            if target is None:
+                continue
+            assignment = assignments_by_person_day.get((agent.id, target))
+            if assignment is None or assignment.status != "WORKING":
+                day_cell.value = ""
+                continue
+            sales = sales_by_person_day.get((agent.id, target), Decimal("0"))
+            badge = assignment.working_kind or "NORMAL"
+            day_cell.value = f"{badge[:3]}\n{int(sales)}" if sales else badge[:3]
+    # Holiday markers (informational; non-blocking per docs/MOBIUP_RULE_PACK.md §9).
     if holiday_labels:
-        ws.cell(row=row + 1, column=1, value="Sarbatori legale (marker informativ):").font = Font(
-            italic=True
-        )
+        start_row = 16
+        ws.cell(row=start_row, column=1, value="Sarbatori legale (marker informativ):").font = Font(italic=True)
         for offset, (d, label) in enumerate(sorted(holiday_labels.items()), start=1):
-            ws.cell(
-                row=row + 1 + offset, column=2, value=f"{d.strftime('%d/%m/%Y')}"
-            ).border = _thin_border()
-            ws.cell(row=row + 1 + offset, column=3, value=label).border = _thin_border()
+            ws.cell(row=start_row + offset, column=1, value=f"{d.strftime('%d/%m/%Y')}: {label}").font = Font(italic=True)
+
+
+# --- Pontaj tab (standard C8:AG31, AH total) ---
 
 
 def _write_pontaj_tab(
     ws: Worksheet,
     *,
     pontaj_rows: list[PontajProjection],
+    assignments_by_person_day: dict[tuple[str, date], SiteDayAssignment],
     persons_by_id: dict[str, Person],
+    month_year: int,
+    month_month: int,
+    active_block_rows: Iterable[int] = PONTAJ_BLOCK_STARTS,
 ) -> None:
+    """Write the standard Mobiup Pontaj tab.
+
+    Layout:
+      row 1: Persoana + day 1..31 + Total ore (AH)
+      row 2..7: header band / metadata
+      rows 8, 11, 14, 17, 20, 23, 26, 29: per-agent block starts;
+        row r = net hours, r+1 = interval, r+2 = pause.
+      column AH = total net hours per row r.
+    """
     ws.title = "Pontaj"
-    headers = ["Persoana"] + [str(d) for d in range(1, 32)] + ["Total ore (AH)"]
-    for col, header in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col, value=header)
+    days_in_month = (date(month_year + (1 if month_month == 12 else 0), 1 if month_month == 12 else month_month + 1, 1) - timedelta(days=1)).day
+    # Row 1 header.
+    ws.cell(row=1, column=1, value="Persoana")
+    for day in range(1, 32):
+        cell = ws.cell(row=1, column=DAY_1_COL + day - 1, value=day)
         cell.fill = _header_fill()
         cell.font = _header_font()
         cell.border = _thin_border()
+    total_col = ws.cell(row=1, column=TOTAL_COL, value="Total ore (AH)")
+    total_col.fill = _header_fill()
+    total_col.font = _header_font()
+    total_col.border = _thin_border()
+    # Bucket pontaj rows per person.
     by_person: dict[str, dict[date, PontajProjection]] = defaultdict(dict)
     for row in pontaj_rows:
         by_person[row.person_id][row.business_date] = row
-    for offset, person_id in enumerate(sorted(by_person.keys()), start=2):
-        person_obj = persons_by_id.get(person_id)
-        cell = ws.cell(
-            row=offset,
+    # Two-agent store: render at most 2 blocks (rows 8, 11) when agents exist;
+    # the remaining block rows stay present (empty) per the standard layout.
+    ordered_block_rows = list(active_block_rows)
+    if len(ordered_block_rows) > 2 and persons_by_id or not persons_by_id:
+        ordered_block_rows = ordered_block_rows[:2]
+    # Pick the two persons the standard layout uses (V2 first two by code).
+    sorted_person_ids = sorted(
+        persons_by_id.keys(),
+        key=lambda pid: ((persons_by_id[pid].internal_code or ""), pid),
+    )
+    block_persons = sorted_person_ids[: len(ordered_block_rows)]
+    for block_idx, start_row in enumerate(ordered_block_rows):
+        if block_idx >= len(block_persons):
+            break
+        person_id = block_persons[block_idx]
+        person = persons_by_id.get(person_id)
+        ws.cell(
+            row=start_row,
             column=1,
-            value=person_obj.display_name if person_obj is not None else person_id,
+            value=person.display_name if person is not None else person_id,
+        ).border = _thin_border()
+        interval_cell = ws.cell(
+            row=start_row + 1,
+            column=1,
+            value=f"Interval: {STANDARD_INTERVAL_START.strftime('%H:%M')}-{STANDARD_INTERVAL_END.strftime('%H:%M')}",
         )
-        cell.border = _thin_border()
+        interval_cell.font = Font(italic=True, size=9)
+        interval_cell.border = _thin_border()
+        pause_cell = ws.cell(
+            row=start_row + 2,
+            column=1,
+            value=f"Pauza: {STANDARD_PAUSE_MINUTES} min",
+        )
+        pause_cell.font = Font(italic=True, size=9)
+        pause_cell.border = _thin_border()
         total = Decimal("0")
-        month_first: date | None = None
         for day in range(1, 32):
-            projection = by_person[person_id].get(date(1900, 1, day))
-            if projection is not None and month_first is None:
-                month_first = projection.business_date.replace(day=1)
-                break
-        if month_first is None:
-            continue
-        for day in range(1, 32):
-            target = date(month_first.year, month_first.month, day)
-            projection = by_person[person_id].get(target)
-            value: str
-            if projection is None or projection.status != "WORKING":
-                value = ""
-            else:
-                value = _hours(projection.hours)
+            target = date(month_year, month_month, day) if day <= days_in_month else None
+            day_cell = ws.cell(row=start_row, column=DAY_1_COL + day - 1)
+            day_cell.border = _thin_border()
+            day_cell.alignment = Alignment(horizontal="right")
+            if target is None:
+                continue
+            assignment = assignments_by_person_day.get((person_id, target))
+            projection = by_person.get(person_id, {}).get(target)
+            is_working = (
+                assignment is not None
+                and assignment.status == "WORKING"
+                and projection is not None
+                and projection.status == "WORKING"
+            )
+            if is_working and projection is not None:
+                day_cell.value = _hours(projection.hours)
                 total += Decimal(str(projection.hours))
-            cell = ws.cell(row=offset, column=1 + day, value=value)
-            cell.border = _thin_border()
-            cell.alignment = Alignment(horizontal="right")
-        total_cell = ws.cell(row=offset, column=33, value=_hours(total))
+            else:
+                day_cell.value = ""
+            # Weekend fill per docs/MOBIUP_RULE_PACK.md §7.
+            if target is not None and target.weekday() >= 5:
+                day_cell.fill = WEEKEND_FILL
+        total_cell = ws.cell(row=start_row, column=TOTAL_COL, value=_hours(total))
         total_cell.border = _thin_border()
         total_cell.alignment = Alignment(horizontal="right")
         total_cell.font = Font(bold=True)
 
 
-def _persist_export_run(
+# --- selection helpers ---
+
+
+def _pontaj_rows_for_store(
     session: Session,
     *,
     tenant_id: str,
-    kind: str,
-    summary: dict[str, object],
-    artifact_uri: str | None,
-) -> ExportRun:
-    row = ExportRun(
-        tenant_id=tenant_id,
-        kind=kind,
-        status="DONE",
-        summary=json.dumps(summary, sort_keys=True, ensure_ascii=False),
-        artifact_uri=artifact_uri,
+    store_id: str,
+    month_id: str,
+) -> list[PontajProjection]:
+    """Pontaj rows whose person has at least one WORKING assignment on
+    ``store_id`` in ``month_id``. Strict per-store filter."""
+    assigned_person_ids = list(
+        session.execute(
+            select(SiteDayAssignment.person_id)
+            .distinct()
+            .where(
+                SiteDayAssignment.tenant_id == tenant_id,
+                SiteDayAssignment.month_id == month_id,
+                SiteDayAssignment.store_id == store_id,
+                SiteDayAssignment.status == "WORKING",
+            )
+        ).scalars()
     )
-    session.add(row)
-    session.flush()
-    return row
+    if not assigned_person_ids:
+        return []
+    return list(
+        session.execute(
+            select(PontajProjection).where(
+                PontajProjection.tenant_id == tenant_id,
+                PontajProjection.month_id == month_id,
+                PontajProjection.person_id.in_(assigned_person_ids),
+            )
+        ).scalars()
+    )
+
+
+def _assignments_for_store(
+    session: Session,
+    *,
+    tenant_id: str,
+    store_id: str,
+    month_id: str,
+) -> list[SiteDayAssignment]:
+    return list(
+        session.execute(
+            select(SiteDayAssignment).where(
+                SiteDayAssignment.tenant_id == tenant_id,
+                SiteDayAssignment.month_id == month_id,
+                SiteDayAssignment.store_id == store_id,
+            ).order_by(SiteDayAssignment.person_id, SiteDayAssignment.business_date)
+        ).scalars()
+    )
+
+
+def _sales_for_store(
+    session: Session,
+    *,
+    tenant_id: str,
+    store_id: str,
+    month_id: str,
+    month_year: int,
+    month_month: int,
+) -> dict[tuple[str, date], Decimal]:
+    """Sum attributed sales per (person, day) for the store, derived from
+    SalesPersonDayProjection at the current month revision."""
+    month = session.execute(select(Month).where(Month.id == month_id)).scalar_one()
+    rows = list(
+        session.execute(
+            select(
+                __import__("ugrile.repositories.models", fromlist=["SalesPersonDayProjection"]).SalesPersonDayProjection
+            ).where(
+                __import__("ugrile.repositories.models", fromlist=["SalesPersonDayProjection"]).SalesPersonDayProjection.tenant_id == tenant_id,
+                __import__("ugrile.repositories.models", fromlist=["SalesPersonDayProjection"]).SalesPersonDayProjection.month_id == month_id,
+                __import__("ugrile.repositories.models", fromlist=["SalesPersonDayProjection"]).SalesPersonDayProjection.store_id == store_id,
+                __import__("ugrile.repositories.models", fromlist=["SalesPersonDayProjection"]).SalesPersonDayProjection.revision == month.revision,
+            )
+        ).scalars()
+    )
+    out: dict[tuple[str, date], Decimal] = {}
+    for row in rows:
+        key = (row.person_id, row.business_date)
+        out[key] = out.get(key, Decimal("0")) + Decimal(str(row.amount))
+    return out
+
+
+def _determine_generation(session: Session, *, tenant_id: str, month_year: int, month_month: int) -> str:
+    from ..repositories.models import SalesStoreDay
+
+    rows = list(
+        session.execute(
+            select(func.distinct(SalesStoreDay.generation)).where(
+                SalesStoreDay.tenant_id == tenant_id,
+                func.extract("year", SalesStoreDay.business_date) == month_year,
+                func.extract("month", SalesStoreDay.business_date) == month_month,
+            )
+        ).scalars()
+    )
+    if len(rows) == 1 and isinstance(rows[0], str):
+        return rows[0]
+    return "FIXTURE_V1"
+
+
+# --- public renderers ---
 
 
 def render_store_export(
@@ -290,7 +527,12 @@ def render_store_export(
     month: Month,
     store_id: str,
 ) -> ExportEnvelope:
-    """Render a per-magazin ``Grila``+``Pontaj`` workbook."""
+    """Render a per-magazin Grila + Pontaj workbook.
+
+    Strict per-store filter: assignments, Pontaj rows, and GridCalculation
+    rows are restricted to ``store_id``. The Pontaj tab uses the standard
+    ``C8:AG31`` block layout with ``AH`` totals.
+    """
     store = session.execute(
         select(Store).where(Store.tenant_id == tenant_id, Store.id == store_id)
     ).scalar_one_or_none()
@@ -299,30 +541,54 @@ def render_store_export(
 
     grid_rows = list(
         session.execute(
-            select(GridCalculation)
-            .where(
+            select(GridCalculation).where(
                 GridCalculation.tenant_id == tenant_id,
                 GridCalculation.month_id == month.id,
                 GridCalculation.store_id == store_id,
             )
-            .order_by(GridCalculation.person_id)
         ).scalars()
     )
+    grid_by_person = {g.person_id: g for g in grid_rows}
 
-    pontaj_rows = list(
+    assignments = _assignments_for_store(
+        session,
+        tenant_id=tenant_id,
+        store_id=store_id,
+        month_id=month.id,
+    )
+    assignments_by_person_day = {
+        (a.person_id, a.business_date): a for a in assignments
+    }
+
+    pontaj_rows = _pontaj_rows_for_store(
+        session,
+        tenant_id=tenant_id,
+        store_id=store_id,
+        month_id=month.id,
+    )
+    persons_in_store = list(
         session.execute(
-            select(PontajProjection)
-            .where(
-                PontajProjection.tenant_id == tenant_id,
-                PontajProjection.month_id == month.id,
+            select(Person).where(
+                Person.tenant_id == tenant_id,
+                Person.id.in_({a.person_id for a in assignments if a.status == "WORKING"}),
             )
-            .order_by(PontajProjection.person_id, PontajProjection.business_date)
         ).scalars()
     )
-    persons = {
-        p.id: p
-        for p in session.execute(select(Person).where(Person.tenant_id == tenant_id)).scalars()
-    }
+    persons_by_id = {p.id: p for p in persons_in_store}
+    agents = _grila_agents_for_store(
+        session,
+        tenant_id=tenant_id,
+        store_id=store_id,
+        month_id=month.id,
+    )
+    sales_by_person_day = _sales_for_store(
+        session,
+        tenant_id=tenant_id,
+        store_id=store_id,
+        month_id=month.id,
+        month_year=month.year,
+        month_month=month.month,
+    )
 
     wb = Workbook()
     grila = wb.active
@@ -332,11 +598,23 @@ def render_store_export(
         grila,
         month=month,
         store=store,
-        grid_rows=grid_rows,
+        agents=agents,
+        grid_by_person=grid_by_person,
+        assignments_by_person_day=assignments_by_person_day,
+        sales_by_person_day=sales_by_person_day,
         holiday_labels={},
+        month_year=month.year,
+        month_month=month.month,
     )
     pontaj = wb.create_sheet("Pontaj")
-    _write_pontaj_tab(pontaj, pontaj_rows=pontaj_rows, persons_by_id=persons)
+    _write_pontaj_tab(
+        pontaj,
+        pontaj_rows=pontaj_rows,
+        assignments_by_person_day=assignments_by_person_day,
+        persons_by_id=persons_by_id,
+        month_year=month.year,
+        month_month=month.month,
+    )
     buffer = io.BytesIO()
     wb.save(buffer)
     payload = buffer.getvalue()
@@ -352,6 +630,7 @@ def render_store_export(
         "kind": "EXPORT_XLSX_STORE",
         "rows_grid": len(grid_rows),
         "rows_pontaj": len(pontaj_rows),
+        "agents_count": len(agents),
     }
     return ExportEnvelope(
         bytes_=payload,
@@ -366,32 +645,69 @@ def render_pontaj_only_export(
     *,
     tenant_id: str,
     month: Month,
+    store_ids: Iterable[str] | None = None,
 ) -> ExportEnvelope:
-    """Render a pontaj-only workbook spanning every person in the tenant."""
-    pontaj_rows = list(
-        session.execute(
-            select(PontajProjection)
-            .where(
-                PontajProjection.tenant_id == tenant_id,
-                PontajProjection.month_id == month.id,
+    """Render a pontaj-only workbook spanning one or many stores.
+
+    Each store contributes its assigned persons to the standard
+    ``C8:AG31`` block layout. When ``store_ids`` is given, only those
+    stores contribute; otherwise every active store in the tenant.
+    """
+    store_filter: list[str]
+    if store_ids is not None:
+        store_filter = [str(s) for s in store_ids]
+    else:
+        store_filter = [
+            s.id
+            for s in session.execute(
+                select(Store).where(
+                    Store.tenant_id == tenant_id, Store.is_active.is_(True)
+                )
+            ).scalars()
+        ]
+    all_assignments: list[SiteDayAssignment] = []
+    all_pontaj: list[PontajProjection] = []
+    for store_id in store_filter:
+        all_assignments.extend(
+            _assignments_for_store(
+                session, tenant_id=tenant_id, store_id=store_id, month_id=month.id
             )
-            .order_by(PontajProjection.person_id, PontajProjection.business_date)
+        )
+        all_pontaj.extend(
+            _pontaj_rows_for_store(
+                session, tenant_id=tenant_id, store_id=store_id, month_id=month.id
+            )
+        )
+    assignments_by_person_day = {
+        (a.person_id, a.business_date): a for a in all_assignments
+    }
+    persons = list(
+        session.execute(
+            select(Person).where(
+                Person.tenant_id == tenant_id,
+                Person.id.in_({a.person_id for a in all_assignments if a.status == "WORKING"}),
+            )
         ).scalars()
     )
-    persons = {
-        p.id: p
-        for p in session.execute(select(Person).where(Person.tenant_id == tenant_id)).scalars()
-    }
+    persons_by_id = {p.id: p for p in persons}
 
     wb = Workbook()
     ws = wb.active
     if ws is None:
         raise RuntimeError("Workbook has no active sheet")
-    _write_pontaj_tab(ws, pontaj_rows=pontaj_rows, persons_by_id=persons)
+    _write_pontaj_tab(
+        ws,
+        pontaj_rows=all_pontaj,
+        assignments_by_person_day=assignments_by_person_day,
+        persons_by_id=persons_by_id,
+        month_year=month.year,
+        month_month=month.month,
+    )
     buffer = io.BytesIO()
     wb.save(buffer)
     payload = buffer.getvalue()
-    filename = f"ugrile_{month.year:04d}-{month.month:02d}_pontaj.xlsx"
+    suffix = "pontaj_all" if not store_filter or len(store_filter) > 1 else f"pontaj_{len(store_filter)}"
+    filename = f"ugrile_{month.year:04d}-{month.month:02d}_{suffix}.xlsx"
     checksum = _checksum(payload)
     summary = {
         "schema": SCHEMA,
@@ -400,7 +716,8 @@ def render_pontaj_only_export(
         "filename": filename,
         "checksum_sha256": checksum,
         "kind": "EXPORT_PONTAJ_ONLY",
-        "rows_pontaj": len(pontaj_rows),
+        "rows_pontaj": len(all_pontaj),
+        "stores_included": list(store_filter),
     }
     return ExportEnvelope(
         bytes_=payload,
@@ -418,20 +735,19 @@ def render_bulk_export(
     store_ids: Iterable[str] | None = None,
 ) -> ExportEnvelope:
     """Render a bulk ZIP: per-store XLSX + manifest.json with checksums."""
-    store_query = select(Store).where(Store.tenant_id == tenant_id, Store.is_active.is_(True))
+    store_query = select(Store).where(
+        Store.tenant_id == tenant_id, Store.is_active.is_(True)
+    )
     if store_ids is not None:
         store_query = store_query.where(Store.id.in_(list(store_ids)))
     stores = list(session.execute(store_query.order_by(Store.internal_code)).scalars())
     if not stores:
         raise ValueError("NO_STORES")
+    generation = _determine_generation(
+        session, tenant_id=tenant_id, month_year=month.year, month_month=month.month
+    )
 
     entries: list[dict[str, object]] = []
-    generation = _determine_generation(
-        session,
-        tenant_id=tenant_id,
-        year=month.year,
-        month=month.month,
-    )
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for store in stores:
@@ -448,6 +764,8 @@ def render_bulk_export(
             }
             zf.writestr(envelope.filename, envelope.bytes_)
             entries.append(entry)
+        from ..domain.rule_pack import RULE_PACK_VERSION
+
         manifest = {
             "schema": SCHEMA,
             "tenant_id": tenant_id,
@@ -455,13 +773,14 @@ def render_bulk_export(
             "year": month.year,
             "month": month.month,
             "revision": month.revision,
-            "generation": generation,
             "rule_pack_version": RULE_PACK_VERSION,
+            "generation": generation,
             "store_count": len(entries),
             "entries": entries,
         }
         zf.writestr(
-            "manifest.json", json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2)
+            "manifest.json",
+            json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2),
         )
     payload = buffer.getvalue()
     filename = f"ugrile_{month.year:04d}-{month.month:02d}_bulk.zip"
@@ -474,6 +793,8 @@ def render_bulk_export(
         "checksum_sha256": checksum,
         "kind": "EXPORT_XLSX_BULK",
         "store_count": len(entries),
+        "rule_pack_version": manifest["rule_pack_version"],
+        "generation": manifest["generation"],
     }
     return ExportEnvelope(
         bytes_=payload,
@@ -491,18 +812,22 @@ def record_export_run(
     envelope: ExportEnvelope,
     artifact_uri: str,
 ) -> ExportRun:
-    return _persist_export_run(
-        session,
+    row = ExportRun(
         tenant_id=tenant_id,
         kind=kind,
-        summary=envelope.summary,
+        status="DONE",
+        summary=json.dumps(envelope.summary, sort_keys=True, ensure_ascii=False),
         artifact_uri=artifact_uri,
     )
+    session.add(row)
+    session.flush()
+    return row
 
 
 __all__ = [
     "ExportEnvelope",
     "MIME_XLSX",
+    "PONTAJ_BLOCK_STARTS",
     "SCHEMA",
     "record_export_run",
     "render_bulk_export",

@@ -180,43 +180,42 @@ def write_store_projection(
         )
 
     if is_provider_failing():
-        # Record the failure but keep the last-good row untouched.
+        # Append a NEW FAILED row alongside any prior DONE rows so the
+        # last-good payload is preserved untouched (AC-12 fail-closed
+        # semantics). When no prior DONE exists, the FAILED row is the
+        # only row and surfaces the absence to the canary readback.
         last_run = _last_run_for(session, tenant_id=tenant_id, store_id=store_id)
+        last_success = (
+            last_run.last_success_generation
+            if last_run is not None and last_run.status == "DONE"
+            else None
+        )
         now = _now_utc()
-        if last_run is not None:
-            last_run.status = "FAILED"
-            last_run.last_error = (
-                "fake provider is failing (UGR_S5_GOOGLE_FAIL=1); " "last-good projection retained"
+        session.add(
+            SheetProjectionRun(
+                tenant_id=tenant_id,
+                store_id=store_id,
+                status="FAILED",
+                last_error=(
+                    "fake provider is failing (UGR_S5_GOOGLE_FAIL=1); "
+                    "last-good projection retained" if last_success else
+                    "fake provider is failing (UGR_S5_GOOGLE_FAIL=1); "
+                    "no prior good projection to retain"
+                ),
+                last_success_generation=last_success,
+                last_run_at=now,
+                payload=_json_dumps(payload),
+                generation=generation,
+                failures=1,
             )
-            last_run.failures = int(last_run.failures or 0) + 1
-            last_run.last_run_at = now
-            last_run.updated_at = now
-        else:
-            # No prior good run to retain; surface a deterministic error
-            # payload so the caller can audit the attempt.
-            session.add(
-                SheetProjectionRun(
-                    tenant_id=tenant_id,
-                    store_id=store_id,
-                    status="FAILED",
-                    last_error=(
-                        "fake provider is failing (UGR_S5_GOOGLE_FAIL=1); "
-                        "no prior good projection to retain"
-                    ),
-                    last_success_generation=None,
-                    last_run_at=now,
-                    payload="{}",
-                    generation=generation,
-                    failures=1,
-                )
-            )
+        )
         raise GoogleAdapterError(
             "fake google provider is failing (UGR_S5_GOOGLE_FAIL=1)",
             details={
                 "tenant_id": tenant_id,
                 "store_id": store_id,
                 "generation": generation,
-                "last_success_generation": last_run.last_success_generation if last_run else None,
+                "last_success_generation": last_success,
             },
         )
 

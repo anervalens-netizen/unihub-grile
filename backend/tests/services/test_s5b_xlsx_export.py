@@ -106,9 +106,100 @@ def test_store_export_renders_grila_and_pontaj_tabs(session, faker_tenant):
     assert grila["A1"].value.startswith("Magazin:")
     pontaj = workbook["Pontaj"]
     assert pontaj.cell(row=1, column=1).value == "Persoana"
-    # day 1..31 + total
-    assert pontaj.cell(row=1, column=32).value == "31"
-    assert pontaj.cell(row=1, column=33).value == "Total ore (AH)"
+    # day 1..31 in columns D..AG (4..34) + total AH at column 35
+    assert pontaj.cell(row=1, column=4).value == 1
+    assert pontaj.cell(row=1, column=34).value == 31
+    assert pontaj.cell(row=1, column=35).value == "Total ore (AH)"
+
+
+def test_pontaj_uses_standard_c8_ag31_block_layout(session, faker_tenant):
+    """Per docs/MOBIUP_RULE_PACK.md §7, the standard Pontaj tab uses
+    block rows 8 and 11 (the 3-row block: net hours / interval / pause)
+    with column D..AG = day 1..31 and column AH = total."""
+    from ugrile.domain.enums import DayStatus, WorkingKind
+    from ugrile.services.calendar import CalendarChange, CalendarService
+
+    _seed_full_month(
+        session,
+        faker_tenant,
+        store_id=faker_tenant["store_id"],
+        person_id=faker_tenant["person_a_id"],
+    )
+    # Seed WORKING for every day of the month so the total reflects 31 days x 11 h.
+    month = MonthRepository(session).get_or_create(faker_tenant["tenant_id"], 2026, 8)
+    for day in range(1, 32):
+        CalendarService(session).apply(
+            month=month,
+            tenant_id=faker_tenant["tenant_id"],
+            expected_revision=month.revision,
+            changes=[
+                CalendarChange(
+                    faker_tenant["person_a_id"],
+                    __import__("datetime").date(2026, 8, day),
+                    faker_tenant["store_id"],
+                    DayStatus.WORKING,
+                    WorkingKind.NORMAL,
+                )
+            ],
+        )
+    session.commit()
+    envelope = render_store_export(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        month=month,
+        store_id=faker_tenant["store_id"],
+    )
+    workbook = load_workbook(io.BytesIO(envelope.bytes_))
+    pontaj = workbook["Pontaj"]
+    # Single-agent store uses block row 8 (rows 8/9/10 = net/interval/pause).
+    assert pontaj.cell(row=8, column=1).value
+    assert "Interval:" in str(pontaj.cell(row=9, column=1).value)
+    assert "Pauza:" in str(pontaj.cell(row=10, column=1).value)
+    # day 1 in column D (4) must carry 11.00 hours.
+    assert pontaj.cell(row=8, column=4).value == "11.00"
+    # Total in column AH (35) for the single-agent block at row 8: 31 x 11 = 341.
+    total_cell = pontaj.cell(row=8, column=35).value
+    assert float(total_cell.replace(",", ".")) == 31 * 11
+
+
+def test_store_export_includes_only_store_assignments(session, faker_tenant):
+    """Strict per-store filter: an export for store_a must not include
+    Pontaj rows for store_b's persons."""
+    _seed_full_month(
+        session,
+        faker_tenant,
+        store_id=faker_tenant["store_id"],
+        person_id=faker_tenant["person_a_id"],
+    )
+    # Add assignments + Pontaj rows on other_store via Carmen.
+    month = MonthRepository(session).get_or_create(faker_tenant["tenant_id"], 2026, 8)
+    for day in range(1, 32):
+        CalendarService(session).apply(
+            month=month,
+            tenant_id=faker_tenant["tenant_id"],
+            expected_revision=month.revision,
+            changes=[
+                CalendarChange(
+                    faker_tenant["person_c_id"],
+                    date(2026, 8, day),
+                    faker_tenant["other_store_id"],
+                    DayStatus.WORKING,
+                    WorkingKind.NORMAL,
+                )
+            ],
+        )
+    session.commit()
+    envelope = render_store_export(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        month=month,
+        store_id=faker_tenant["store_id"],
+    )
+    workbook = load_workbook(io.BytesIO(envelope.bytes_))
+    pontaj = workbook["Pontaj"]
+    # Person c (Carmen, from other_store) must NOT appear in store_a's Pontaj.
+    rendered = [pontaj.cell(row=r, column=1).value for r in range(2, 14)]
+    assert not any("Carmen" in str(v) for v in rendered), rendered
 
 
 def test_pontaj_only_export_spans_every_person(session, faker_tenant):
@@ -140,7 +231,7 @@ def test_bulk_export_zips_per_store_with_manifest(session, faker_tenant):
         manifest_bytes = zf.read("manifest.json")
     manifest = json.loads(manifest_bytes)
     assert "manifest.json" in names
-    assert manifest["schema"] == "UGRILE-S5-XLSX-V1"
+    assert manifest["schema"] == "UGRILE-S5-XLSX-V2"
     # Frozen AC-14 contract: manifest MUST carry the source generation
     # and the rule pack version that produced the workbooks. Source is
     # the connector generation (FIXTURE_V1 at S5) and the canonical V1

@@ -178,6 +178,17 @@ def record_readback(
     >10). Invalid rows are persisted with ``is_valid=False`` and
     ``raw_value`` preserved; only valid rows feed the grid engine via
     :func:`ugrile.repositories.epay.latest_snapshot`.
+
+    AC-13 ``exact-four-cells`` contract:
+
+    * The list must contain exactly one entry per (person, category) pair
+      belonging to the store/month's WORKING agents — i.e. at most
+      ``len(working_agents) * 2`` entries and at least
+      ``len(working_agents) * 2`` entries when the store has any working
+      agent in the month.
+    * Every person must already have at least one WORKING assignment on
+      this ``store_id`` during ``month_id`` — i.e. the person belongs to
+      the store/month.
     """
 
     if not isinstance(observations, list):
@@ -186,10 +197,27 @@ def record_readback(
             details={"code": "EPAY_READBACK_INVALID", "received": type(observations).__name__},
         )
     _require_store(session, tenant_id=tenant_id, store_id=store_id)
+    working_persons = _working_persons_for_store_month(
+        session, tenant_id=tenant_id, month_id=month_id, store_id=store_id
+    )
+    expected_pairs: set[tuple[str, str]] = {
+        (pid, cat.value)
+        for pid in working_persons
+        for cat in EpayCategory
+    }
     if not observations:
         raise ValidationError(
             "observations must contain at least one entry",
             details={"code": "EPAY_READBACK_EMPTY"},
+        )
+    if working_persons and len(observations) != len(expected_pairs):
+        raise ValidationError(
+            "observations must contain exactly one entry per (person, category) for working agents",
+            details={
+                "code": "EPAY_READBACK_FOUR_CELLS",
+                "expected_count": len(expected_pairs),
+                "received_count": len(observations),
+            },
         )
 
     items: list[EpayReadbackItem] = []
@@ -219,6 +247,18 @@ def record_readback(
                     "code": "EPAY_READBACK_INVALID",
                     "person_id": person_id,
                     "category": category,
+                },
+            )
+        # AC-13 person belongs to store/month.
+        if working_persons and (person_id, str(category)) not in expected_pairs:
+            raise ValidationError(
+                "person/category must belong to this store/month's working agents",
+                details={
+                    "code": "EPAY_READBACK_PERSON_SCOPE",
+                    "person_id": person_id,
+                    "category": str(category),
+                    "store_id": store_id,
+                    "month_id": month_id,
                 },
             )
         key = (person_id, str(category))

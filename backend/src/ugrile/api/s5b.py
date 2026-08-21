@@ -1,21 +1,37 @@
-"""S5b export + canary endpoints (AC-12, AC-14).
+"""S5b enqueue + canary endpoints (AC-12, AC-14, AC-16).
 
 Routes:
 
 * ``POST /months/{id}/export/store`` — admin-only. Body
-  ``{"store_id": "...", "idempotency_key": "..."}``. Renders the
-  ``Grila``+``Pontaj`` workbook, persists an ``ExportRun`` row, writes
-  the bytes to a non-tracked temporary path, and returns
-  ``{filename, checksum_sha256, size_bytes, summary, artifact_uri,
-  kind}``.
+  ``{"store_id": "...", "idempotency_key": "..."}``. Enqueues an
+  ``EXPORT_XLSX_STORE`` durable worker job whose handler renders the
+  per-magazin workbook, writes the artifact to a non-tracked path, and
+  persists an ``ExportRun`` row with checksum + artifact_uri. The
+  request returns the job id + status only; the bytes are produced
+  asynchronously by the worker.
+
 * ``POST /months/{id}/export/bulk`` — admin-only. Body
-  ``{"store_ids": [...]?}``. Same envelope with a ``store_count`` and a
-  ZIP artifact.
-* ``POST /months/{id}/export/pontaj-only`` — admin-only. Renders a
-  Pontaj-only workbook spanning every person in the tenant.
+  ``{"store_ids": [...]?, "idempotency_key": "..."}``. Enqueues an
+  ``EXPORT_XLSX_BULK`` job whose handler iterates per-store and packs
+  the ZIP + manifest.json. Returns the job id only.
+
+* ``POST /months/{id}/export/pontaj-only`` — admin-only. Body
+  ``{"store_ids": [...]?, "idempotency_key": "..."}``. Enqueues an
+  ``EXPORT_PONTAJ_ONLY`` job whose handler renders the Pontaj
+  workbook for the requested stores.
+
+* ``GET /months/{id}/export/jobs/{job_id}`` — admin or TL. Returns the
+  current ``ExportRun`` summary + artifact_uri + status. Lets the
+  client poll until the job is DONE.
+
 * ``GET /months/{id}/canary/readback`` — admin or TL. Reads the latest
-  structural projection per store (fake adapter output) and returns
-  per-store CanaryResult with missing/unexpected keys.
+  DONE structural projection per store and returns per-store
+  CanaryResult with missing/unexpected keys.
+
+AC-16 contract: the API never renders the XLSX in the request
+thread. All exports flow through the durable worker with SKIP LOCKED
++ idempotency_key, exposing progress state through the existing
+``GET /worker/jobs/{id}`` endpoint.
 """
 
 from __future__ import annotations
@@ -31,29 +47,66 @@ from sqlalchemy.orm import Session
 from ..api.deps import current_principal, db_session
 from ..domain.enums import JobKind, RoleName
 from ..domain.errors import DomainError
+from ..repositories.models import ExportRun
 from ..repositories.months import MonthRepository
 from ..services.auth import Principal, assert_admin, assert_same_tenant
 from ..services.canary import list_active_store_ids, read_store_canary
-from ..services.xlsx_export import (
-    record_export_run,
-    render_bulk_export,
-    render_pontaj_only_export,
-    render_store_export,
-)
+from ..worker.worker import enqueue
 
 router = APIRouter(prefix="/months", tags=["export"])
 
 
-def _artifact_uri(filename: str) -> str:
-    """Persist the bytes to a non-tracked temporary path and return its URI."""
+def _artifact_uri_hint(filename: str) -> str:
+    """Compute the durable artifact path the worker will write to.
+
+    The worker uses the same helper so API and worker converge on the
+    same path; the directory is created lazily by the worker.
+    """
     base = os.environ.get("UGR_S5_EXPORT_DIR") or tempfile.gettempdir()
-    target = os.path.join(base, "ugrile-s5-exports", filename)
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    return target
+    return os.path.join(base, "ugrile-s5-exports", filename)
+
+
+def _enqueue_export(
+    session: Session,
+    *,
+    tenant_id: str,
+    month_id: str,
+    kind: JobKind,
+    idempotency_key: str,
+    payload: dict[str, Any],
+    artifact_uri_hint: str | None,
+) -> dict[str, Any]:
+    """Enqueue an export job and return the synchronous ticket."""
+    if not isinstance(idempotency_key, str) or not idempotency_key:
+        raise DomainError(
+            "idempotency_key is required",
+            details={"code": "EXPORT_KEY_REQUIRED"},
+        )
+    job_row = enqueue(
+        session,
+        tenant_id=tenant_id,
+        kind=kind.value,
+        idempotency_key=idempotency_key,
+        payload={
+            **payload,
+            "month_id": month_id,
+            "artifact_uri_hint": artifact_uri_hint,
+        },
+    )
+    job_id = job_row.id
+    session.commit()
+    return {
+        "kind": kind.value,
+        "month_id": month_id,
+        "job_id": job_id,
+        "idempotency_key": idempotency_key,
+        "status": "ENQUEUED",
+        "artifact_uri_hint": artifact_uri_hint,
+    }
 
 
 @router.post("/{month_id}/export/store")
-def export_store(
+def enqueue_export_store(
     month_id: str,
     body: dict[str, Any],
     session: Session = Depends(db_session),
@@ -65,32 +118,23 @@ def export_store(
     store_id = body.get("store_id")
     if not isinstance(store_id, str) or not store_id:
         raise DomainError("store_id is required", details={"body_keys": list(body.keys())})
-    envelope = render_store_export(
-        session, tenant_id=principal.tenant_id, month=month, store_id=store_id
+    idempotency_key = body.get("idempotency_key") or f"store::{store_id}::{month_id}"
+    artifact_uri_hint = _artifact_uri_hint(
+        f"ugrile_{month.year}-{month.month:02d}_{store_id[:8]}_grila_pontaj.xlsx"
     )
-    uri = _artifact_uri(envelope.filename)
-    with open(uri, "wb") as f:
-        f.write(envelope.bytes_)
-    record_export_run(
+    return _enqueue_export(
         session,
         tenant_id=principal.tenant_id,
-        kind=JobKind.EXPORT_XLSX_STORE.value,
-        envelope=envelope,
-        artifact_uri=uri,
+        month_id=month_id,
+        kind=JobKind.EXPORT_XLSX_STORE,
+        idempotency_key=idempotency_key,
+        payload={"store_id": store_id},
+        artifact_uri_hint=artifact_uri_hint,
     )
-    session.commit()
-    return {
-        "filename": envelope.filename,
-        "checksum_sha256": envelope.checksum,
-        "size_bytes": len(envelope.bytes_),
-        "summary": envelope.summary,
-        "artifact_uri": uri,
-        "kind": JobKind.EXPORT_XLSX_STORE.value,
-    }
 
 
 @router.post("/{month_id}/export/bulk")
-def export_bulk(
+def enqueue_export_bulk(
     month_id: str,
     body: dict[str, Any],
     session: Session = Depends(db_session),
@@ -102,35 +146,23 @@ def export_bulk(
     store_ids = body.get("store_ids")
     if store_ids is not None and not isinstance(store_ids, list):
         raise DomainError("store_ids must be a list when provided", details={"type": type(store_ids).__name__})
-    envelope = render_bulk_export(
+    idempotency_key = body.get("idempotency_key") or f"bulk::{month_id}"
+    artifact_uri_hint = _artifact_uri_hint(
+        f"ugrile_{month.year}-{month.month:02d}_bulk.zip"
+    )
+    return _enqueue_export(
         session,
         tenant_id=principal.tenant_id,
-        month=month,
-        store_ids=[str(s) for s in store_ids] if store_ids else None,
+        month_id=month_id,
+        kind=JobKind.EXPORT_XLSX_BULK,
+        idempotency_key=idempotency_key,
+        payload={"store_ids": [str(s) for s in store_ids] if store_ids else None},
+        artifact_uri_hint=artifact_uri_hint,
     )
-    uri = _artifact_uri(envelope.filename)
-    with open(uri, "wb") as f:
-        f.write(envelope.bytes_)
-    record_export_run(
-        session,
-        tenant_id=principal.tenant_id,
-        kind=JobKind.EXPORT_XLSX_BULK.value,
-        envelope=envelope,
-        artifact_uri=uri,
-    )
-    session.commit()
-    return {
-        "filename": envelope.filename,
-        "checksum_sha256": envelope.checksum,
-        "size_bytes": len(envelope.bytes_),
-        "summary": envelope.summary,
-        "artifact_uri": uri,
-        "kind": JobKind.EXPORT_XLSX_BULK.value,
-    }
 
 
 @router.post("/{month_id}/export/pontaj-only")
-def export_pontaj_only(
+def enqueue_export_pontaj_only(
     month_id: str,
     body: dict[str, Any],
     session: Session = Depends(db_session),
@@ -139,27 +171,42 @@ def export_pontaj_only(
     assert_admin(principal)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
-    envelope = render_pontaj_only_export(
-        session, tenant_id=principal.tenant_id, month=month
+    store_ids = body.get("store_ids")
+    if store_ids is not None and not isinstance(store_ids, list):
+        raise DomainError("store_ids must be a list when provided", details={"type": type(store_ids).__name__})
+    idempotency_key = body.get("idempotency_key") or f"pontaj::{month_id}"
+    artifact_uri_hint = _artifact_uri_hint(
+        f"ugrile_{month.year}-{month.month:02d}_pontaj.xlsx"
     )
-    uri = _artifact_uri(envelope.filename)
-    with open(uri, "wb") as f:
-        f.write(envelope.bytes_)
-    record_export_run(
+    return _enqueue_export(
         session,
         tenant_id=principal.tenant_id,
-        kind=JobKind.EXPORT_PONTAJ_ONLY.value,
-        envelope=envelope,
-        artifact_uri=uri,
+        month_id=month_id,
+        kind=JobKind.EXPORT_PONTAJ_ONLY,
+        idempotency_key=idempotency_key,
+        payload={"store_ids": [str(s) for s in store_ids] if store_ids else None},
+        artifact_uri_hint=artifact_uri_hint,
     )
-    session.commit()
+
+
+@router.get("/{month_id}/export/jobs/{job_id}")
+def export_job_status(
+    month_id: str,
+    job_id: int,
+    session: Session = Depends(db_session),
+    principal: Principal = Depends(current_principal),
+) -> dict[str, Any]:
+    if principal.role not in {RoleName.ADMIN, RoleName.MANAGER}:
+        raise DomainError("forbidden", details={"role": principal.role.value})
+    run = session.get(ExportRun, job_id)
+    if run is None or run.tenant_id != principal.tenant_id:
+        raise DomainError("export job not found", details={"job_id": job_id})
     return {
-        "filename": envelope.filename,
-        "checksum_sha256": envelope.checksum,
-        "size_bytes": len(envelope.bytes_),
-        "summary": envelope.summary,
-        "artifact_uri": uri,
-        "kind": JobKind.EXPORT_PONTAJ_ONLY.value,
+        "job_id": run.id,
+        "kind": run.kind,
+        "status": run.status,
+        "artifact_uri": run.artifact_uri,
+        "summary": run.summary,
     }
 
 

@@ -172,27 +172,25 @@ def _expected_keys(
     return keys
 
 
-def read_store_canary(
+def _last_done_run(
     session: Session,
     *,
     tenant_id: str,
     store_id: str,
-    month_id: str,
-) -> CanaryResult:
-    """Inspect the latest structural projection for ``store_id``.
+) -> SheetProjectionRun | None:
+    """Return the most recent DONE projection row (fail-closed readback).
 
-    The expected lattice is the union of grila assignments and pontaj
-    rows for the persisted projection. We compare the persisted keys
-    against the structural expectation and surface missing/unexpected
-    rows. The actual structural projection is the only writer (the
-    fake adapter); the readback never mutates it.
+    Provider-failure rows are intentionally ignored so that a transient
+    FAILED attempt never shadows the last-good projection; the close
+    checklist uses ``last_success_generation`` for the same reason.
     """
-    run = (
+    return (
         session.execute(
             select(SheetProjectionRun)
             .where(
                 SheetProjectionRun.tenant_id == tenant_id,
                 SheetProjectionRun.store_id == store_id,
+                SheetProjectionRun.status == "DONE",
             )
             .order_by(SheetProjectionRun.last_run_at.desc().nullslast())
             .limit(1)
@@ -200,17 +198,54 @@ def read_store_canary(
         .scalars()
         .first()
     )
-    if run is None:
+
+
+def read_store_canary(
+    session: Session,
+    *,
+    tenant_id: str,
+    store_id: str,
+    month_id: str,
+) -> CanaryResult:
+    """Inspect the latest DONE structural projection for ``store_id``.
+
+    The expected lattice is the union of grila assignments and pontaj
+    rows for the persisted projection. We compare the persisted keys
+    against the structural expectation and surface missing/unexpected
+    rows. The actual structural projection is the only writer (the
+    fake adapter); the readback never mutates it. AC-12 fail-closed:
+    when no DONE projection exists, the result is marked with
+    ``last_error = "NO_PROJECTION"`` and ``matched = 0`` so the close
+    checklist reports a missing canary rather than a silent pass.
+    """
+    done = _last_done_run(session, tenant_id=tenant_id, store_id=store_id)
+    if done is None:
+        # AC-12 fail-closed: a missing projection is an explicit
+        # blocker. We intentionally do not look at the latest FAILED
+        # row — provider failures do not earn structural credit.
+        last_any = (
+            session.execute(
+                select(SheetProjectionRun)
+                .where(
+                    SheetProjectionRun.tenant_id == tenant_id,
+                    SheetProjectionRun.store_id == store_id,
+                )
+                .order_by(SheetProjectionRun.last_run_at.desc().nullslast())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
         return CanaryResult(
             store_id=store_id,
             matched=0,
-            missing_keys=[],
+            missing_keys=["<NO_PROJECTION>"],
             unexpected_keys=[],
-            generation=None,
-            last_run_at=None,
+            generation=last_any.generation if last_any else None,
+            last_run_at=last_any.last_run_at.isoformat() if last_any and last_any.last_run_at else None,
             last_error="NO_PROJECTION",
         )
-    payload = json.loads(run.payload or "{}")
+    payload = json.loads(done.payload or "{}")
     actual = _actual_keys(payload)
     projection_revision = _payload_revision(payload)
     expected = _expected_keys(
@@ -227,9 +262,9 @@ def read_store_canary(
         matched=len(actual & expected),
         missing_keys=missing,
         unexpected_keys=unexpected,
-        generation=run.generation,
-        last_run_at=run.last_run_at.isoformat() if run.last_run_at else None,
-        last_error=run.last_error,
+        generation=done.generation,
+        last_run_at=done.last_run_at.isoformat() if done.last_run_at else None,
+        last_error=None,
     )
 
 

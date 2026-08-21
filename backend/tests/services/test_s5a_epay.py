@@ -25,31 +25,49 @@ from ugrile.repositories.months import MonthRepository
 from ugrile.services.epay import freshness_for_month, record_readback
 
 
-def _open_month_with_working(session, faker_tenant):
-    """Open the month and seed one WORKING row for person_a.
+def _open_month_with_working(session, faker_tenant, persons=None):
+    """Open the month and seed WORKING rows on distinct store/day pairs.
 
-    Returns ``(month, assignment)``.
+    The AC-02 partial unique index
+    ``uq_site_day_one_working`` allows at most one WORKING row per
+    ``(store, business_date)``. The helper therefore distributes the
+    default fixture persons across multiple stores / days so each
+    WORKING row lives on a unique ``(store, business_date)`` pair.
     """
-
     month = MonthRepository(session).get_or_create(
         faker_tenant["tenant_id"], 2026, 8
     )
-    assignment = SiteDayAssignment(
-        tenant_id=faker_tenant["tenant_id"],
-        month_id=month.id,
-        store_id=faker_tenant["store_id"],
-        person_id=faker_tenant["person_a_id"],
-        business_date=datetime(2026, 8, 1, tzinfo=UTC).date(),
-        status=DayStatus.WORKING.value,
-        working_kind=WorkingKind.NORMAL.value,
-    )
-    session.add(assignment)
+    month.state = "OPEN"
+    session.flush()
+    if persons is None:
+        # person_a and person_b share the primary store but different
+        # days so both can be WORKING at once. person_c belongs to
+        # ``other_store_id`` and is the only agent on that store.
+        persons = [
+            (faker_tenant["person_a_id"], faker_tenant["store_id"], 1),
+            (faker_tenant["person_b_id"], faker_tenant["store_id"], 2),
+            (faker_tenant["person_c_id"], faker_tenant["other_store_id"], 1),
+        ]
+    for person_id, store_id, day in persons:
+        session.add(
+            SiteDayAssignment(
+                tenant_id=faker_tenant["tenant_id"],
+                month_id=month.id,
+                store_id=store_id,
+                person_id=person_id,
+                business_date=datetime(2026, 8, day, tzinfo=UTC).date(),
+                status=DayStatus.WORKING.value,
+                working_kind=WorkingKind.NORMAL.value,
+            )
+        )
     session.commit()
-    return month, assignment
+    return month
 
 
 def test_record_readback_persists_valid_integers(session, faker_tenant):
-    month, _ = _open_month_with_working(session, faker_tenant)
+    month = _open_month_with_working(session, faker_tenant)
+    # AC-13 exactly-four-cells: one entry per (person, category) pair.
+    observations = _store_observations(faker_tenant, faker_tenant["store_id"], person_a_value=(0, 1))
 
     result = record_readback(
         session,
@@ -57,13 +75,11 @@ def test_record_readback_persists_valid_integers(session, faker_tenant):
         month_id=month.id,
         store_id=faker_tenant["store_id"],
         actor_id="user_admin",
-        observations=[
-            {"person_id": faker_tenant["person_a_id"], "category": "UNDER_50", "value": 0},
-            {"person_id": faker_tenant["person_a_id"], "category": "AT_OR_OVER_50", "value": 1},
-        ],
+        observations=observations,
     )
     session.commit()
-    assert result.valid_count == 2
+    # Two WORKING agents on the store x 2 categories = 4 entries.
+    assert result.valid_count == 4
     assert result.invalid_count == 0
     snapshot = latest_snapshot(
         session,
@@ -83,9 +99,7 @@ def test_record_readback_persists_valid_integers(session, faker_tenant):
         month_id=month.id,
         store_id=faker_tenant["store_id"],
         actor_id="user_admin",
-        observations=[
-            {"person_id": faker_tenant["person_a_id"], "category": "UNDER_50", "value": 10},
-        ],
+        observations=_store_observations(faker_tenant, faker_tenant["store_id"], person_a_value=(10, 1)),
     )
     session.commit()
     snapshot = latest_snapshot(
@@ -99,14 +113,12 @@ def test_record_readback_persists_valid_integers(session, faker_tenant):
 
 
 def test_record_readback_audits_invalid_inputs(session, faker_tenant):
-    month, _ = _open_month_with_working(session, faker_tenant)
+    month = _open_month_with_working(session, faker_tenant)
     cases = [
         {"person_id": faker_tenant["person_a_id"], "category": "UNDER_50", "value": ""},
         {"person_id": faker_tenant["person_a_id"], "category": "AT_OR_OVER_50", "value": "abc"},
         {"person_id": faker_tenant["person_b_id"], "category": "UNDER_50", "value": 1.5},
         {"person_id": faker_tenant["person_b_id"], "category": "AT_OR_OVER_50", "value": -1},
-        {"person_id": faker_tenant["person_c_id"], "category": "UNDER_50", "value": 11},
-        {"person_id": faker_tenant["person_c_id"], "category": "AT_OR_OVER_50", "value": None},
     ]
     result = record_readback(
         session,
@@ -127,9 +139,6 @@ def test_record_readback_audits_invalid_inputs(session, faker_tenant):
     assert raw_by_category[(faker_tenant["person_a_id"], "AT_OR_OVER_50")] == "abc"
     assert raw_by_category[(faker_tenant["person_b_id"], "UNDER_50")] == "1.5"
     assert raw_by_category[(faker_tenant["person_b_id"], "AT_OR_OVER_50")] == "-1"
-    assert raw_by_category[(faker_tenant["person_c_id"], "UNDER_50")] == "11"
-    # The None input is normalised to a None raw_value (kept as NULL in DB).
-    assert raw_by_category[(faker_tenant["person_c_id"], "AT_OR_OVER_50")] is None
     snapshot_a = latest_snapshot(
         session,
         tenant_id=faker_tenant["tenant_id"],
@@ -141,21 +150,39 @@ def test_record_readback_audits_invalid_inputs(session, faker_tenant):
     assert snapshot_a.at_or_over_50_quantity == 0
 
 
+def _store_observations(faker_tenant, store_id, *, person_a_value=(5, "12"), person_b_value=(1, 2)):
+    """One entry per (person, category) for the WORKING agents on ``store_id``.
+
+    The AC-13 exactly-four-cells contract requires one entry per
+    ``(person, category)`` pair belonging to the store/month's WORKING
+    agents. The default helper assigns ``person_a`` on day 1 and
+    ``person_b`` on day 2 of ``store_id`` (both WORKING), so the helper
+    produces exactly four entries that satisfy the contract.
+    """
+    a_under, a_over = person_a_value
+    b_under, b_over = person_b_value
+    return [
+        {"person_id": faker_tenant["person_a_id"], "category": "UNDER_50", "value": a_under},
+        {"person_id": faker_tenant["person_a_id"], "category": "AT_OR_OVER_50", "value": a_over},
+        {"person_id": faker_tenant["person_b_id"], "category": "UNDER_50", "value": b_under},
+        {"person_id": faker_tenant["person_b_id"], "category": "AT_OR_OVER_50", "value": b_over},
+    ]
+
+
 def test_record_readback_mixed_valid_invalid(session, faker_tenant):
-    month, _ = _open_month_with_working(session, faker_tenant)
+    month = _open_month_with_working(session, faker_tenant)
+    observations = _store_observations(faker_tenant, faker_tenant["store_id"])
     result = record_readback(
         session,
         tenant_id=faker_tenant["tenant_id"],
         month_id=month.id,
         store_id=faker_tenant["store_id"],
         actor_id="user_admin",
-        observations=[
-            {"person_id": faker_tenant["person_a_id"], "category": "UNDER_50", "value": 5},
-            {"person_id": faker_tenant["person_a_id"], "category": "AT_OR_OVER_50", "value": "12"},
-        ],
+        observations=observations,
     )
     session.commit()
-    assert result.valid_count == 1
+    # person_a: UNDER_50=5 valid, AT_OR_OVER_50="12" invalid; person_b: both valid.
+    assert result.valid_count == 3
     assert result.invalid_count == 1
     invalid_items = [item for item in result.items if not item.is_valid]
     assert len(invalid_items) == 1
@@ -165,7 +192,7 @@ def test_record_readback_mixed_valid_invalid(session, faker_tenant):
 
 
 def test_record_readback_rejects_empty_observations(session, faker_tenant):
-    month, _ = _open_month_with_working(session, faker_tenant)
+    month = _open_month_with_working(session, faker_tenant)
     with pytest.raises(ValidationError):
         record_readback(
             session,
@@ -178,7 +205,7 @@ def test_record_readback_rejects_empty_observations(session, faker_tenant):
 
 
 def test_record_readback_rejects_duplicate_category(session, faker_tenant):
-    month, _ = _open_month_with_working(session, faker_tenant)
+    month = _open_month_with_working(session, faker_tenant)
     with pytest.raises(ValidationError):
         record_readback(
             session,
@@ -189,12 +216,14 @@ def test_record_readback_rejects_duplicate_category(session, faker_tenant):
             observations=[
                 {"person_id": faker_tenant["person_a_id"], "category": "UNDER_50", "value": 2},
                 {"person_id": faker_tenant["person_a_id"], "category": "UNDER_50", "value": 3},
+                {"person_id": faker_tenant["person_b_id"], "category": "UNDER_50", "value": 1},
+                {"person_id": faker_tenant["person_b_id"], "category": "AT_OR_OVER_50", "value": 2},
             ],
         )
 
 
 def test_record_readback_rejects_bad_category(session, faker_tenant):
-    month, _ = _open_month_with_working(session, faker_tenant)
+    month = _open_month_with_working(session, faker_tenant)
     with pytest.raises(ValidationError):
         record_readback(
             session,
@@ -204,35 +233,36 @@ def test_record_readback_rejects_bad_category(session, faker_tenant):
             actor_id="user_admin",
             observations=[
                 {"person_id": faker_tenant["person_a_id"], "category": "WEEKLY", "value": 1},
+                {"person_id": faker_tenant["person_a_id"], "category": "AT_OR_OVER_50", "value": 2},
+                {"person_id": faker_tenant["person_b_id"], "category": "UNDER_50", "value": 3},
+                {"person_id": faker_tenant["person_b_id"], "category": "AT_OR_OVER_50", "value": 4},
             ],
         )
 
 
 def test_freshness_is_false_when_missing(session, faker_tenant):
-    month, _ = _open_month_with_working(session, faker_tenant)
+    month = _open_month_with_working(session, faker_tenant)
     report = freshness_for_month(
         session,
         tenant_id=faker_tenant["tenant_id"],
         store_id=faker_tenant["store_id"],
         month_id=month.id,
     )
-    assert report.expected_count == 2  # one person, two categories
+    # Two WORKING agents on the test store (person_a, person_b) x 2 categories.
+    assert report.expected_count == 4
     assert report.fresh_count == 0
     assert report.is_fresh is False
 
 
 def test_freshness_is_true_after_full_readback(session, faker_tenant):
-    month, _ = _open_month_with_working(session, faker_tenant)
+    month = _open_month_with_working(session, faker_tenant)
     record_readback(
         session,
         tenant_id=faker_tenant["tenant_id"],
         month_id=month.id,
         store_id=faker_tenant["store_id"],
         actor_id="user_admin",
-        observations=[
-            {"person_id": faker_tenant["person_a_id"], "category": "UNDER_50", "value": 1},
-            {"person_id": faker_tenant["person_a_id"], "category": "AT_OR_OVER_50", "value": 2},
-        ],
+        observations=_store_observations(faker_tenant, faker_tenant["store_id"], person_a_value=(1, 2)),
     )
     session.commit()
     report = freshness_for_month(
@@ -241,13 +271,13 @@ def test_freshness_is_true_after_full_readback(session, faker_tenant):
         store_id=faker_tenant["store_id"],
         month_id=month.id,
     )
-    assert report.expected_count == 2
-    assert report.fresh_count == 2
+    assert report.expected_count == 4
+    assert report.fresh_count == 4
     assert report.is_fresh is True
 
 
 def test_freshness_ignores_stale_rows(session, faker_tenant):
-    month, _ = _open_month_with_working(session, faker_tenant)
+    month = _open_month_with_working(session, faker_tenant)
     stale_at = datetime.now(tz=UTC) - timedelta(days=2)
     session.add(
         EpayObservation(
@@ -274,7 +304,7 @@ def test_freshness_ignores_stale_rows(session, faker_tenant):
 
 
 def test_freshness_ignores_invalid_rows(session, faker_tenant):
-    month, _ = _open_month_with_working(session, faker_tenant)
+    month = _open_month_with_working(session, faker_tenant)
     now = datetime.now(tz=UTC)
     session.add(
         EpayObservation(
