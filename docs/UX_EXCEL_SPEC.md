@@ -1,187 +1,378 @@
-# Specificație UX, import și export
+# UniHub Grile — UX, Google Sheets și XLSX
+
+Status: canonical UX/integration-output specification pentru programul din issue #3.
+
+Acest document definește experiența țintă. Statusul implementării este în issue
+#4; exemplele vizuale sau prototipurile nu sunt dovadă că o funcție există.
 
 ## 1. Principii UX
 
-- managerul trebuie să poată răspunde rapid la trei întrebări: „cine lucrează?”,
-  „unde există probleme?” și „ce intră în grilă?”;
-- luna și aria curentă sunt vizibile permanent;
-- editarea calendarului este directă, cu validare imediată;
-- stările importante folosesc text + culoare, nu doar culoare;
-- Google sync și calculele nu blochează navigarea;
-- acțiunile bulk au preview și rezumat înainte de apply;
-- desktop este suprafața principală; tableta rămâne utilizabilă; telefonul oferă
-  overview și corecții punctuale, nu matricea completă.
+Managerul trebuie să poată răspunde rapid la:
 
-## 2. Navigație propusă
+1. cine lucrează și unde;
+2. unde există probleme;
+3. ce date intră în grilă;
+4. ce blochează închiderea lunii;
+5. ce job/sync/export a eșuat și de ce.
 
-### Overview
+Reguli:
+- luna și scope-ul curent sunt vizibile permanent;
+- densitate operațională, fără hero/carduri oversized;
+- editarea calendarului este directă;
+- text + culoare pentru status, nu doar culoare;
+- Google/export nu blochează navigarea;
+- fiecare subsystem are loading/error/stale separat;
+- acțiunile vizibile trebuie să aibă endpoint real;
+- capability-aware UI, backend autoritativ;
+- desktop este principal, tablet/mobile rămân utile;
+- keyboard focus și controale accesibile.
 
-Header: lună, firmă, manager, magazin, status lună și acțiuni Import/Export.
+## 2. Limbaj vizual
 
-Carduri KPI:
+Direcția aprobată este apropiată de UniHub Retail:
+- shell luminos;
+- sidebar compact alb;
+- topbar subțire;
+- workspace gri foarte deschis;
+- carduri albe cu radius mic și shadow discret;
+- accent lavender/purple;
+- tabs/subtabs compacte;
+- fonturi mici, dar lizibile;
+- tabele dense și drill-down rapid;
+- fără dark command-center, fără carduri SaaS gigantice.
 
-- magazine acoperite / total;
-- zile neacoperite;
-- conflicte agent/zi;
-- zile suplimentare acasă / în alt magazin;
-- vânzări neatribuite;
-- E-pay invalid/necitit;
-- Google Sheets sincronizate/stale/error.
+Nu copiem automat meniuri Retail fără relevanță pentru Grile. De exemplu,
+`Vizite` nu aparține navigației Grile doar pentru că există în Retail.
 
-Conținut:
+## 3. Navigație standalone candidate
 
-- tabel pe manager cu progres, excepții, ultimul sync și drill-down;
-- listă „Necesită atenție” ordonată după severitate;
-- fără agregări financiare obținute prin request separat per magazin.
+Navigația principală:
+- **Hub**;
+- **Program & Calendar**;
+- **Excepții**;
+- **Management**.
 
-### Program
+Drill-down-uri:
+- Magazin;
+- Agent/detail unde este util;
+- jobs/sync/export status.
 
-Două perspective asupra aceleiași surse:
+La integrarea finală, shell-ul poate fi înlocuit/montat în Retail fără schimbarea
+contractelor ecranelor.
 
-1. **Pe magazine** — rânduri magazine, coloane zile, în celulă agentul alocat și
-   badge `Normal`, `Extra aici` sau `Extra altă locație`.
-2. **Pe agenți** — rânduri agenți, coloane zile, în celulă magazinul sau
-   `Liber`/`Concediu`.
+## 4. Hub
 
-Interacțiunea principală: click pe celulă, alegere agent și clasificare. Nu există
-wizard de schimb de tură. Salvarea unei modificări este atomică și afișează
-conflictele rezultate. Sunt utile: copiere săptămână, copiere lună anterioară și
-completare model alternant, dar numai după funcționarea editorului de bază.
+Scop: imagine centralizată a lunii și a excepțiilor.
 
-### Magazin
+Conținut minim:
+- luna/state/revision;
+- magazine în scope;
+- persoane în scope;
+- procent completare calendar;
+- blockers/warnings;
+- E-pay freshness;
+- sales/target anomalies;
+- Google projection freshness;
+- job failures;
+- manager/store grouping și drill-down.
 
-- identitate, firmă, manager, agenții de bază, stare Sheet;
-- calendarul lunar al magazinului;
-- target, realizat, forecast și vânzare pe zile;
-- atribuirea agentului pentru fiecare zi;
-- zile suplimentare primite și efectul lor;
-- E-pay pe agent și momentul ultimei citiri;
-- previzualizare grilă și pontaj;
-- acțiuni: sync Sheet, export XLSX, deschide Sheet.
+Overview-ul nu trebuie să facă request separat per store pentru agregări. Datele
+sunt server-side aggregate/read models sau batch eficiente.
 
-### Agent
+Un Google failure nu transformă automat întregul Hub în error dacă datele
+calendar/grid sunt disponibile.
 
-- magazin de bază și manager;
+## 5. Program & Calendar
+
+Perspectivele recomandate:
+
+### Pe persoane
+
+Rând = persoană; coloană = zi; celulă:
+- store/`NORMAL`;
+- `EXTRA_HOME`;
+- `EXTRA_OTHER`;
+- `OFF`;
+- `LEAVE`.
+
+### Pe magazine
+
+Rând = store; coloană = zi; celulă = persoana lucrătoare + clasificare.
+
+Este permis să se livreze întâi perspectiva existentă dacă acoperă workflow-ul;
+a doua perspectivă se adaugă numai dacă îmbunătățește operarea, nu pentru
+simetrie artificială.
+
+### Editare celulă
+
+Click/select cell → editor compact:
+- persoană/date context;
+- status;
+- working kind;
+- store permis;
+- save.
+
+Reguli:
+- dropdownurile sunt constrained de scope și reguli;
+- stale revision `409` nu șterge contextul/editarea fără explicație;
+- conflictele sunt afișate concret;
+- după save UI reîncarcă revision/datele afectate;
+- nu există wizard separat de schimb de tură.
+
+## 6. Magazin
+
+Pagina magazinului reunește:
+- identitate, firmă/manager/scope;
+- state/revision/freshness;
+- agenți/home assignments;
+- calendar lunar;
+- pontaj;
+- sales/attribution;
+- grid components și anomalies;
+- E-pay/readback freshness;
+- Google projection status;
+- export status.
+
+Acțiuni posibile numai dacă capability permite:
+- editare program;
+- sync Sheet;
+- export XLSX;
+- readback E-pay;
+- drill-down excepții.
+
+Pagina trebuie să rămână parțial utilizabilă dacă un subsystem extern cade.
+
+## 7. Agent/detail
+
+Dacă este expus:
+- home store și manager;
 - calendar personal;
-- zile normale, libere, concediu, extra acasă și extra în alte magazine;
-- credit de vânzare zilnic/lunar;
-- componentele grilei și E-pay;
-- fără editor separat care poate contrazice Programul.
+- normal/off/leave/extra-home/extra-other;
+- pontaj;
+- credit sales derivat;
+- grid components/anomalies;
+- E-pay;
+- fără editor paralel care poate contrazice calendarul principal.
 
-### Excepții
+## 8. Excepții
 
-- magazin fără agent;
-- agent în două magazine;
-- atribuire invalidă home/other;
-- vânzare fără calendar;
-- E-pay invalid sau necitit;
-- sursă stale/incompletă;
-- Sheet stale/structural invalid/sync error.
+Fiecare rând/card are:
+- cod;
+- severitate;
+- blocker/warning/info;
+- store/person/date;
+- impact;
+- sursa problemei;
+- acțiune/drill-down;
+- status rezolvare dacă există.
 
-Fiecare excepție are context, impact, acțiune directă și blocant/non-blocant
-pentru close.
+Categorii:
+- coverage;
+- duplicate person assignment;
+- invalid extra kind;
+- missing sale/target/divisor;
+- salary master missing;
+- E-pay stale/invalid/missing;
+- revision/generation mismatch;
+- Sheet stale/structural error;
+- worker/job failure.
 
-### Închidere lună
+## 9. Management / close
 
-- checklist complet;
-- exacta revizie/generație;
-- preview totaluri și exporturi;
-- confirmare explicită;
-- rezultat imuabil și linkuri către exporturi;
-- reopen separat, admin-only, cu motiv obligatoriu.
+Ecranul afișează:
+- month state;
+- expected revision;
+- checklist grupat;
+- hard blockers separat de warnings;
+- E-pay freshness/readback;
+- calculation/generation consistency;
+- audit timeline;
+- explicit confirm close;
+- reopen separat, admin-only, reason required.
 
-## 3. Model import program XLSX
+Butonul `Închide luna` este imposibil/disabled cât timp există blocker. Backend-ul
+revalidează în tranzacția de close; UI-ul nu este autoritate.
 
-Workbookul generat de aplicație conține:
+## 10. Jobs / sync / export states
+
+Pentru operațiile asincrone se folosesc stări coerente:
+- queued;
+- running;
+- retrying;
+- done;
+- failed;
+- superseded/cancelled unde este implementat.
+
+UI arată attempts, last run, last success, last error și retry/recovery action
+dacă este permisă.
+
+Refresh-ul browserului nu pierde posibilitatea de a urmări un job persistent.
+
+## 11. Stări standard frontend
+
+Fiecare query/section trebuie să poată reda:
+- loading;
+- empty;
+- ready;
+- stale;
+- forbidden `403`;
+- revision conflict `409`;
+- retryable external error;
+- terminal business error.
+
+Nu folosim un singur `Promise.all` care transformă o eroare periferică într-un
+blank screen complet când datele principale sunt disponibile.
+
+## 12. Import program XLSX
+
+Workbook generat:
 
 ### `Instrucțiuni`
+- lună;
+- scope;
+- base revision;
+- legendă;
+- avertisment privind ID-urile/structura.
 
-- luna, aria, revision și momentul exportului;
-- legendă scurtă;
-- mesaj că numele/codurile tehnice nu trebuie modificate.
-
-### Câte un tab per manager
-
-- primele coloane: cod agent stabil, nume, firmă, magazin de bază;
-- coloanele următoare: zilele `1..31` ale lunii;
-- fiecare celulă are dropdown cu valori permise:
-  - `LIBER`;
-  - `CONCEDIU`;
-  - `NORMAL - <magazin de bază>`;
-  - `SUPLIMENTAR ACASĂ - <magazin de bază>`;
-  - `SUPLIMENTAR - <magazin permis>`.
-- weekendurile sunt evidențiate;
-- foile/listările tehnice cu ID-uri sunt ascunse și protejate.
-
-Acest format este centrat pe persoană și permite managerului să completeze luna
-natural. La preview, aplicația construiește acoperirea pe magazine și raportează
-orice zi cu zero/doi agenți. Nu se bazează pe numele afișat; fiecare rând conține
-un identificator intern semnat/validat în manifest.
+### Tab(uri) de program
+- ID tehnic stabil;
+- nume afișat;
+- home store;
+- zile `1..31`;
+- dropdownuri limitate la valori valide/scoped;
+- weekend highlight;
+- fără creare liberă de stores/people.
 
 ### `Manifest`
+- schema version;
+- tenant/month;
+- principal/scope token sau hash adecvat;
+- base revision;
+- catalog checksums;
+- generated_at/expiry unde este cazul;
+- fără credentials sau salarii inutile.
 
-- schema importului;
-- tenant, lună, manager scope, base revision;
-- checksum al listelor de persoane și magazine;
-- fără credentiale sau date salariale.
+Flux:
+1. download;
+2. modificare offline;
+3. upload;
+4. preview read-only;
+5. diff + blockers;
+6. apply explicit;
+7. atomic write/CAS;
+8. regenerate projections;
+9. enqueue external sync.
 
-## 4. Flux import
+## 13. Export XLSX
 
-1. `Descarcă model` pentru lună și filtre.
-2. Upload cu limită de mărime și scanare structură.
-3. Preview fără scrieri:
-   - rânduri/celule schimbate;
-   - zile care devin extra;
-   - conflicte/goluri;
-   - identificatori necunoscuți;
-   - revision stale.
-4. Apply numai dacă toate erorile blocante sunt zero.
-5. O singură tranzacție actualizează calendarul și revizia.
-6. Pontajul, atribuirea și grila sunt regenerate.
-7. Workerul sincronizează Sheets; eșecul Google nu revocă programul valid, ci
-   păstrează ultima proiecție și afișează eroarea.
+### Per magazin
+Workbook cu:
+- `Grila`;
+- `Pontaj`.
 
-## 5. Exporturi
-
-### XLSX magazin
-
-- tab `Grila`: păstrează structura vizuală V2 acceptată — rezumat magazin,
-  carduri separate pentru cei doi agenți, salariu și proiecție, calendar,
-  concedii și suplimentare;
-- tab `Pontaj`: păstrează structura din captura furnizată;
-- valori și formate monetare românești;
-- fără referințe externe și fără date din alte magazine.
+`Grila` păstrează layout-ul Mobiup acceptat, componentele și metadata necesară.
+`Pontaj` respectă contractul `C:AG`, blocurile de 3 rânduri și totalurile `AH`
+definite în rule pack.
 
 ### Bulk
-
-- filtre: lună, firmă, manager, magazin;
-- ZIP cu un fișier per magazin și manifest JSON/XLSX;
-- nume deterministe, fără coliziuni între firme;
-- progres și rezultat disponibile ca job, fără ținerea requestului deschis.
+- scope filters;
+- ZIP;
+- un workbook per store;
+- manifest cu file checksum, revision/generation/rule pack;
+- deterministic naming.
 
 ### Pontaj-only
+- aceleași reguli de scope;
+- workbook minim cu `Pontaj`.
 
-- aceleași filtre;
-- fișiere cu un singur tab `Pontaj`;
-- valori stabile și totaluri verificabile.
+Verificarea automată deschide/parcurge workbookul și inspectează sheet names,
+celule, formule permise, valori și external links.
 
-## 6. Cerințe de performanță verificabile
+## 14. Google Sheets
 
-- overview lunar: p95 backend sub 500 ms pe setul pilot și sub 1 s la volumul
-  țintă, fără Google I/O;
-- schimbare filtru: un request agregat, nu N requesturi per magazin;
-- deschidere calendar lunar: sub 1 s la volumul țintă, cu virtualizare;
-- salvare celulă program: confirmare DB sub 500 ms; Google sync asincron;
-- joburile au stare și progres; refreshul paginii nu pierde urmărirea;
-- exportul bulk nu încarcă integral fișierul în memoria procesului web.
+Google Sheet este output controlat plus input E-pay limitat.
 
-## 7. Validare vizuală
+### `Grila`
+- rezultate/calcul;
+- calendar/context;
+- două categorii E-pay per agent;
+- numai inputurile E-pay desemnate editabile.
 
-Înainte de GO pentru Stage 4/5 se verifică în browser, pe date fixture:
+### `Pontaj`
+- read-only projection din calendar;
+- fără editări manuale păstrate ca autoritate.
 
-- overview la 1440 px, tabletă și telefon;
-- matrice lunară cu 31 zile și minimum 75 magazine;
-- contrast, focus keyboard, tooltips și stări de eroare;
-- grila și pontajul randate din XLSX/Google canary comparativ cu capturile;
-- celulele E-pay sunt singurele modificabile în Sheet.
+### Metadata operațională
+Trebuie să poată fi corelată cu:
+- store;
+- month;
+- revision;
+- source generation;
+- rule-pack version;
+- projected_at;
+- last-success/last-error.
 
+Provider failure nu distruge last-good projection.
+
+## 15. E-pay UI/readback
+
+Manager/admin trebuie să vadă:
+- expected inputs;
+- last valid value;
+- last observed time;
+- freshness status;
+- invalid raw values unde este necesar pentru audit;
+- exact ce intră în calcul înainte de close.
+
+Readback invalid nu șterge last-good și nu poate trece close-ul dacă inputul este
+obligatoriu/freshness insuficient.
+
+## 16. Responsive și accessibility
+
+Desktop:
+- tabele/matrice dense;
+- sticky labels/header unde ajută;
+- scroll vizibil.
+
+Tablet:
+- layout 1 coloană unde este nevoie;
+- calendar scroll orizontal controlat.
+
+Mobile:
+- overview, excepții și corecții punctuale;
+- nu comprimăm 31 coloane într-un layout inutilizabil;
+- acțiuni critice rămân accesibile.
+
+Accessibility:
+- focus vizibil;
+- labels;
+- semantic buttons/inputs;
+- keyboard navigation;
+- statusul nu depinde numai de culoare.
+
+## 17. Performance targets
+
+Ținte candidate orientative:
+- overview p95 <500 ms pe fixture reprezentativ;
+- calendar load <1 s la volum țintă local/pilot;
+- save DB <500 ms normal;
+- un singur filter change nu lansează N requesturi per store;
+- Google/export async;
+- bulk export nu ține request HTTP deschis pe durata generării.
+
+Măsurătorile și gate-ul final sunt în `docs/QUALITY_GATES.md`.
+
+## 18. Validare vizuală
+
+Pentru gate-ul final sunt necesare, când există browser runner:
+- 1440px desktop;
+- tablet;
+- mobile;
+- 31-day calendar;
+- realistic 75+ store fixture;
+- keyboard/focus;
+- loading/403/409/error/stale;
+- failed Google subsystem cu restul paginii funcțional;
+- XLSX/Sheet comparison cu contractele acceptate.
+
+Component tests sau build success nu sunt echivalente cu această validare.
