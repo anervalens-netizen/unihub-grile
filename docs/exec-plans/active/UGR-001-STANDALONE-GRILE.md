@@ -110,7 +110,7 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 | S1 | Foundation standalone: stack, schema, domain invariants, fixture connector, auth/scopes skeleton, one worker, local dev/test | none | builder 1 | 2 | PASS |
 | S2 | Calendar + pontaj + XLSX schedule import: APIs, revisions, derived projections, preview/apply atomic | S1 GO | builder 2 | 3 | PASS |
 | S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + business-source confirmations | builder 3 | 2 | PASS |
-| S4 | Manager UI complete: Overview, Program, Store, Agent, Exceptions, Close, responsive/performance | S3 GO | builder 4 | 2 | BUILDING |
+| S4 | Manager UI complete: Overview, Program, Store, Agent, Exceptions, Close, responsive/performance | S3 GO | builder 4 | 2 | PASS |
 | S5 | Google adapter + bounded E-pay inbound + XLSX exports + copied canary | S4 GO + Google canary authority | builder 5 | 2 | BUILDING |
 | S6 | Shadow pilot, reconciliation, observability, backup/runbook, production-readiness verdict | S5 GO | builder 6 | 0 | BACKLOG |
 | S7 | Versioned Retail integration, optional navigation/auth, formal migration/cutover | S6 GO + Retail stable + explicit opening | future | 0 | BACKLOG |
