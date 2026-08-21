@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import "../styles/retail-overrides.css";
 
 export interface LayoutProps {
   children: ReactNode;
