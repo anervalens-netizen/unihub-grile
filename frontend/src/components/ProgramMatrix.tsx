@@ -51,6 +51,7 @@ export function ProgramMatrix({
   const totalHeight = total * rowHeight;
   const offsetTop = range.start * rowHeight;
   const slice = grid.rows.slice(range.start, range.end);
+  const gridColumns = `150px repeat(${grid.dates.length}, minmax(42px, 1fr))`;
   const editingContext = useMemo(() => {
     if (!editing) return null;
     const row = grid.rows.find((candidate) => candidate.row_id === editing.rowId);
@@ -85,14 +86,22 @@ export function ProgramMatrix({
             </select>
           </label>
           <label>
+            <span>Status</span>
+            <select value={editValue.status} onChange={(event) => onEditChange({ ...editValue, status: event.target.value })}>
+              <option value="WORKING">Lucrează</option>
+              <option value="OFF">Liber</option>
+              <option value="LEAVE">Concediu</option>
+            </select>
+          </label>
+          <label>
             <span>Magazin</span>
-            <select value={editValue.storeId} onChange={(event) => onEditChange({ ...editValue, storeId: event.target.value })}>
+            <select value={editValue.storeId} disabled={editValue.status !== "WORKING"} onChange={(event) => onEditChange({ ...editValue, storeId: event.target.value })}>
               {stores.map((store) => <option key={store.id} value={store.id}>{store.label}</option>)}
             </select>
           </label>
           <label>
             <span>Tip zi</span>
-            <select value={editValue.workingKind} onChange={(event) => onEditChange({ ...editValue, workingKind: event.target.value })}>
+            <select value={editValue.workingKind} disabled={editValue.status !== "WORKING"} onChange={(event) => onEditChange({ ...editValue, workingKind: event.target.value })}>
               <option value="NORMAL">Normal</option>
               <option value="EXTRA_HOME">Suplimentar aici</option>
               <option value="EXTRA_OTHER">Suplimentar alt magazin</option>
@@ -114,7 +123,7 @@ export function ProgramMatrix({
         aria-rowcount={total}
         aria-colcount={grid.dates.length + 1}
       >
-        <div className="program-matrix-header" role="row">
+        <div className="program-matrix-header" style={{ gridTemplateColumns: gridColumns }} role="row">
           <span className="program-matrix-cell program-matrix-cell-header program-matrix-corner" role="columnheader">Magazin / Agent</span>
           {grid.dates.map((date) => (
             <span key={date} className="program-matrix-cell program-matrix-cell-header" role="columnheader">
@@ -130,6 +139,7 @@ export function ProgramMatrix({
               key={row.row_id}
               row={row}
               rowHeight={rowHeight}
+              gridColumns={gridColumns}
               onCellClick={onCellClick}
               editing={editing}
             />
@@ -145,13 +155,14 @@ export function ProgramMatrix({
 interface ProgramMatrixRowProps {
   row: ProgramRow;
   rowHeight: number;
+  gridColumns: string;
   onCellClick?: (rowId: string, cell: ProgramCell) => void;
   editing?: { rowId: string; businessDate: string } | null;
 }
 
-function ProgramMatrixRow({ row, rowHeight, onCellClick, editing }: ProgramMatrixRowProps) {
+function ProgramMatrixRow({ row, rowHeight, gridColumns, onCellClick, editing }: ProgramMatrixRowProps) {
   return (
-    <div className="program-matrix-row" style={{ height: rowHeight }} role="row">
+    <div className="program-matrix-row" style={{ height: rowHeight, gridTemplateColumns: gridColumns }} role="row">
       <span className="program-matrix-cell program-matrix-cell-row-label" role="rowheader">{row.label}</span>
       {row.cells.map((cell) => {
         const selected = editing?.rowId === row.row_id && editing.businessDate === cell.business_date;
