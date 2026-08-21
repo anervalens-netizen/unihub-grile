@@ -812,6 +812,13 @@ def record_export_run(
     envelope: ExportEnvelope,
     artifact_uri: str,
 ) -> ExportRun:
+    """Legacy entry point: insert a fresh DONE ExportRun.
+
+    Prefer ``create_pending_export_run`` + ``finalize_export_run`` for the
+    async API contract (the polling endpoint reads the ExportRun by id and
+    the id must match the enqueue response).
+    """
+
     row = ExportRun(
         tenant_id=tenant_id,
         kind=kind,
@@ -824,11 +831,99 @@ def record_export_run(
     return row
 
 
+def create_pending_export_run(
+    session: Session,
+    *,
+    tenant_id: str,
+    kind: str,
+    summary: dict[str, object] | None = None,
+    artifact_uri_hint: str | None = None,
+) -> ExportRun:
+    """Pre-create a PENDING ``ExportRun`` for the async polling contract.
+
+    The returned ``ExportRun.id`` is the stable identifier the API returns
+    to the client on enqueue and that the polling endpoint
+    (``GET /months/{id}/export/jobs/{job_id}``) reads back. The worker
+    updates the same row to ``DONE``/``FAILED`` once the export completes
+    via :func:`finalize_export_run`.
+    """
+
+    payload_summary: dict[str, object] = dict(summary or {})
+    if artifact_uri_hint is not None:
+        payload_summary.setdefault("artifact_uri_hint", artifact_uri_hint)
+    row = ExportRun(
+        tenant_id=tenant_id,
+        kind=kind,
+        status="PENDING",
+        summary=json.dumps(payload_summary, sort_keys=True, ensure_ascii=False),
+        artifact_uri=None,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def finalize_export_run(
+    session: Session,
+    *,
+    export_run_id: int,
+    tenant_id: str,
+    status: str,
+    artifact_uri: str | None = None,
+    summary: dict[str, object] | None = None,
+    errors: str | None = None,
+) -> ExportRun | None:
+    """Update an existing ``ExportRun`` to its terminal state.
+
+    Returns the refreshed row, or ``None`` when the row is missing or owned
+    by a different tenant (in which case the caller should treat the
+    terminal status as authoritative on the original row).
+    """
+
+    row = session.get(ExportRun, export_run_id)
+    if row is None or row.tenant_id != tenant_id:
+        return None
+    row.status = status
+    if artifact_uri is not None:
+        row.artifact_uri = artifact_uri
+    if summary is not None:
+        merged: dict[str, object] = {}
+        if row.summary:
+            try:
+                existing = json.loads(row.summary)
+                if isinstance(existing, dict):
+                    merged.update(existing)
+            except json.JSONDecodeError:
+                pass
+        merged.update(summary)
+        row.summary = json.dumps(merged, sort_keys=True, ensure_ascii=False, default=str)
+    if errors is not None:
+        row.summary = _merge_errors(row.summary, errors)
+    session.flush()
+    return row
+
+
+def _merge_errors(summary: str | None, errors: str) -> str:
+    if summary:
+        try:
+            existing = json.loads(summary)
+        except json.JSONDecodeError:
+            existing = {}
+    else:
+        existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    existing["errors"] = errors
+    return json.dumps(existing, sort_keys=True, ensure_ascii=False, default=str)
+
+
 __all__ = [
     "ExportEnvelope",
     "MIME_XLSX",
     "PONTAJ_BLOCK_STARTS",
     "SCHEMA",
+    "create_pending_export_run",
+    "finalize_export_run",
     "record_export_run",
     "render_bulk_export",
     "render_pontaj_only_export",

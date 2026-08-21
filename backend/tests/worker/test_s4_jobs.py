@@ -31,21 +31,43 @@ def test_registry_contains_s4_kinds():
 
 
 def test_export_xlsx_store_handler_persists_export_run(session):
+    from ugrile.repositories.models import ExportRun
+
+    # The S5b contract pre-creates the ExportRun at enqueue time so the
+    # polling endpoint and the worker share a stable id. The S4 worker
+    # contract is exercised by enqueuing the job *and* giving the worker
+    # the pre-created run to mark FAILED.
+    run = ExportRun(
+        tenant_id=FIXTURE_TENANT_ID,
+        kind=JobKind.EXPORT_XLSX_STORE.value,
+        status="PENDING",
+        summary="{}",
+    )
+    session.add(run)
+    session.flush()
     enqueue(
         session,
         tenant_id=FIXTURE_TENANT_ID,
         kind=JobKind.EXPORT_XLSX_STORE.value,
         idempotency_key="xlsx-store-1",
-        payload={"store_id": "store_x", "month_id": "month_x"},
+        payload={
+            "store_id": "store_x",
+            "month_id": "month_x",
+            "export_run_id": run.id,
+        },
     )
     session.commit()
     # Handler validates month_id/store_id; the unknown month id moves the
-    # row to FAILED with a typed DOMAIN_ERROR reason.
+    # OutboxJob row to FAILED with a typed DOMAIN_ERROR reason and also
+    # transitions the pre-created ExportRun to FAILED.
     row, result = run_once(locked_by=WORKER_LOCKED_BY)
     assert result is None
     assert row is not None
     assert row.status == "FAILED"
     assert "month not found" in (row.last_error or "")
+    session.refresh(run)
+    assert run.status == "FAILED"
+    assert run.artifact_uri is None
 
 
 def test_google_projection_store_handler_requires_month_id(session):

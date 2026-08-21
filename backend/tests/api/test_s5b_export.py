@@ -1,12 +1,17 @@
 """S5b export + canary API tests.
 
-The API is enqueue-only (AC-16). The TestClient invokes the worker
-handler in-process so the synchronous test path still observes the
-artifact written by the worker.
+AC-16 contract: the export enqueue endpoint returns the ``ExportRun.id``
+of a pre-created PENDING row. The durable worker updates the same row
+to ``DONE`` (or ``FAILED``), and the polling endpoint reads it back by
+that id. The test client drives the worker in-process via
+``worker.run_once`` so the end-to-end contract is exercised
+synchronously.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from datetime import date
 
@@ -15,16 +20,10 @@ from fastapi.testclient import TestClient
 from ugrile.core import database
 from ugrile.domain.enums import DayStatus, MonthState, RoleName, WorkingKind
 from ugrile.main import create_app
-from ugrile.repositories.models import ExportRun
 from ugrile.repositories.months import MonthRepository
 from ugrile.services.auth import Principal
 from ugrile.services.calendar import CalendarChange, CalendarService
-from ugrile.services.xlsx_export import (
-    render_bulk_export,
-    render_pontaj_only_export,
-    render_store_export,
-)
-from ugrile.worker.jobs import _write_bytes
+from ugrile.worker.worker import WORKER_LOCKED_BY, run_once
 
 
 def _build_admin(faker_tenant) -> Principal:
@@ -57,132 +56,262 @@ def _seed_open_month(session, faker_tenant):
     return month
 
 
-def test_export_store_enqueues_and_worker_writes_artifact(engine, faker_tenant):
+def _drain_worker_until_empty() -> int:
+    """Run the worker until it returns ``None`` (queue empty).
+
+    Returns the number of jobs processed.
+    """
+
+    processed = 0
+    while True:
+        row, _result = run_once(locked_by=WORKER_LOCKED_BY)
+        if row is None:
+            return processed
+        processed += 1
+
+
+def _enqueue_export(
+    test_client,
+    admin: Principal,
+    month_id: str,
+    *,
+    path: str,
+    body: dict,
+) -> dict:
+    response = test_client.post(
+        f"/months/{month_id}{path}",
+        json=body,
+        headers={"X-Ugrile-Identity": admin.user_id, "X-Ugrile-Tenant": admin.tenant_id},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _poll_export(test_client, admin: Principal, month_id: str, job_id: int) -> dict:
+    status = test_client.get(
+        f"/months/{month_id}/export/jobs/{job_id}",
+        headers={"X-Ugrile-Identity": admin.user_id, "X-Ugrile-Tenant": admin.tenant_id},
+    )
+    assert status.status_code == 200, status.text
+    return status.json()
+
+
+def _cleanup_artifact(artifact_uri: str | None) -> None:
+    if artifact_uri and os.path.exists(artifact_uri):
+        os.unlink(artifact_uri)
+
+
+def test_export_store_enqueues_with_export_run_id_and_artifact_hint(engine, faker_tenant):
     admin = _build_admin(faker_tenant)
     with TestClient(create_app()) as test_client:
         with database.session_scope() as session:
             month = _seed_open_month(session, faker_tenant)
             month_id = month.id
-        body = {"store_id": faker_tenant["store_id"], "idempotency_key": "xlsx-store-1"}
-        response = test_client.post(
-            f"/months/{month_id}/export/store",
-            json=body,
-            headers={"X-Ugrile-Identity": admin.user_id, "X-Ugrile-Tenant": admin.tenant_id},
+        data = _enqueue_export(
+            test_client,
+            admin,
+            month_id,
+            path="/export/store",
+            body={"store_id": faker_tenant["store_id"], "idempotency_key": "xlsx-store-1"},
         )
-        assert response.status_code == 200, response.text
-        data = response.json()
         assert data["kind"] == "EXPORT_XLSX_STORE"
         assert data["status"] == "ENQUEUED"
         assert data["job_id"] > 0
         assert data["artifact_uri_hint"].endswith(".xlsx")
-        # Worker handler runs synchronously here and writes the artifact.
-        with database.session_scope() as session:
-            month = MonthRepository(session).get(month_id)
-            envelope = render_store_export(
-                session,
-                tenant_id=faker_tenant["tenant_id"],
-                month=month,
-                store_id=faker_tenant["store_id"],
-            )
-        artifact_uri = data["artifact_uri_hint"]
-        _write_bytes(artifact_uri, envelope.bytes_)
-        assert os.path.exists(artifact_uri)
-        with open(artifact_uri, "rb") as fh:
-            assert fh.read() == envelope.bytes_
-        os.unlink(artifact_uri)
+        # The same job_id must be readable as an ExportRun row in PENDING.
+        pending = _poll_export(test_client, admin, month_id, data["job_id"])
+        assert pending["status"] == "PENDING"
+        assert pending["kind"] == "EXPORT_XLSX_STORE"
+        assert pending["artifact_uri"] is None
 
 
-def test_export_bulk_enqueues_and_worker_writes_zip(engine, faker_tenant):
+def test_export_store_polling_returns_done_with_artifact_and_checksum(engine, faker_tenant):
+    """AC-16 happy path: enqueue → poll same id → DONE → artifact + checksum."""
     admin = _build_admin(faker_tenant)
     with TestClient(create_app()) as test_client:
         with database.session_scope() as session:
             month = _seed_open_month(session, faker_tenant)
             month_id = month.id
-        response = test_client.post(
-            f"/months/{month_id}/export/bulk",
-            json={"idempotency_key": "xlsx-bulk-1"},
-            headers={"X-Ugrile-Identity": admin.user_id, "X-Ugrile-Tenant": admin.tenant_id},
+        data = _enqueue_export(
+            test_client,
+            admin,
+            month_id,
+            path="/export/store",
+            body={"store_id": faker_tenant["store_id"], "idempotency_key": "xlsx-store-poll"},
         )
-        assert response.status_code == 200, response.text
-        data = response.json()
-        assert data["kind"] == "EXPORT_XLSX_BULK"
-        assert data["status"] == "ENQUEUED"
-        assert data["job_id"] > 0
-        with database.session_scope() as session:
-            month = MonthRepository(session).get(month_id)
-            envelope = render_bulk_export(
-                session, tenant_id=faker_tenant["tenant_id"], month=month
-            )
-        artifact_uri = data["artifact_uri_hint"]
-        _write_bytes(artifact_uri, envelope.bytes_)
-        assert os.path.exists(artifact_uri)
-        with open(artifact_uri, "rb") as fh:
-            assert fh.read() == envelope.bytes_
-        os.unlink(artifact_uri)
-
-
-def test_export_pontaj_only_enqueues_and_worker_writes_xlsx(engine, faker_tenant):
-    admin = _build_admin(faker_tenant)
-    with TestClient(create_app()) as test_client:
-        with database.session_scope() as session:
-            month = _seed_open_month(session, faker_tenant)
-            month_id = month.id
-        response = test_client.post(
-            f"/months/{month_id}/export/pontaj-only",
-            json={"idempotency_key": "pontaj-1"},
-            headers={"X-Ugrile-Identity": admin.user_id, "X-Ugrile-Tenant": admin.tenant_id},
-        )
-        assert response.status_code == 200, response.text
-        data = response.json()
-        assert data["kind"] == "EXPORT_PONTAJ_ONLY"
-        assert data["status"] == "ENQUEUED"
-        assert data["job_id"] > 0
-        with database.session_scope() as session:
-            month = MonthRepository(session).get(month_id)
-            envelope = render_pontaj_only_export(
-                session, tenant_id=faker_tenant["tenant_id"], month=month
-            )
-        artifact_uri = data["artifact_uri_hint"]
-        _write_bytes(artifact_uri, envelope.bytes_)
-        assert os.path.exists(artifact_uri)
-        with open(artifact_uri, "rb") as fh:
-            assert fh.read() == envelope.bytes_
-        os.unlink(artifact_uri)
-
-
-def test_export_job_status_returns_export_run_summary(engine, faker_tenant):
-    admin = _build_admin(faker_tenant)
-    with TestClient(create_app()) as test_client:
-        with database.session_scope() as session:
-            month = _seed_open_month(session, faker_tenant)
-            month_id = month.id
-        enqueue = test_client.post(
-            f"/months/{month_id}/export/store",
-            json={"store_id": faker_tenant["store_id"], "idempotency_key": "job-status-1"},
-            headers={"X-Ugrile-Identity": admin.user_id, "X-Ugrile-Tenant": admin.tenant_id},
-        )
-        assert enqueue.status_code == 200, enqueue.text
-        # Persist an ExportRun row directly so the status endpoint has something to read.
-        with database.session_scope() as session:
-            session.add(
-                ExportRun(
-                    tenant_id=faker_tenant["tenant_id"],
-                    kind="EXPORT_XLSX_STORE",
-                    status="DONE",
-                    summary='{"filename": "test.xlsx"}',
-                    artifact_uri="/tmp/ugrile-s5-exports/test.xlsx",
-                )
-            )
-            session.commit()
-            run_id = session.execute(
-                __import__("sqlalchemy").select(ExportRun.id).order_by(ExportRun.id.desc()).limit(1)
-            ).scalar_one()
-        status = test_client.get(
-            f"/months/{month_id}/export/jobs/{run_id}",
-            headers={"X-Ugrile-Identity": admin.user_id, "X-Ugrile-Tenant": admin.tenant_id},
-        )
-        assert status.status_code == 200, status.text
-        body = status.json()
+        job_id = data["job_id"]
+        processed = _drain_worker_until_empty()
+        assert processed == 1
+        body = _poll_export(test_client, admin, month_id, job_id)
         assert body["status"] == "DONE"
         assert body["kind"] == "EXPORT_XLSX_STORE"
-        assert body["artifact_uri"].endswith(".xlsx")
+        artifact_uri = body["artifact_uri"]
+        assert artifact_uri == data["artifact_uri_hint"]
+        assert os.path.exists(artifact_uri)
+        try:
+            with open(artifact_uri, "rb") as fh:
+                workbook_bytes = fh.read()
+            assert workbook_bytes[:2] == b"PK"  # zip header for xlsx
+            assert "filename" in body["summary"]
+            summary = json.loads(body["summary"])
+            assert summary["filename"].endswith(".xlsx")
+            assert "checksum_sha256" in summary
+            assert hashlib.sha256(workbook_bytes).hexdigest() == summary["checksum_sha256"]
+        finally:
+            _cleanup_artifact(artifact_uri)
+
+
+def test_export_bulk_polling_returns_done_with_zip_artifact(engine, faker_tenant):
+    admin = _build_admin(faker_tenant)
+    with TestClient(create_app()) as test_client:
+        with database.session_scope() as session:
+            month = _seed_open_month(session, faker_tenant)
+            month_id = month.id
+        data = _enqueue_export(
+            test_client,
+            admin,
+            month_id,
+            path="/export/bulk",
+            body={"idempotency_key": "xlsx-bulk-poll"},
+        )
+        job_id = data["job_id"]
+        processed = _drain_worker_until_empty()
+        assert processed == 1
+        body = _poll_export(test_client, admin, month_id, job_id)
+        assert body["status"] == "DONE"
+        assert body["kind"] == "EXPORT_XLSX_BULK"
+        artifact_uri = body["artifact_uri"]
+        assert artifact_uri.endswith(".zip")
+        try:
+            assert os.path.exists(artifact_uri)
+            with open(artifact_uri, "rb") as fh:
+                zip_bytes = fh.read()
+            assert zip_bytes[:2] == b"PK"
+            summary = json.loads(body["summary"])
+            assert "checksum_sha256" in summary
+            assert hashlib.sha256(zip_bytes).hexdigest() == summary["checksum_sha256"]
+        finally:
+            _cleanup_artifact(artifact_uri)
+
+
+def test_export_pontaj_only_polling_returns_done_with_xlsx(engine, faker_tenant):
+    admin = _build_admin(faker_tenant)
+    with TestClient(create_app()) as test_client:
+        with database.session_scope() as session:
+            month = _seed_open_month(session, faker_tenant)
+            month_id = month.id
+        data = _enqueue_export(
+            test_client,
+            admin,
+            month_id,
+            path="/export/pontaj-only",
+            body={"idempotency_key": "xlsx-pontaj-poll"},
+        )
+        job_id = data["job_id"]
+        processed = _drain_worker_until_empty()
+        assert processed == 1
+        body = _poll_export(test_client, admin, month_id, job_id)
+        assert body["status"] == "DONE"
+        assert body["kind"] == "EXPORT_PONTAJ_ONLY"
+        artifact_uri = body["artifact_uri"]
+        try:
+            assert os.path.exists(artifact_uri)
+            with open(artifact_uri, "rb") as fh:
+                workbook_bytes = fh.read()
+            assert workbook_bytes[:2] == b"PK"
+            summary = json.loads(body["summary"])
+            assert hashlib.sha256(workbook_bytes).hexdigest() == summary["checksum_sha256"]
+        finally:
+            _cleanup_artifact(artifact_uri)
+
+
+def test_export_job_polling_marks_failed_when_handler_raises(engine, faker_tenant):
+    """An unknown month_id moves both OutboxJob and ExportRun to FAILED.
+
+    The API enqueue path validates the month before enqueueing, so we
+    drive the failure path through the worker's direct enqueue helper
+    (the same primitive the API uses internally) to exercise the
+    ExportRun FAILED transition that the worker now performs before
+    re-raising.
+    """
+
+    from ugrile.domain.enums import JobKind
+    from ugrile.services.xlsx_export import create_pending_export_run
+    from ugrile.worker.worker import enqueue as worker_enqueue
+
+    admin = _build_admin(faker_tenant)
+    with TestClient(create_app()) as test_client:
+        with database.session_scope() as session:
+            month = _seed_open_month(session, faker_tenant)
+            month_id = month.id
+            run = create_pending_export_run(
+                session,
+                tenant_id=faker_tenant["tenant_id"],
+                kind=JobKind.EXPORT_XLSX_STORE.value,
+            )
+            session.flush()
+            bogus_run_id = run.id
+            worker_enqueue(
+                session,
+                tenant_id=faker_tenant["tenant_id"],
+                kind=JobKind.EXPORT_XLSX_STORE.value,
+                idempotency_key=f"xlsx-bad-month-{bogus_run_id}",
+                payload={
+                    "store_id": faker_tenant["store_id"],
+                    "month_id": "month_does_not_exist",
+                    "export_run_id": bogus_run_id,
+                },
+            )
+            session.commit()
+        processed = _drain_worker_until_empty()
+        assert processed == 1
+        body = _poll_export(test_client, admin, month_id, bogus_run_id)
+        assert body["status"] == "FAILED"
+        assert body["artifact_uri"] is None
+        summary = json.loads(body["summary"])
+        assert "errors" in summary
+        assert "month not found" in summary["errors"]
+
+
+def test_export_job_polling_404_for_unknown_id(engine, faker_tenant):
+    admin = _build_admin(faker_tenant)
+    with TestClient(create_app()) as test_client:
+        with database.session_scope() as session:
+            month = _seed_open_month(session, faker_tenant)
+            month_id = month.id
+        response = test_client.get(
+            f"/months/{month_id}/export/jobs/999999",
+            headers={"X-Ugrile-Identity": admin.user_id, "X-Ugrile-Tenant": admin.tenant_id},
+        )
+        assert response.status_code == 404, response.text
+        body = response.json()
+        assert body["details"]["code"] == "EXPORT_JOB_NOT_FOUND"
+
+
+def test_export_default_idempotency_key_is_stable(engine, faker_tenant):
+    """The API fills in a default ``idempotency_key`` when the caller omits it.
+
+    The default is ``store::<store_id>::<month_id>`` so the same store
+    re-enqueue during a month cannot accidentally create two export
+    jobs. The polling contract still has to work end-to-end.
+    """
+
+    admin = _build_admin(faker_tenant)
+    with TestClient(create_app()) as test_client:
+        with database.session_scope() as session:
+            month = _seed_open_month(session, faker_tenant)
+            month_id = month.id
+        first = _enqueue_export(
+            test_client,
+            admin,
+            month_id,
+            path="/export/store",
+            body={"store_id": faker_tenant["store_id"]},
+        )
+        assert first["idempotency_key"] == f"store::{faker_tenant['store_id']}::{month_id}"
+        assert first["status"] == "ENQUEUED"
+        assert first["job_id"] > 0
+        # The polling endpoint must work with the same id.
+        body = _poll_export(test_client, admin, month_id, first["job_id"])
+        assert body["job_id"] == first["job_id"]
+        assert body["status"] in {"PENDING", "DONE", "FAILED"}

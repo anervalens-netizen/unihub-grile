@@ -217,11 +217,79 @@ def _write_bytes(uri: str, payload: bytes) -> None:
         fh.write(payload)
 
 
+def _resolve_export_run_id(
+    payload: dict[str, Any],
+    *,
+    kind: JobKind,
+) -> int:
+    """Read the pre-created ``export_run_id`` from the job payload.
+
+    The API enqueue path always sets this; missing here means a stale or
+    hand-crafted job that bypassed the contract.
+    """
+
+    raw = payload.get("export_run_id")
+    if not isinstance(raw, int) or raw <= 0:
+        raise DomainError(
+            f"{kind.value} payload is missing export_run_id; the API "
+            "enqueue contract is the only path that may dispatch this kind",
+            details={"payload_keys": sorted(payload.keys())},
+        )
+    return raw
+
+
+def _mark_export_run_failed(
+    session: Session,
+    *,
+    export_run_id: int,
+    tenant_id: str,
+    exc: BaseException,
+) -> None:
+    """Best-effort transition of the ExportRun to FAILED.
+
+    The error string is intentionally compact — the worker also writes
+    a more detailed reason on the OutboxJob row, which remains the
+    authoritative job log.
+    """
+
+    from ..services.xlsx_export import finalize_export_run
+
+    error_kind = exc.__class__.__name__
+    message = str(exc) or repr(exc)
+    finalize_export_run(
+        session,
+        export_run_id=export_run_id,
+        tenant_id=tenant_id,
+        status="FAILED",
+        errors=f"{error_kind}: {message}",
+    )
+
+
+def _resolve_artifact_uri(payload: dict[str, Any], fallback_filename: str) -> str:
+    """Pick the durable artifact URI the worker should write to."""
+
+    artifact_uri = payload.get("artifact_uri_hint") or payload.get("artifact_uri")
+    if artifact_uri:
+        return str(artifact_uri)
+    import os
+    import tempfile
+
+    base = os.environ.get("UGR_S5_EXPORT_DIR") or tempfile.gettempdir()
+    return os.path.join(base, "ugrile-s5-exports", fallback_filename)
+
+
 def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
-    """S5b real writer for per-store XLSX export."""
+    """S5b real writer for per-store XLSX export.
+
+    The whole body runs inside a single ``try/except`` that transitions
+    the pre-created ``ExportRun`` to FAILED on any error before
+    re-raising, so the polling endpoint always sees a terminal status
+    that matches the worker's terminal OutboxJob state.
+    """
+
     from ..repositories.months import MonthRepository
     from ..services.xlsx_export import (
-        record_export_run,
+        finalize_export_run,
         render_store_export,
     )
 
@@ -232,31 +300,38 @@ def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, 
             "month_id and store_id are required",
             details={"payload": payload},
         )
-    month = MonthRepository(session).get(month_id)
-    if month.tenant_id != tenant_id:
-        raise DomainError(
-            "tenant mismatch in EXPORT_XLSX_STORE payload",
-            details={"month_tenant": month.tenant_id, "tenant": tenant_id},
+    export_run_id = _resolve_export_run_id(payload, kind=JobKind.EXPORT_XLSX_STORE)
+    try:
+        month = MonthRepository(session).get(month_id)
+        if month is None or month.tenant_id != tenant_id:
+            raise DomainError(
+                "month not found or tenant mismatch in EXPORT_XLSX_STORE payload",
+                details={"month_id": month_id, "tenant": tenant_id},
+            )
+        envelope = render_store_export(
+            session, tenant_id=tenant_id, month=month, store_id=store_id
         )
-    envelope = render_store_export(
-        session, tenant_id=tenant_id, month=month, store_id=store_id
-    )
-    artifact_uri = payload.get("artifact_uri_hint") or payload.get("artifact_uri")
-    if not artifact_uri:
-        # Worker generates a stable non-tracked path; the API hint is preferred
-        # because the API knows the canonical filename.
-        import os
-        import tempfile
-
-        base = os.environ.get("UGR_S5_EXPORT_DIR") or tempfile.gettempdir()
-        artifact_uri = os.path.join(base, "ugrile-s5-exports", envelope.filename)
-    _write_bytes(artifact_uri, envelope.bytes_)
-    record_export_run(
+        artifact_uri = _resolve_artifact_uri(payload, envelope.filename)
+        _write_bytes(artifact_uri, envelope.bytes_)
+    except Exception as exc:
+        _mark_export_run_failed(
+            session,
+            export_run_id=export_run_id,
+            tenant_id=tenant_id,
+            exc=exc,
+        )
+        raise
+    finalize_export_run(
         session,
+        export_run_id=export_run_id,
         tenant_id=tenant_id,
-        kind=JobKind.EXPORT_XLSX_STORE.value,
-        envelope=envelope,
+        status="DONE",
         artifact_uri=artifact_uri,
+        summary={
+            "filename": envelope.filename,
+            "checksum_sha256": envelope.checksum,
+            "summary": envelope.summary,
+        },
     )
     return JobResult(
         status="DONE",
@@ -271,9 +346,10 @@ def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, 
 
 def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
     """S5b real writer for bulk ZIP export."""
+
     from ..repositories.months import MonthRepository
     from ..services.xlsx_export import (
-        record_export_run,
+        finalize_export_run,
         render_bulk_export,
     )
 
@@ -283,33 +359,42 @@ def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, A
             "month_id is required",
             details={"payload": payload},
         )
-    month = MonthRepository(session).get(month_id)
-    if month.tenant_id != tenant_id:
-        raise DomainError(
-            "tenant mismatch in EXPORT_XLSX_BULK payload",
-            details={"month_tenant": month.tenant_id, "tenant": tenant_id},
+    export_run_id = _resolve_export_run_id(payload, kind=JobKind.EXPORT_XLSX_BULK)
+    try:
+        month = MonthRepository(session).get(month_id)
+        if month is None or month.tenant_id != tenant_id:
+            raise DomainError(
+                "month not found or tenant mismatch in EXPORT_XLSX_BULK payload",
+                details={"month_id": month_id, "tenant": tenant_id},
+            )
+        store_ids = payload.get("store_ids")
+        envelope = render_bulk_export(
+            session,
+            tenant_id=tenant_id,
+            month=month,
+            store_ids=[str(s) for s in store_ids] if store_ids else None,
         )
-    store_ids = payload.get("store_ids")
-    envelope = render_bulk_export(
+        artifact_uri = _resolve_artifact_uri(payload, envelope.filename)
+        _write_bytes(artifact_uri, envelope.bytes_)
+    except Exception as exc:
+        _mark_export_run_failed(
+            session,
+            export_run_id=export_run_id,
+            tenant_id=tenant_id,
+            exc=exc,
+        )
+        raise
+    finalize_export_run(
         session,
+        export_run_id=export_run_id,
         tenant_id=tenant_id,
-        month=month,
-        store_ids=[str(s) for s in store_ids] if store_ids else None,
-    )
-    artifact_uri = payload.get("artifact_uri_hint") or payload.get("artifact_uri")
-    if not artifact_uri:
-        import os
-        import tempfile
-
-        base = os.environ.get("UGR_S5_EXPORT_DIR") or tempfile.gettempdir()
-        artifact_uri = os.path.join(base, "ugrile-s5-exports", envelope.filename)
-    _write_bytes(artifact_uri, envelope.bytes_)
-    record_export_run(
-        session,
-        tenant_id=tenant_id,
-        kind=JobKind.EXPORT_XLSX_BULK.value,
-        envelope=envelope,
+        status="DONE",
         artifact_uri=artifact_uri,
+        summary={
+            "filename": envelope.filename,
+            "checksum_sha256": envelope.checksum,
+            "summary": envelope.summary,
+        },
     )
     return JobResult(
         status="DONE",
@@ -324,9 +409,10 @@ def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, A
 
 def _job_export_pontaj_only(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
     """S5b real writer for the pontaj-only workbook."""
+
     from ..repositories.months import MonthRepository
     from ..services.xlsx_export import (
-        record_export_run,
+        finalize_export_run,
         render_pontaj_only_export,
     )
 
@@ -336,33 +422,42 @@ def _job_export_pontaj_only(session: Session, tenant_id: str, payload: dict[str,
             "month_id is required",
             details={"payload": payload},
         )
-    month = MonthRepository(session).get(month_id)
-    if month.tenant_id != tenant_id:
-        raise DomainError(
-            "tenant mismatch in EXPORT_PONTAJ_ONLY payload",
-            details={"month_tenant": month.tenant_id, "tenant": tenant_id},
+    export_run_id = _resolve_export_run_id(payload, kind=JobKind.EXPORT_PONTAJ_ONLY)
+    try:
+        month = MonthRepository(session).get(month_id)
+        if month is None or month.tenant_id != tenant_id:
+            raise DomainError(
+                "month not found or tenant mismatch in EXPORT_PONTAJ_ONLY payload",
+                details={"month_id": month_id, "tenant": tenant_id},
+            )
+        store_ids = payload.get("store_ids")
+        envelope = render_pontaj_only_export(
+            session,
+            tenant_id=tenant_id,
+            month=month,
+            store_ids=[str(s) for s in store_ids] if store_ids else None,
         )
-    store_ids = payload.get("store_ids")
-    envelope = render_pontaj_only_export(
+        artifact_uri = _resolve_artifact_uri(payload, envelope.filename)
+        _write_bytes(artifact_uri, envelope.bytes_)
+    except Exception as exc:
+        _mark_export_run_failed(
+            session,
+            export_run_id=export_run_id,
+            tenant_id=tenant_id,
+            exc=exc,
+        )
+        raise
+    finalize_export_run(
         session,
+        export_run_id=export_run_id,
         tenant_id=tenant_id,
-        month=month,
-        store_ids=[str(s) for s in store_ids] if store_ids else None,
-    )
-    artifact_uri = payload.get("artifact_uri_hint") or payload.get("artifact_uri")
-    if not artifact_uri:
-        import os
-        import tempfile
-
-        base = os.environ.get("UGR_S5_EXPORT_DIR") or tempfile.gettempdir()
-        artifact_uri = os.path.join(base, "ugrile-s5-exports", envelope.filename)
-    _write_bytes(artifact_uri, envelope.bytes_)
-    record_export_run(
-        session,
-        tenant_id=tenant_id,
-        kind=JobKind.EXPORT_PONTAJ_ONLY.value,
-        envelope=envelope,
+        status="DONE",
         artifact_uri=artifact_uri,
+        summary={
+            "filename": envelope.filename,
+            "checksum_sha256": envelope.checksum,
+            "summary": envelope.summary,
+        },
     )
     return JobResult(
         status="DONE",

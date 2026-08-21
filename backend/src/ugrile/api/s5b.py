@@ -51,6 +51,7 @@ from ..repositories.models import ExportRun
 from ..repositories.months import MonthRepository
 from ..services.auth import Principal, assert_admin, assert_same_tenant
 from ..services.canary import list_active_store_ids, read_store_canary
+from ..services.xlsx_export import create_pending_export_run
 from ..worker.worker import enqueue
 
 router = APIRouter(prefix="/months", tags=["export"])
@@ -76,13 +77,28 @@ def _enqueue_export(
     payload: dict[str, Any],
     artifact_uri_hint: str | None,
 ) -> dict[str, Any]:
-    """Enqueue an export job and return the synchronous ticket."""
+    """Enqueue an export job and return the synchronous ticket.
+
+    Contract (AC-16): the ``job_id`` returned here is the
+    ``ExportRun.id`` of a pre-created PENDING row. The durable worker
+    updates that same row to ``DONE`` (or ``FAILED``) on completion, and
+    the polling endpoint ``GET /months/{id}/export/jobs/{job_id}`` reads
+    it by the same id. The internal ``OutboxJob`` row is implementation
+    detail and not exposed to the client.
+    """
     if not isinstance(idempotency_key, str) or not idempotency_key:
         raise DomainError(
             "idempotency_key is required",
             details={"code": "EXPORT_KEY_REQUIRED"},
         )
-    job_row = enqueue(
+    export_run = create_pending_export_run(
+        session,
+        tenant_id=tenant_id,
+        kind=kind.value,
+        summary={"idempotency_key": idempotency_key, "payload": payload},
+        artifact_uri_hint=artifact_uri_hint,
+    )
+    enqueue(
         session,
         tenant_id=tenant_id,
         kind=kind.value,
@@ -91,9 +107,10 @@ def _enqueue_export(
             **payload,
             "month_id": month_id,
             "artifact_uri_hint": artifact_uri_hint,
+            "export_run_id": export_run.id,
         },
     )
-    job_id = job_row.id
+    job_id = export_run.id
     session.commit()
     return {
         "kind": kind.value,
@@ -200,7 +217,12 @@ def export_job_status(
         raise DomainError("forbidden", details={"role": principal.role.value})
     run = session.get(ExportRun, job_id)
     if run is None or run.tenant_id != principal.tenant_id:
-        raise DomainError("export job not found", details={"job_id": job_id})
+        from ..domain.errors import NotFoundError
+
+        raise NotFoundError(
+            "export job not found",
+            details={"code": "EXPORT_JOB_NOT_FOUND", "job_id": job_id},
+        )
     return {
         "job_id": run.id,
         "kind": run.kind,
