@@ -6,31 +6,47 @@ export interface NavProps {
   months: MonthSummary[];
 }
 
+const links = [
+  { name: "overview", label: "Command Center", icon: "⌂" },
+  { name: "program", label: "Calendar", icon: "▦" },
+  { name: "exceptions", label: "Excepții", icon: "!" },
+  { name: "close", label: "Închidere lună", icon: "✓" },
+];
+
 export function Nav({ route, months }: NavProps) {
-  const links: { name: string; label: string }[] = [
-    { name: "overview", label: "Overview" },
-    { name: "program", label: "Program" },
-    { name: "exceptions", label: "Excepții" },
-    { name: "close", label: "Close" },
-  ];
   return (
-    <nav className="app-nav" aria-label="Navigare principală">
-      {links.map((link) => (
-        <button
-          key={link.name}
-          type="button"
-          className={`nav-link ${route.name === link.name ? "active" : ""}`}
-          aria-current={route.name === link.name ? "page" : undefined}
-          onClick={() => navigate(link.name)}
-        >
-          {link.label}
-        </button>
-      ))}
-      {months.length > 0 && (
-        <span className="muted nav-months">
-          {months.length} lună{months.length === 1 ? "" : "i"} disponibile
+    <div className="sidebar-inner">
+      <button className="brand-block" type="button" onClick={() => navigate("overview")}>
+        <span className="brand-mark">U</span>
+        <span>
+          <strong>UniHub</strong>
+          <small>Grile Command</small>
         </span>
-      )}
-    </nav>
+      </button>
+
+      <nav className="app-nav" aria-label="Navigare principală">
+        <span className="nav-section-label">OPERAȚIONAL</span>
+        {links.map((link) => (
+          <button
+            key={link.name}
+            type="button"
+            className={`nav-link ${route.name === link.name ? "active" : ""}`}
+            aria-current={route.name === link.name ? "page" : undefined}
+            onClick={() => navigate(link.name)}
+          >
+            <span className="nav-icon" aria-hidden="true">{link.icon}</span>
+            <span>{link.label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <div className="sidebar-footer">
+        <div className="sidebar-meta-row">
+          <span>Luni disponibile</span>
+          <strong>{months.length}</strong>
+        </div>
+        <div className="sidebar-version">UniHub Grile · Manager Console</div>
+      </div>
+    </div>
   );
 }
