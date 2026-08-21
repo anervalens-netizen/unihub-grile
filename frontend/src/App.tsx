@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { Health } from "./pages/Health";
 import { Overview } from "./pages/Overview";
 import { Program } from "./pages/Program";
 import { Exceptions } from "./pages/Exceptions";
@@ -20,14 +19,6 @@ const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "/api") as string;
 const identity = (import.meta.env.VITE_DEV_IDENTITY ?? "user_admin") as string;
 const tenant = (import.meta.env.VITE_DEV_TENANT ?? "tenant_acme") as string;
 
-export interface AppState {
-  api: ApiClient;
-  health: HealthReport | null;
-  healthError: string | null;
-  months: MonthSummary[];
-  monthsError: string | null;
-}
-
 export function App() {
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
@@ -44,16 +35,17 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .healthz()
+    api.healthz()
       .then((report) => {
-        if (!cancelled) setHealth(report);
+        if (!cancelled) {
+          setHealth(report);
+          setHealthError(null);
+        }
       })
       .catch((e: unknown) => {
         if (!cancelled) setHealthError(String(e));
       });
-    api
-      .get<MonthSummary[]>("/months")
+    api.get<MonthSummary[]>("/months")
       .then((list) => {
         if (!cancelled) setMonths(list);
       })
@@ -65,29 +57,28 @@ export function App() {
     };
   }, [api]);
 
+  const pageMeta = getPageMeta(route);
+  const systemState = healthError ? "offline" : health?.status === "ok" ? "online" : "checking";
+
   return (
     <Layout
+      sidebar={<Nav route={route} months={months} />}
       header={
-        <header className="app-header">
-          <h1>UniHub Grile — Manager UI (S4)</h1>
-          <p className="muted">
-            Overview, Program, Magazin, Agent, Excepții, Close — toate pe
-            aceeași lună și același tenant. Calendarul este autoritatea; Pontajul,
-            vânzările și grila sunt derivate.
-          </p>
-          <Nav route={route} months={months} />
-        </header>
+        <div className="topbar-inner">
+          <div className="topbar-copy">
+            <span className="eyebrow">MANAGER WORKSPACE</span>
+            <h1>{pageMeta.title}</h1>
+            <p>{pageMeta.subtitle}</p>
+          </div>
+          <div className="topbar-status" aria-label="Stare sistem">
+            <span className={`status-dot status-${systemState}`} aria-hidden="true" />
+            <span>{systemState === "online" ? "Sistem operațional" : systemState === "offline" ? "API indisponibil" : "Verific sistemul"}</span>
+            {health?.app_version && <small>v{health.app_version}</small>}
+          </div>
+        </div>
       }
     >
-      <Health health={health} error={healthError} api={api} />
-      <main className="app-main">
-        <PageRouter
-          api={api}
-          route={route}
-          months={months}
-          monthsError={monthsError}
-        />
-      </main>
+      <PageRouter api={api} route={route} months={months} monthsError={monthsError} />
     </Layout>
   );
 }
@@ -127,12 +118,23 @@ function PageRouter({ api, route, months, monthsError }: PageRouterProps) {
       );
     case "overview":
     default:
-      return (
-        <Overview
-          api={api}
-          months={months}
-          monthsError={monthsError}
-        />
-      );
+      return <Overview api={api} months={months} monthsError={monthsError} />;
+  }
+}
+
+function getPageMeta(route: Route): { title: string; subtitle: string } {
+  switch (route.name) {
+    case "program":
+      return { title: "Calendar operațional", subtitle: "Planificare, suplimentare și acoperire într-o singură matrice." };
+    case "exceptions":
+      return { title: "Excepții și control", subtitle: "Tot ce necesită intervenție înainte să devină problemă." };
+    case "close":
+      return { title: "Închidere lună", subtitle: "Validare, audit și blocarea perioadei cu trasabilitate." };
+    case "store":
+      return { title: "Control magazin", subtitle: "Calendar, agenți, vânzări, pontaj și grilă într-un singur spațiu." };
+    case "agent":
+      return { title: "Control agent", subtitle: "Program și rezultate individuale, fără schimbarea contextului." };
+    default:
+      return { title: "Command Center", subtitle: "Imagine de ansamblu asupra rețelei și acces direct la fiecare magazin." };
   }
 }
