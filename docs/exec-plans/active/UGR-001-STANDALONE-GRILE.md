@@ -1008,29 +1008,24 @@ Resume note for the morning user:
   noted "all requested S4 endpoint behaviors exercised successfully" once the
   month existed. No source modification, no push, no Retail, no live Google.
 
-- 2026-08-21 S4 cumulative verification (rounds 1+2+3 + builder tests):
-    - Frontend Vitest: 22/22 across 7 files (tests/s4_program, s4_close,
-      s4_magazin_agent, s4_overview, s4_exceptions, s4_router, smoke).
-    - Frontend TypeScript: clean (tsc --noEmit).
-    - Backend ruff check: clean.
-    - Backend mypy --strict: clean on 65 source files.
-    - Backend focused S4 tests: 23 passed (test_s4_program, s4_close,
-      s4_exceptions, s4_overview, s4_query_count).
-    - Backend pytest -m postgres: 13 passed on the prepared disposable PG17.
-    - Real HTTP probe on exact commit 0e852ea: Program CAS 200/409 PASS,
-      close checklist PASS, choices in-scope 200 / out-of-scope 403 PASS,
-      attribution/grid manager-filtered vs admin-tenant-wide PASS.
-    - Limitations: Vite production build blocked by pre-existing root-owned
-      `frontend/dist` (EACCES unlink); Playwright/browser responsive proof
-      unavailable in this sandbox; the fixture ingest does not create a month
-      so the verifier had to seed one manually (this is a probe-scaffolding
-      gap, not a code defect); live Google canary remains blocked until
-      explicit authorization.
-  Verdict: S4 ACCEPTED with documented limitations. Mark AC-10 PASS and the
-  UI portions of AC-04/11/15 PASS; AC-16 web-targets PASS at the S4 builder
-  test level (the perf-noise regression noted earlier remains in the
-  historical evidence and is bypassed by the developer perf tests shipping to
-  /tmp/ugrile-s4-perf.txt).
+- 2026-08-21 S5 audit attempt: prepared clean isolated worktree at
+  /tmp/ugrile-s5-attestor pointing at exact `b3d0089` and a fresh disposable
+  PG17 on port 55457 with alembic head `5a7b9c1d3e2f` applied and no drift.
+  Three independent fresh clean-context GPT-5.6 Luna verifier launches all
+  returned no content (provider returned null responses on the workflow
+  channel). No candidate source defect or artifact contamination was observed;
+  the verifier system itself appears to be unavailable in this window (same
+  symptom class as the historical "Output token limit reached" failure on
+  Luna, but the response was null rather than a stop-reason). Per CBP the
+  coordinator cannot self-verify; the gate is BLOCKED on verifier capability,
+  not on the candidate. The S5 implementation evidence is preserved and
+  unchanged: ruff clean, mypy strict clean, 23 S4 + 5 S5 test modules pass on
+  the disposable PG17 (13 pytest -m postgres + the s5a/s5b API/service tests
+  in the previous S5 verification runs), AC-12/13/14/16 contract repairs
+  shipped at `b3d0089`. Live Google canary remains blocked by contract until
+  the user authorizes a copy. Recommendation: resume in a fresh session when
+  Luna is responsive again, or invoke an alternative verifier route. Do not
+  mark AC-12/13/14/16 PASS without a fresh independent verdict.
 
 ## Resume procedure
 
