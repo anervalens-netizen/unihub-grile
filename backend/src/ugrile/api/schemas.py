@@ -470,6 +470,72 @@ class JobEnqueueIn(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=128)
 
 
+# ---------------------------------------------------------------------------
+# S5a — E-pay fresh readback
+# ---------------------------------------------------------------------------
+
+
+class EpayReadbackItemIn(BaseModel):
+    person_id: str = Field(min_length=1)
+    category: Literal["UNDER_50", "AT_OR_OVER_50"]
+    value: int | float | str | None = None
+
+
+class EpayReadbackIn(BaseModel):
+    store_id: str = Field(min_length=1)
+    observations: list[EpayReadbackItemIn] = Field(min_length=1)
+
+
+class EpayReadbackItemOut(BaseModel):
+    person_id: str
+    category: str
+    value: int | None
+    raw_value: str | None
+    is_valid: bool
+
+
+class EpayReadbackOut(BaseModel):
+    store_id: str
+    month_id: str
+    observed_at: str
+    valid_count: int
+    invalid_count: int
+    items: list[EpayReadbackItemOut]
+
+
+class EpayFreshnessOut(BaseModel):
+    store_id: str
+    is_fresh: bool
+    fresh_count: int
+    expected_count: int
+    threshold: str
+
+
+# ---------------------------------------------------------------------------
+# S5a — Google projection structural readback
+# ---------------------------------------------------------------------------
+
+
+class SheetProjectionPayloadOut(BaseModel):
+    grila: dict[str, object]
+    pontaj: dict[str, object]
+
+
+class SheetProjectionOut(BaseModel):
+    store_id: str
+    generation: str
+    last_success_generation: str | None
+    last_run_at: str | None
+    last_error: str | None
+    failures: int
+    payload: SheetProjectionPayloadOut | None
+
+
+class SheetProjectionEnqueueIn(BaseModel):
+    store_id: str = Field(min_length=1)
+    idempotency_key: str | None = Field(default=None, max_length=128)
+
+
 __all__ = [
     "AssignmentCreate",
     "AssignmentOut",
@@ -487,6 +553,11 @@ __all__ = [
     "CloseOutcomeOut",
     "ConflictOut",
     "CoverageReport",
+    "EpayFreshnessOut",
+    "EpayReadbackIn",
+    "EpayReadbackItemIn",
+    "EpayReadbackItemOut",
+    "EpayReadbackOut",
     "ExceptionOut",
     "GridCalculationOut",
     "GridComputeOut",
@@ -516,6 +587,9 @@ __all__ = [
     "SalaryMasterOut",
     "SalaryUpsertIn",
     "SchedulePreviewOut",
+    "SheetProjectionEnqueueIn",
+    "SheetProjectionOut",
+    "SheetProjectionPayloadOut",
     "StoreOut",
     "TenantOut",
 ]

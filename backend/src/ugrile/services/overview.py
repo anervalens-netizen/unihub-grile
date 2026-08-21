@@ -40,6 +40,7 @@ from ..domain.close import (
     SalesAvailabilitySnapshot,
     StoreCoverageSnapshot,
     StoreTargetAvailabilitySnapshot,
+    deferred_blockers,
     validate_close,
 )
 from ..domain.enums import CloseBlockerCode, DayStatus, MonthState
@@ -161,9 +162,7 @@ class OverviewService:
             scoped_store_ids = {store.id for store in stores}
         else:
             scoped_store_ids = {
-                store_id
-                for set_ids in manager_scope_store_ids.values()
-                for store_id in set_ids
+                store_id for set_ids in manager_scope_store_ids.values() for store_id in set_ids
             }
 
         # Single aggregate query: every (store, date) with at least one WORKING row.
@@ -178,14 +177,11 @@ class OverviewService:
         ).all()
         covered_set = {(row[0], row[1]) for row in covered_pairs}
 
-        lattice = [
-            (store.id, d)
-            for store in stores
-            if store.id in scoped_store_ids
-            for d in dates
-        ]
+        lattice = [(store.id, d) for store in stores if store.id in scoped_store_ids for d in dates]
         uncovered_count = sum(1 for key in lattice if key not in covered_set)
-        stores_covered = {store.id for (store_id, _) in covered_set for store in stores if store.id == store_id}
+        stores_covered = {
+            store.id for (store_id, _) in covered_set for store in stores if store.id == store_id
+        }
         stores_covered_count = sum(1 for store in stores if store.id in stores_covered)
 
         # Conflicts: a store/date or person/date with multiple WORKING rows.
@@ -213,16 +209,14 @@ class OverviewService:
 
         # Supplementary days: aggregate counts.
         extra_home = self.session.execute(
-            select(func.count(SiteDayAssignment.id))
-            .where(
+            select(func.count(SiteDayAssignment.id)).where(
                 SiteDayAssignment.tenant_id == tenant_id,
                 SiteDayAssignment.month_id == month.id,
                 SiteDayAssignment.working_kind == "EXTRA_HOME",
             )
         ).scalar_one()
         extra_other = self.session.execute(
-            select(func.count(SiteDayAssignment.id))
-            .where(
+            select(func.count(SiteDayAssignment.id)).where(
                 SiteDayAssignment.tenant_id == tenant_id,
                 SiteDayAssignment.month_id == month.id,
                 SiteDayAssignment.working_kind == "EXTRA_OTHER",
@@ -245,8 +239,7 @@ class OverviewService:
 
         # Epay freshness: latest observation per (store, person) — count of invalids.
         epay_invalid_count = self.session.execute(
-            select(func.count(EpayObservation.id))
-            .where(
+            select(func.count(EpayObservation.id)).where(
                 EpayObservation.tenant_id == tenant_id,
                 EpayObservation.is_valid.is_(False),
             )
@@ -257,8 +250,7 @@ class OverviewService:
 
         # Sheet sync: counts of OutboxJob rows in DONE/FAILED/PENDING per kind.
         sync_total = self.session.execute(
-            select(func.count(OutboxJob.id))
-            .where(
+            select(func.count(OutboxJob.id)).where(
                 OutboxJob.tenant_id == tenant_id,
                 OutboxJob.kind.in_(
                     [
@@ -270,8 +262,7 @@ class OverviewService:
             )
         ).scalar_one()
         sync_failed = self.session.execute(
-            select(func.count(OutboxJob.id))
-            .where(
+            select(func.count(OutboxJob.id)).where(
                 OutboxJob.tenant_id == tenant_id,
                 OutboxJob.kind.in_(
                     [
@@ -284,8 +275,7 @@ class OverviewService:
             )
         ).scalar_one()
         sync_pending = self.session.execute(
-            select(func.count(OutboxJob.id))
-            .where(
+            select(func.count(OutboxJob.id)).where(
                 OutboxJob.tenant_id == tenant_id,
                 OutboxJob.kind.in_(
                     [
@@ -324,8 +314,7 @@ class OverviewService:
             ).scalars()
         )
         person_to_manager: dict[str, str] = {
-            person.id: person.id.split("person_", 1)[-1].split("_", 1)[0]
-            for person in people
+            person.id: person.id.split("person_", 1)[-1].split("_", 1)[0] for person in people
         }
         manager_to_stores: dict[str, set[str]] = {}
         manager_to_name: dict[str, str] = {}
@@ -336,8 +325,9 @@ class OverviewService:
 
         # Day totals per manager from PontajProjection, scoped to lattice.
         pontaj_rows = self.session.execute(
-            select(PontajProjection.person_id, PontajProjection.business_date, PontajProjection.status)
-            .where(
+            select(
+                PontajProjection.person_id, PontajProjection.business_date, PontajProjection.status
+            ).where(
                 PontajProjection.tenant_id == tenant_id,
                 PontajProjection.month_id == month.id,
                 PontajProjection.revision == month.revision,
@@ -349,7 +339,11 @@ class OverviewService:
             person_id, d, status = row[0], row[1], row[2]
             manager_id = person_to_manager.get(person_id, person_id)
             home_store = person_home_store.get(person_id)
-            if home_store and (home_store, d) not in covered_set and status != DayStatus.LEAVE.value:
+            if (
+                home_store
+                and (home_store, d) not in covered_set
+                and status != DayStatus.LEAVE.value
+            ):
                 manager_uncovered[manager_id] = manager_uncovered.get(manager_id, 0) + 1
 
         managers: list[OverviewManagerRow] = []
@@ -381,7 +375,9 @@ class OverviewService:
                     business_date=blocker.business_date,
                 )
             )
-        needs_attention.sort(key=lambda item: (item.severity, item.code, item.business_date or date.min))
+        needs_attention.sort(
+            key=lambda item: (item.severity, item.code, item.business_date or date.min)
+        )
 
         # Last grid revision snapshot (used by manager-row "last sync").
         latest_rule_pack = self.session.execute(
@@ -502,7 +498,10 @@ class ProgramService:
             for store in sorted(visible_stores, key=lambda s: s.internal_code):
                 cells: list[ProgramCell] = []
                 for d in dates:
-                    locked = manager_scope_store_ids is not None and store.id not in manager_scope_store_ids.get(d, set())
+                    locked = (
+                        manager_scope_store_ids is not None
+                        and store.id not in manager_scope_store_ids.get(d, set())
+                    )
                     matches = [
                         row
                         for row in assignments
@@ -566,15 +565,15 @@ class ProgramService:
                 person
                 for person in people
                 if manager_scope_store_ids is None
-                or any(
-                    person.home_store_id in manager_scope_store_ids[d]
-                    for d in dates
-                )
+                or any(person.home_store_id in manager_scope_store_ids[d] for d in dates)
             ]
             for person in sorted(visible_people, key=lambda p: p.internal_code):
                 cells = []
                 for d in dates:
-                    locked = manager_scope_store_ids is not None and person.home_store_id not in manager_scope_store_ids.get(d, set())
+                    locked = (
+                        manager_scope_store_ids is not None
+                        and person.home_store_id not in manager_scope_store_ids.get(d, set())
+                    )
                     matches = [
                         row
                         for row in assignments
@@ -583,7 +582,9 @@ class ProgramService:
                     if matches:
                         match = matches[0]
                         store_obj: Store | None = store_by_id.get(match.store_id)
-                        store_label = store_obj.internal_code if store_obj is not None else match.store_id
+                        store_label = (
+                            store_obj.internal_code if store_obj is not None else match.store_id
+                        )
                         cells.append(
                             ProgramCell(
                                 business_date=d,
@@ -597,7 +598,9 @@ class ProgramService:
                                 locked=locked,
                             )
                         )
-                    elif any(abs_.business_date == d and abs_.person_id == person.id for abs_ in absences):
+                    elif any(
+                        abs_.business_date == d and abs_.person_id == person.id for abs_ in absences
+                    ):
                         cells.append(
                             ProgramCell(
                                 business_date=d,
@@ -692,15 +695,15 @@ class ExceptionService:
         scoped_ids = (
             None
             if manager_scope_store_ids is None
-            else {
-                store_id
-                for set_ids in manager_scope_store_ids.values()
-                for store_id in set_ids
-            }
+            else {store_id for set_ids in manager_scope_store_ids.values() for store_id in set_ids}
         )
         entries: list[ExceptionEntry] = []
         for blocker in validation.blockers:
-            if scoped_ids is not None and blocker.store_id is not None and blocker.store_id not in scoped_ids:
+            if (
+                scoped_ids is not None
+                and blocker.store_id is not None
+                and blocker.store_id not in scoped_ids
+            ):
                 continue
             entries.append(
                 ExceptionEntry(
@@ -784,7 +787,8 @@ class CloseChecklistService:
         export_summary: list[dict[str, Any]] = []
         job_rows = list(
             self.session.execute(
-                select(OutboxJob).where(
+                select(OutboxJob)
+                .where(
                     OutboxJob.tenant_id == tenant_id,
                     OutboxJob.kind.in_(
                         [
@@ -794,7 +798,9 @@ class CloseChecklistService:
                             "GOOGLE_PROJECTION_STORE",
                         ]
                     ),
-                ).order_by(OutboxJob.id.desc()).limit(20)
+                )
+                .order_by(OutboxJob.id.desc())
+                .limit(20)
             ).scalars()
         )
         job_summary = [
@@ -839,9 +845,7 @@ def _overview_validation(
     )
     store_ids = sorted({store.id for store in stores})
     open_days = [
-        OpenStoreDay(store_id=store_id, business_date=d)
-        for store_id in store_ids
-        for d in dates
+        OpenStoreDay(store_id=store_id, business_date=d) for store_id in store_ids for d in dates
     ]
     lattice = {(day.store_id, day.business_date) for day in open_days}
 
@@ -955,6 +959,7 @@ def _overview_validation(
         person_days=person_days,
         sales_availability=sales_availability,
         target_availability=target_availability,
+        extra_blockers=deferred_blockers(),
     )
 
 

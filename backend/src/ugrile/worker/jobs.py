@@ -94,20 +94,14 @@ def _build_payload_for_tenant(tenant_id: str) -> Any:
                 emitted_at=fx.header.emitted_at,
             ),
             "stores": [
-                StoreRecord(**{**r.model_dump(), "tenant_id": bare_token})
-                for r in fx.stores
+                StoreRecord(**{**r.model_dump(), "tenant_id": bare_token}) for r in fx.stores
             ],
             "people": [
-                PersonRecord(**{**r.model_dump(), "tenant_id": bare_token})
-                for r in fx.people
+                PersonRecord(**{**r.model_dump(), "tenant_id": bare_token}) for r in fx.people
             ],
-            "sales": [
-                SalesRecord(**{**r.model_dump(), "tenant_id": bare_token})
-                for r in fx.sales
-            ],
+            "sales": [SalesRecord(**{**r.model_dump(), "tenant_id": bare_token}) for r in fx.sales],
             "targets": [
-                TargetRecord(**{**r.model_dump(), "tenant_id": bare_token})
-                for r in fx.targets
+                TargetRecord(**{**r.model_dump(), "tenant_id": bare_token}) for r in fx.targets
             ],
             "incentives": [
                 IncentiveRecord(**{**r.model_dump(), "tenant_id": bare_token})
@@ -117,9 +111,7 @@ def _build_payload_for_tenant(tenant_id: str) -> Any:
     )
 
 
-def _job_fixture_ingest(
-    session: Session, tenant_id: str, payload: dict[str, Any]
-) -> JobResult:
+def _job_fixture_ingest(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
     """Apply the canonical fixture, scoped to the job's tenant.
 
     The previous attempt always applied the canonical ``tenant_fixture``
@@ -144,9 +136,7 @@ def _job_fixture_ingest(
     return JobResult(status="DONE", payload={"summary": dict(summary), "tenant": target_tenant_id})
 
 
-def _job_tenant_bootstrap(
-    session: Session, tenant_id: str, payload: dict[str, Any]
-) -> JobResult:
+def _job_tenant_bootstrap(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
     from ..repositories.months import MonthRepository
     from ..repositories.tenants import TenantRepository
 
@@ -219,19 +209,97 @@ def _job_export_scaffold(
 
 
 def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
-    return _job_export_scaffold(session, tenant_id, payload, kind=JobKind.EXPORT_XLSX_STORE, label="xlsx_store")
+    return _job_export_scaffold(
+        session, tenant_id, payload, kind=JobKind.EXPORT_XLSX_STORE, label="xlsx_store"
+    )
 
 
 def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
-    return _job_export_scaffold(session, tenant_id, payload, kind=JobKind.EXPORT_XLSX_BULK, label="xlsx_bulk")
+    return _job_export_scaffold(
+        session, tenant_id, payload, kind=JobKind.EXPORT_XLSX_BULK, label="xlsx_bulk"
+    )
 
 
 def _job_export_pontaj_only(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
-    return _job_export_scaffold(session, tenant_id, payload, kind=JobKind.EXPORT_PONTAJ_ONLY, label="pontaj_only")
+    return _job_export_scaffold(
+        session, tenant_id, payload, kind=JobKind.EXPORT_PONTAJ_ONLY, label="pontaj_only"
+    )
 
 
-def _job_google_projection_store(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
-    return _job_export_scaffold(session, tenant_id, payload, kind=JobKind.GOOGLE_PROJECTION_STORE, label="google_projection")
+def _job_google_projection_store(
+    session: Session, tenant_id: str, payload: dict[str, Any]
+) -> JobResult:
+    """S5a fake-adapter projection (AC-12 slice).
+
+    The handler materialises the Grila + Pontaj projection for the
+    requested store/month and hands it to the fake adapter. The adapter
+    is the sole writer of ``sheet_projection_runs`` and
+    ``sheet_bindings``; no Google Sheet is touched.
+
+    The worker is the only authority that runs projections, mirroring
+    the S1 durable-worker contract. A provider failure (env
+    ``UGR_S5_GOOGLE_FAIL=1``) raises ``GoogleAdapterError`` and the row
+    moves to ``FAILED`` with the structured ``last_error`` payload; the
+    last-good projection in ``sheet_projection_runs`` is retained.
+    """
+
+    from ..connectors.google import GoogleAdapterError
+    from ..domain.errors import DomainError
+    from ..repositories.months import MonthRepository
+    from ..services.google import GoogleProjectionService
+
+    store_id = payload.get("store_id")
+    month_id = payload.get("month_id")
+    if not store_id or not month_id:
+        raise DomainError(
+            "store_id and month_id are required for GOOGLE_PROJECTION_STORE",
+            details={"payload": payload},
+        )
+    month = MonthRepository(session).get(month_id)
+    if month.tenant_id != tenant_id:
+        raise DomainError(
+            "tenant mismatch in GOOGLE_PROJECTION_STORE payload",
+            details={
+                "month_tenant": month.tenant_id,
+                "job_tenant": tenant_id,
+                "month_id": month_id,
+            },
+        )
+    year = int(payload.get("year") or month.year)
+    month_num = int(payload.get("month") or month.month)
+    revision = int(payload.get("revision") or month.revision)
+    service = GoogleProjectionService(session)
+    outcome = service.project_store_for_month(
+        tenant_id=tenant_id,
+        store_id=store_id,
+        month_id=month.id,
+        year=year,
+        month=month_num,
+        revision=revision,
+        generation=payload.get("generation"),
+    )
+    # Re-raise so the worker can mark the row FAILED; the last-good row
+    # is preserved by the adapter.
+    try:
+        service.session.flush()
+    except GoogleAdapterError:
+        # The adapter raises after marking the FAILED row. Surface the
+        # failure so the durable worker transitions the outbox row.
+        raise
+    return JobResult(
+        status="DONE",
+        payload={
+            "tenant_id": tenant_id,
+            "store_id": outcome.store_id,
+            "generation": outcome.generation,
+            "projection": {
+                "store_id": outcome.projection.store_id,
+                "generation": outcome.projection.generation,
+                "last_success_generation": outcome.projection.last_success_generation,
+            },
+            "label": "google_projection_s5a",
+        },
+    )
 
 
 def _jsonify(value: Any) -> str:

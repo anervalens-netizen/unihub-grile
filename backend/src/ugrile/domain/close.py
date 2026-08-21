@@ -368,6 +368,33 @@ def validate_close(
     return CloseValidation(blockers=tuple(blockers))
 
 
+# Typed S4/S5 deferred blockers surfaced in the close checklist
+# informational-only at S5a. They never fail close by themselves until
+# the corresponding integration lands:
+#   * ``EPAY_FRESH_READBACK_REQUIRED`` — S5a wires the freshness endpoint;
+#     enforcement lands when the canary authority is granted (S5b/S6).
+#   * ``SHEET_CANARY_REQUIRED`` — S5b wires the real copied canary; the
+#     S5a fake adapter only writes structural projections locally.
+#   * ``EXTERNAL_RECONCILIATION_REQUIRED`` — S6 wires the shadow
+#     reconciliation loop.
+TYPED_DEFERRED_BLOCKERS: tuple[CloseBlockerCode, ...] = (
+    CloseBlockerCode.EPAY_FRESH_READBACK_REQUIRED,
+    CloseBlockerCode.SHEET_CANARY_REQUIRED,
+    CloseBlockerCode.EXTERNAL_RECONCILIATION_REQUIRED,
+)
+
+
+def deferred_blockers() -> tuple[CloseBlockerCode, ...]:
+    """Return the typed S4/S5 deferred blockers (informational-only).
+
+    The list is closed at S5a; integration stages add real checks at the
+    same place. The function exists so callers do not depend on the
+    module-level tuple directly (tests can swap it via patching).
+    """
+
+    return TYPED_DEFERRED_BLOCKERS
+
+
 def assert_close_state(state: str | MonthState) -> None:
     """A month must be in ``OPEN`` to be closed; only ``CLOSED`` can reopen."""
 

@@ -501,6 +501,11 @@ class EpayObservation(Base, TimestampMixin):
     Valid observations are 0..10 (integers). Invalid observations are kept in
     the audit log for forensics, but the engine only consumes the latest valid
     row per ``(tenant_id, store_id, person_id, category, generation)``.
+
+    S5a readback path: the readback endpoint records one row per call, with
+    ``is_valid=True`` only for ``0..10`` integers in the bounded E-pay
+    categories. Invalid inputs (blank, text, fraction, negative, >10) keep
+    ``is_valid=False`` and preserve the original raw_value verbatim.
     """
 
     __tablename__ = "epay_observations"
@@ -523,6 +528,11 @@ class EpayObservation(Base, TimestampMixin):
         CheckConstraint(
             "value IS NULL OR (value >= 0 AND value <= 10)",
             name="epay_value_range",
+        ),
+        Index(
+            "ix_epay_observations_tenant_month",
+            "tenant_id",
+            "observed_at",
         ),
         ForeignKeyConstraint(
             ["tenant_id", "store_id"],
@@ -611,7 +621,16 @@ class SheetBinding(Base, TimestampMixin):
 
 
 class SheetProjectionRun(Base, TimestampMixin):
-    """Status of a Google projection run (idempotent worker job output)."""
+    """Status of a Google projection run (idempotent worker job output).
+
+    S5a extension: ``payload`` stores the structural projection the fake
+    adapter wrote for the store (a deterministic JSON snapshot of the
+    Grila + Pontaj lattice). ``generation`` carries the connector
+    generation used by the projection; ``failures`` is the monotonic
+    counter of consecutive provider failures since the last success.
+    Together they let the readback path verify the structural shape
+    matches the expected lattice without touching a live Google Sheet.
+    """
 
     __tablename__ = "sheet_projection_runs"
 
@@ -624,6 +643,10 @@ class SheetProjectionRun(Base, TimestampMixin):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_success_generation: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # S5a additions: structural payload + generation fingerprint + failure counter.
+    payload: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    generation: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     __table_args__ = (
         ForeignKeyConstraint(

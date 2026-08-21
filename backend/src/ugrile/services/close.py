@@ -60,6 +60,7 @@ from ..domain.close import (
     StoreTargetAvailabilitySnapshot,
     assert_close_state,
     assert_reopen_state,
+    deferred_blockers,
     validate_close,
 )
 from ..domain.enums import CloseAction, MonthState
@@ -263,7 +264,23 @@ class CloseService:
             person_days=person_days,
             sales_availability=sales,
             target_availability=targets,
+            extra_blockers=deferred_blockers(),
         )
+
+    @staticmethod
+    def _enforced_blockers(validation: CloseValidation) -> tuple[BlockerDetail, ...]:
+        """Return the blockers that actually block close at S5a.
+
+        The typed S4/S5 deferred blockers (``EPAY_FRESH_READBACK_REQUIRED``,
+        ``SHEET_CANARY_REQUIRED``, ``EXTERNAL_RECONCILIATION_REQUIRED``)
+        are surfaced in the close checklist as informational items but
+        never fail close until their respective integration lands. The
+        S3 lattice blockers (STORE_DAY_UNCOVERED, etc.) remain
+        authoritative.
+        """
+
+        deferred = set(deferred_blockers())
+        return tuple(b for b in validation.blockers if b.code not in deferred)
 
     # --- public API -------------------------------------------------------
 
@@ -295,7 +312,8 @@ class CloseService:
                 },
             )
         validation = self._validation(tenant_id=tenant_id, month=locked)
-        if not validation.ok:
+        enforced = self._enforced_blockers(validation)
+        if enforced:
             raise ValidationError(
                 "month has blocking conditions",
                 details={
@@ -311,7 +329,7 @@ class CloseService:
                             else None,
                             "message": b.message,
                         }
-                        for b in validation.blockers
+                        for b in enforced
                     ],
                 },
             )
@@ -319,6 +337,9 @@ class CloseService:
         revision_before = locked.revision
         locked.state = MonthState.CLOSED.value
         locked.revision = revision_before + 1
+        # Persist the full blocker list (enforced + deferred) in the audit
+        # chain so the manager UI can replay the close decision verbatim;
+        # only the enforced subset ever blocked close.
         audit = self.audit.append(
             tenant_id=tenant_id,
             month_id=locked.id,
@@ -329,14 +350,23 @@ class CloseService:
             revision_after=locked.revision,
             actor_id=request.actor_id,
             reason=None,
-            blockers=[],
+            blockers=[
+                {
+                    "code": b.code.value,
+                    "store_id": b.store_id,
+                    "person_id": b.person_id,
+                    "business_date": b.business_date.isoformat() if b.business_date else None,
+                    "message": b.message,
+                }
+                for b in validation.blockers
+            ],
         )
         return CloseOutcome(
             month_id=locked.id,
             revision=locked.revision,
             new_state=locked.state,
             audit_event_id=audit.id,
-            validation=validation,
+            validation=CloseValidation(blockers=enforced),
         )
 
     def reopen_month(

@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ugrile.connectors.fixtures import FIXTURE_TENANT_ID
 from ugrile.domain.enums import JobKind
-from ugrile.repositories.models import ExportRun, ImportRun
+from ugrile.repositories.models import ExportRun
 from ugrile.worker.jobs import get_handler, known_kinds
 from ugrile.worker.worker import WORKER_LOCKED_BY, enqueue, run_once
 
@@ -50,7 +50,9 @@ def test_export_xlsx_store_handler_persists_export_run(session):
     assert runs[0].status == "ENQUEUED"
 
 
-def test_google_projection_store_handler_persists_import_run(session):
+def test_google_projection_store_handler_requires_month_id(session):
+    """S5a: the handler now requires both ``store_id`` and ``month_id``."""
+
     enqueue(
         session,
         tenant_id=FIXTURE_TENANT_ID,
@@ -60,11 +62,12 @@ def test_google_projection_store_handler_persists_import_run(session):
     )
     session.commit()
     row, result = run_once(locked_by=WORKER_LOCKED_BY)
-    assert result is not None
-    assert result.status == "DONE"
-    session.commit()
-    runs = list(session.query(ImportRun))
-    assert runs and runs[0].kind == "GOOGLE_PROJECTION_STORE"
+    assert row is not None
+    # S5a handler validates the payload and refuses incomplete jobs so
+    # the row moves to ``FAILED`` with a typed ``DOMAIN_ERROR`` reason.
+    assert result is None
+    assert row.status == "FAILED"
+    assert "store_id and month_id" in (row.last_error or "")
 
 
 def test_idempotency_key_prevents_duplicate(session):

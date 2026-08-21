@@ -19,6 +19,7 @@ from .api.grid import router as grid_router
 from .api.health import router as health_router
 from .api.ingest import router as ingest_router
 from .api.s4 import router as s4_router
+from .api.s5a import router as s5a_router
 from .api.schedule import router as schedule_router
 from .api.worker_api import router as worker_router
 from .core.config import get_settings
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     app.include_router(grid_router)
     app.include_router(close_router)
     app.include_router(s4_router)
+    app.include_router(s5a_router)
     app.include_router(worker_router)
     return app
 
