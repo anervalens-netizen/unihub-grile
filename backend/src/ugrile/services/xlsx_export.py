@@ -23,7 +23,7 @@ Layout summary
 
 ``Pontaj`` tab — standard Mobiup C8:AG31:
 
-* Row 1: header (Persoana + day 1..31 in D..AG + Total ore in AH).
+* Row 1: header (Persoana + day 1..31 in C..AG + Total ore in AH).
 * Row 2: blank / spacer.
 * Row 8, 11, 14, 17, 20, 23, 26, 29: per-block day rows (Net hours),
   followed by interval (row r+1) and pause (row r+2).
@@ -80,12 +80,12 @@ STANDARD_INTERVAL_END = time(22, 0)
 STANDARD_PAUSE_MINUTES = 60
 STANDARD_NET_HOURS = Decimal("11")
 
-# Column layout (1-indexed). Day 1 starts at column D = 4; the standard
-# Pontaj contract places day 31 at column AG = 34, and column AH = 35 holds
+# Column layout (1-indexed). Day 1 starts at column C = 3; the standard
+# Pontaj contract places day 31 at column AG = 33, and column AH = 34 holds
 # the total monthly hours.
-DAY_1_COL = 4   # column D
-DAY_31_COL = 34  # column AG (day 31)
-TOTAL_COL = 35   # column AH (monthly total)
+DAY_1_COL = 3   # column C
+DAY_31_COL = 33  # column AG (day 31)
+TOTAL_COL = 34   # column AH (monthly total)
 WEEKEND_FILL = PatternFill("solid", fgColor="FFE699")
 
 

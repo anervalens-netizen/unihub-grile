@@ -39,14 +39,16 @@ from __future__ import annotations
 import os
 import tempfile
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from ..api.deps import current_principal, db_session
 from ..domain.enums import JobKind, RoleName
-from ..domain.errors import DomainError
+from ..domain.errors import DomainError, NotFoundError
 from ..repositories.models import ExportRun
 from ..repositories.months import MonthRepository
 from ..services.auth import Principal, assert_admin, assert_same_tenant
@@ -217,8 +219,6 @@ def export_job_status(
         raise DomainError("forbidden", details={"role": principal.role.value})
     run = session.get(ExportRun, job_id)
     if run is None or run.tenant_id != principal.tenant_id:
-        from ..domain.errors import NotFoundError
-
         raise NotFoundError(
             "export job not found",
             details={"code": "EXPORT_JOB_NOT_FOUND", "job_id": job_id},
@@ -230,6 +230,45 @@ def export_job_status(
         "artifact_uri": run.artifact_uri,
         "summary": run.summary,
     }
+
+
+@router.get("/{month_id}/export/jobs/{job_id}/download")
+def download_export(
+    month_id: str,
+    job_id: int,
+    session: Session = Depends(db_session),
+    principal: Principal = Depends(current_principal),
+) -> FileResponse:
+    """Download the persisted artifact for a completed export run.
+
+    The client supplies only the stable ``ExportRun.id``. The filesystem
+    path is always taken from the tenant-scoped row, never from a request
+    parameter, and only a terminal DONE run can be served.
+    """
+    if principal.role not in {RoleName.ADMIN, RoleName.MANAGER}:
+        raise DomainError("forbidden", details={"role": principal.role.value})
+    run = session.get(ExportRun, job_id)
+    if run is None or run.tenant_id != principal.tenant_id:
+        raise NotFoundError(
+            "export job not found",
+            details={"code": "EXPORT_JOB_NOT_FOUND", "job_id": job_id},
+        )
+    if run.status != "DONE" or not run.artifact_uri:
+        raise NotFoundError(
+            "export artifact not found",
+            details={"code": "EXPORT_ARTIFACT_NOT_FOUND", "job_id": job_id},
+        )
+    artifact = Path(run.artifact_uri)
+    if not artifact.is_file():
+        raise NotFoundError(
+            "export artifact not found",
+            details={"code": "EXPORT_ARTIFACT_NOT_FOUND", "job_id": job_id},
+        )
+    media_type = {
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".zip": "application/zip",
+    }.get(artifact.suffix.lower(), "application/octet-stream")
+    return FileResponse(str(artifact), media_type=media_type, filename=artifact.name)
 
 
 @router.get("/{month_id}/canary/readback")

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
 from ..domain.calendar import SiteDayAssignment, validate_working_kind
@@ -376,18 +376,29 @@ class CalendarService:
                 ).scalars()
             }
         )
-        for row in derive_pontaj(derive_person_calendar(domains, active_people, all_days), hours):
-            self.session.add(
-                PontajProjection(
-                    tenant_id=tenant_id,
-                    month_id=month.id,
-                    person_id=row.person_id,
-                    business_date=row.business_date,
-                    revision=revision,
-                    status=row.status.value,
-                    start_time=row.start,
-                    end_time=row.end,
-                    pause_minutes=row.pause_minutes,
-                    hours=row.hours,
-                )
-            )
+        # The lattice is intentionally complete (active people x every day),
+        # so a normal ORM ``add`` loop turns every calendar cell save into
+        # thousands of unit-of-work objects.  Use SQLAlchemy's executemany
+        # path while keeping the same transaction and immutable revision
+        # contract.
+        rows = derive_pontaj(
+            derive_person_calendar(domains, active_people, all_days), hours
+        )
+        self.session.execute(
+            insert(PontajProjection),
+            [
+                {
+                    "tenant_id": tenant_id,
+                    "month_id": month.id,
+                    "person_id": row.person_id,
+                    "business_date": row.business_date,
+                    "revision": revision,
+                    "status": row.status.value,
+                    "start_time": row.start,
+                    "end_time": row.end,
+                    "pause_minutes": row.pause_minutes,
+                    "hours": row.hours,
+                }
+                for row in rows
+            ],
+        )

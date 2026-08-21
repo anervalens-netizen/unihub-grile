@@ -106,16 +106,16 @@ def test_store_export_renders_grila_and_pontaj_tabs(session, faker_tenant):
     assert grila["A1"].value.startswith("Magazin:")
     pontaj = workbook["Pontaj"]
     assert pontaj.cell(row=1, column=1).value == "Persoana"
-    # day 1..31 in columns D..AG (4..34) + total AH at column 35
-    assert pontaj.cell(row=1, column=4).value == 1
-    assert pontaj.cell(row=1, column=34).value == 31
-    assert pontaj.cell(row=1, column=35).value == "Total ore (AH)"
+    # day 1..31 in columns C..AG (3..33) + total AH at column 34
+    assert pontaj.cell(row=1, column=3).value == 1
+    assert pontaj.cell(row=1, column=33).value == 31
+    assert pontaj.cell(row=1, column=34).value == "Total ore (AH)"
 
 
 def test_pontaj_uses_standard_c8_ag31_block_layout(session, faker_tenant):
     """Per docs/MOBIUP_RULE_PACK.md §7, the standard Pontaj tab uses
     block rows 8 and 11 (the 3-row block: net hours / interval / pause)
-    with column D..AG = day 1..31 and column AH = total."""
+    with column C..AG = day 1..31 and column AH = total."""
     from ugrile.domain.enums import DayStatus, WorkingKind
     from ugrile.services.calendar import CalendarChange, CalendarService
 
@@ -155,10 +155,10 @@ def test_pontaj_uses_standard_c8_ag31_block_layout(session, faker_tenant):
     assert pontaj.cell(row=8, column=1).value
     assert "Interval:" in str(pontaj.cell(row=9, column=1).value)
     assert "Pauza:" in str(pontaj.cell(row=10, column=1).value)
-    # day 1 in column D (4) must carry 11.00 hours.
-    assert pontaj.cell(row=8, column=4).value == "11.00"
-    # Total in column AH (35) for the single-agent block at row 8: 31 x 11 = 341.
-    total_cell = pontaj.cell(row=8, column=35).value
+    # day 1 in column C (3) must carry 11.00 hours.
+    assert pontaj.cell(row=8, column=3).value == "11.00"
+    # Total in column AH (34) for the single-agent block at row 8: 31 x 11 = 341.
+    total_cell = pontaj.cell(row=8, column=34).value
     assert float(total_cell.replace(",", ".")) == 31 * 11
 
 

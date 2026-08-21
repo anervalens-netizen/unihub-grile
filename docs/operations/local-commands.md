@@ -123,7 +123,7 @@ same store-day yields 409 with `COVERAGE_INVARIANT`.)
 ## 9. Real concurrent PostgreSQL AC-02
 
 ```bash
-UGRILE_PG_URL=postgresql+psycopg://grile:grile@127.0.0.1:55432/grile \
+UGRILE_PG_URL=postgresql+psycopg://grile:grile@127.0.0.1:55432/grile_test \
   .venv/bin/python -m pytest tests/integration/test_postgres_concurrent_ac02.py -v
 ```
 
@@ -138,9 +138,8 @@ cross-tenant `home_store_id`. The tests are skipped automatically when
 
 ```bash
 docker compose up -d
-# seed admin/month
-docker exec ugrile-api-local /opt/venv/bin/alembic upgrade head
-docker exec ugrile-api-local /opt/venv/bin/python -c \
+# `migrate` completes before API/worker start; seed admin/month
+docker exec ugrile-api-local python -c \
   "import sys; sys.path.insert(0,'/app'); \
    from ugrile.core.database import reset_engine, get_sessionmaker; reset_engine(); \
    from ugrile.domain.enums import RoleName, MonthState; \

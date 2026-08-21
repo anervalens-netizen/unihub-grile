@@ -161,6 +161,58 @@ def test_export_store_polling_returns_done_with_artifact_and_checksum(engine, fa
             _cleanup_artifact(artifact_uri)
 
 
+def test_export_download_streams_done_artifact_and_rejects_pending_or_unknown(engine, faker_tenant):
+    """The stable ExportRun id downloads exactly the worker artifact."""
+    admin = _build_admin(faker_tenant)
+    headers = {
+        "X-Ugrile-Identity": admin.user_id,
+        "X-Ugrile-Tenant": admin.tenant_id,
+    }
+    with TestClient(create_app()) as test_client:
+        with database.session_scope() as session:
+            month = _seed_open_month(session, faker_tenant)
+            month_id = month.id
+        data = _enqueue_export(
+            test_client,
+            admin,
+            month_id,
+            path="/export/store",
+            body={"store_id": faker_tenant["store_id"], "idempotency_key": "xlsx-download"},
+        )
+        pending = test_client.get(
+            f"/months/{month_id}/export/jobs/{data['job_id']}/download", headers=headers
+        )
+        assert pending.status_code == 404
+        assert pending.json()["details"]["code"] == "EXPORT_ARTIFACT_NOT_FOUND"
+
+        assert _drain_worker_until_empty() == 1
+        status = _poll_export(test_client, admin, month_id, data["job_id"])
+        artifact_uri = status["artifact_uri"]
+        try:
+            with open(artifact_uri, "rb") as fh:
+                expected = fh.read()
+            downloaded = test_client.get(
+                f"/months/{month_id}/export/jobs/{data['job_id']}/download", headers=headers
+            )
+            assert downloaded.status_code == 200, downloaded.text
+            assert downloaded.content == expected
+            assert downloaded.headers["content-type"].startswith(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            assert downloaded.headers["content-disposition"].startswith("attachment;")
+            assert hashlib.sha256(downloaded.content).hexdigest() == json.loads(
+                status["summary"]
+            )["checksum_sha256"]
+        finally:
+            _cleanup_artifact(artifact_uri)
+
+        unknown = test_client.get(
+            f"/months/{month_id}/export/jobs/999999/download", headers=headers
+        )
+        assert unknown.status_code == 404
+        assert unknown.json()["details"]["code"] == "EXPORT_JOB_NOT_FOUND"
+
+
 def test_export_bulk_polling_returns_done_with_zip_artifact(engine, faker_tenant):
     admin = _build_admin(faker_tenant)
     with TestClient(create_app()) as test_client:

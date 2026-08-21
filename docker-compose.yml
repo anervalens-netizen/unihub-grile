@@ -32,66 +32,65 @@ services:
     volumes:
       - ugrile-pg-data:/var/lib/postgresql/data
 
-  api:
-    image: python:3.12-slim
-    container_name: ugrile-api-local
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: ugrile-backend-local
+    container_name: ugrile-migrate-local
     depends_on:
       postgres:
         condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://grile:grile@postgres:5432/grile
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+    command: ["alembic", "upgrade", "head"]
+
+  api:
+    image: ugrile-backend-local
+    container_name: ugrile-api-local
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql+psycopg://grile:grile@postgres:5432/grile
       UGRILE_HOST: 0.0.0.0
       UGRILE_PORT: "8080"
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      PIP_ROOT_USER_ACTION: "ignore"
+      UGR_S5_EXPORT_DIR: /var/lib/ugrile/exports
     working_dir: /app
     volumes:
       - ./backend:/app
+      - ugrile-export-data:/var/lib/ugrile/exports
     command:
-      - bash
-      - -c
-      - |
-        set -euo pipefail
-        # The python:3.12-slim image does not ship python3-venv; install
-        # backend dependencies into the system interpreter instead of a
-        # virtualenv. The bind mount already provides the project tree.
-        apt-get update -qq
-        apt-get install -y -qq --no-install-recommends python3-venv >/dev/null
-        python -m venv /opt/venv
-        /opt/venv/bin/pip install --quiet --upgrade pip
-        /opt/venv/bin/pip install --quiet -e ".[dev]"
-        /opt/venv/bin/alembic upgrade head
-        /opt/venv/bin/uvicorn ugrile.main:app --host 0.0.0.0 --port 8080
+      - uvicorn
+      - ugrile.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
     ports:
       - "8080:8080"
 
   worker:
-    image: python:3.12-slim
+    image: ugrile-backend-local
     container_name: ugrile-worker-local
     depends_on:
-      postgres:
-        condition: service_healthy
-      api:
-        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql+psycopg://grile:grile@postgres:5432/grile
       UGRILE_WORKER_POLL_SECONDS: "0.25"
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      PIP_ROOT_USER_ACTION: "ignore"
+      UGR_S5_EXPORT_DIR: /var/lib/ugrile/exports
     working_dir: /app
     volumes:
       - ./backend:/app
+      - ugrile-export-data:/var/lib/ugrile/exports
     command:
-      - bash
-      - -c
-      - |
-        set -euo pipefail
-        apt-get update -qq
-        apt-get install -y -qq --no-install-recommends python3-venv >/dev/null
-        python -m venv /opt/venv
-        /opt/venv/bin/pip install --quiet --upgrade pip
-        /opt/venv/bin/pip install --quiet -e ".[dev]"
-        /opt/venv/bin/python -m ugrile.worker.worker
+      - python
+      - -m
+      - ugrile.worker.worker
     restart: unless-stopped
 
   web:
@@ -129,3 +128,4 @@ services:
 volumes:
   ugrile-pg-data:
   ugrile-web-node_modules:
+  ugrile-export-data:
