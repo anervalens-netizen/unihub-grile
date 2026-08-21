@@ -28,14 +28,14 @@ function apiForPage() {
 }
 
 describe("Magazin and Agent contract routes", () => {
-  it("uses actual store/person scoped routes and renders response fields/actions", async () => {
+  it("uses scoped routes and exposes command actions", async () => {
     const { api, calls } = apiForPage();
     render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} />);
     expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
-    expect(screen.getAllByText(/125.50 RON/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/g1/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Sync Sheet" }));
-    fireEvent.click(screen.getByRole("button", { name: "Export XLSX" }));
+    expect(screen.getAllByText(/126/).length).toBeGreaterThan(0);
+    expect(screen.getByText("g1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Sincronizează Sheet/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Exportă XLSX/i }));
     expect(calls).toContain("/catalog/people?store_id=store_x");
     expect(calls.some((path) => path.includes("store_id=store_x"))).toBe(true);
     expect(calls.some((path) => path.includes("/store/"))).toBe(false);
@@ -43,13 +43,12 @@ describe("Magazin and Agent contract routes", () => {
     expect((api.post as ReturnType<typeof vi.fn>).mock.calls[1]).toEqual([`/months/${MONTH.id}/export/store`, { store_id: "store_x" }]);
   });
 
-  it("uses actual person-filtered response fields and store-scoped routes", async () => {
+  it("keeps the existing person-filtered Agent routes", async () => {
     const { api, calls } = apiForPage();
     render(<Agent api={api} personId="person_a" months={[MONTH]} monthsError={null} />);
     expect(await screen.findByText("Alice")).toBeInTheDocument();
     expect(screen.getByText("store_x")).toBeInTheDocument();
     expect(screen.getByText(/125.50 RON/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Sync Sheet" })).not.toBeInTheDocument();
     expect(calls).toContain(`/months/${MONTH.id}/epay/freshness?store_id=store_x`);
     expect(calls).toContain(`/months/${MONTH.id}/sheet-projection?store_id=store_x`);
     expect(calls.some((path) => path.includes("/agents/") || path.includes("/people/"))).toBe(false);

@@ -119,6 +119,6 @@ describe("Program page", () => {
     fireEvent.click(screen.getByRole("button", { name: "Salvează" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/revizie stale/i);
     expect(screen.getByRole("button", { name: "Salvează" })).toBeInTheDocument();
-    expect(screen.getByText("store_x · Demo Store")).toBeInTheDocument();
+    expect(screen.getByRole("rowheader", { name: "store_x · Demo Store" })).toBeInTheDocument();
   });
 });
