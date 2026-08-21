@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   type ApiClient,
   type MonthSummary,
   type OverviewReport,
+  type StoreSummary,
 } from "../api/client";
 import { MonthSelector } from "../components/MonthSelector";
+import { navigate } from "../router";
 
 export interface OverviewProps {
   api: ApiClient;
@@ -15,6 +17,7 @@ export interface OverviewProps {
 export function Overview({ api, months, monthsError }: OverviewProps) {
   const [monthId, setMonthId] = useState<string | null>(months[0]?.id ?? null);
   const [report, setReport] = useState<OverviewReport | null>(null);
+  const [stores, setStores] = useState<StoreSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -28,147 +31,175 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
     }
     let cancelled = false;
     setError(null);
-    api
-      .get<OverviewReport>(`/months/${monthId}/overview`)
-      .then((response) => {
-        if (!cancelled) setReport(response);
+    Promise.all([
+      api.get<OverviewReport>(`/months/${monthId}/overview`),
+      api.get<StoreSummary[]>("/catalog/stores"),
+    ])
+      .then(([overview, storeList]) => {
+        if (cancelled) return;
+        setReport(overview);
+        setStores(storeList.filter((store) => store.is_active));
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       });
     return () => {
       cancelled = true;
     };
   }, [api, monthId]);
 
+  const issuesByStore = useMemo(() => {
+    const map = new Map<string, { count: number; severity: number }>();
+    for (const item of report?.needs_attention ?? []) {
+      if (!item.store_id) continue;
+      const current = map.get(item.store_id) ?? { count: 0, severity: 0 };
+      map.set(item.store_id, {
+        count: current.count + 1,
+        severity: Math.max(current.severity, item.severity),
+      });
+    }
+    return map;
+  }, [report]);
+
   return (
-    <section className="card" aria-label="Overview">
-      <header className="card-header">
-        <h2>Overview</h2>
-        <MonthSelector
-          months={months}
-          value={monthId}
-          onChange={setMonthId}
-          error={monthsError}
-        />
-      </header>
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
+    <div className="command-page">
+      <section className="command-hero">
+        <div>
+          <span className="eyebrow">NETWORK CONTROL</span>
+          <h2>Rețeaua, într-o singură privire</h2>
+          <p>Prioritizează excepțiile, intră direct într-un magazin și modifică programul fără să pierzi contextul lunii.</p>
+        </div>
+        <div className="command-hero-actions">
+          <MonthSelector months={months} value={monthId} onChange={setMonthId} error={monthsError} />
+          <button type="button" className="button-secondary" onClick={() => navigate("program")}>Deschide calendarul</button>
+          <button type="button" className="button-primary" onClick={() => navigate("exceptions")}>Vezi excepțiile</button>
+        </div>
+      </section>
+
+      {error && <p className="error" role="alert">{error}</p>}
+      {!report && !error && <div className="loading-panel">Încarc situația operațională…</div>}
+
+      {report && (
+        <>
+          <section className="kpi-strip" aria-label="Indicatori principali">
+            <Metric label="Magazine acoperite" value={`${report.kpis.stores_covered}/${report.kpis.stores_total}`} detail="acoperire program" tone={report.kpis.stores_covered === report.kpis.stores_total ? "ok" : "warn"} />
+            <Metric label="Zile neacoperite" value={String(report.kpis.days_uncovered)} detail="necesită programare" tone={report.kpis.days_uncovered === 0 ? "ok" : "err"} />
+            <Metric label="Conflicte" value={String(report.kpis.conflicts)} detail="agent / zi" tone={report.kpis.conflicts === 0 ? "ok" : "err"} />
+            <Metric label="Suplimentare" value={String(report.kpis.extra_home_days + report.kpis.extra_other_days)} detail={`${report.kpis.extra_home_days} aici · ${report.kpis.extra_other_days} extern`} tone="neutral" />
+            <Metric label="Vânzări neatribuite" value={String(report.kpis.sales_unattributed)} detail="de verificat" tone={report.kpis.sales_unattributed === 0 ? "ok" : "warn"} />
+          </section>
+
+          <div className="command-grid">
+            <section className="panel network-panel">
+              <div className="panel-heading">
+                <div>
+                  <span className="eyebrow">MAGAZINE</span>
+                  <h3>Control rețea</h3>
+                </div>
+                <span className="context-pill">{report.state} · rev {report.revision}</span>
+              </div>
+              <div className="store-grid">
+                {stores.map((store) => {
+                  const issue = issuesByStore.get(store.id);
+                  const status = !issue ? "ok" : issue.severity >= 2 ? "err" : "warn";
+                  return (
+                    <button key={store.id} type="button" className="store-command-card" onClick={() => navigate("store", store.id)}>
+                      <div className="store-card-topline">
+                        <span className={`status-dot status-${status === "ok" ? "online" : status === "warn" ? "checking" : "offline"}`} />
+                        <span>{status === "ok" ? "Operațional" : status === "warn" ? "Necesită atenție" : "Intervenție"}</span>
+                        <span className="store-code">{store.internal_code}</span>
+                      </div>
+                      <strong>{store.name}</strong>
+                      <small>{store.company_code || "Fără firmă"}</small>
+                      <div className="store-card-footer">
+                        <span>{issue ? `${issue.count} excepție${issue.count === 1 ? "" : "i"}` : "Fără excepții"}</span>
+                        <span className="store-open">Control →</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+
+            <section className="panel attention-panel">
+              <div className="panel-heading">
+                <div>
+                  <span className="eyebrow">PRIORITĂȚI</span>
+                  <h3>Necesită atenție</h3>
+                </div>
+                <span className="count-badge">{report.needs_attention.length}</span>
+              </div>
+              {report.needs_attention.length === 0 ? (
+                <div className="empty-state"><strong>Totul este în regulă.</strong><span>Nicio excepție deschisă pentru luna selectată.</span></div>
+              ) : (
+                <div className="attention-list">
+                  {report.needs_attention.slice(0, 8).map((item, index) => (
+                    <button
+                      type="button"
+                      className="attention-item"
+                      key={`${item.code}-${item.business_date ?? "none"}-${index}`}
+                      onClick={() => item.store_id ? navigate("store", item.store_id) : navigate("exceptions")}
+                    >
+                      <span className={`severity-rail severity-${item.severity}`} />
+                      <span className="attention-copy">
+                        <strong>{item.title}</strong>
+                        <small>{item.detail}</small>
+                      </span>
+                      <span className="attention-date">{item.business_date?.slice(8, 10) ?? "—"}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+
+          <section className="panel managers-panel">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">RESPONSABILITATE</span>
+                <h3>Manageri</h3>
+              </div>
+            </div>
+            <div className="manager-cards">
+              {report.managers.filter((row) => row.stores_total > 0).map((row) => {
+                const coverage = row.stores_total === 0 ? 0 : Math.round((row.stores_covered / row.stores_total) * 100);
+                return (
+                  <article className="manager-card" key={row.user_id}>
+                    <div className="manager-avatar" aria-hidden="true">{initials(row.display_name)}</div>
+                    <div className="manager-copy">
+                      <strong>{row.display_name}</strong>
+                      <span>{row.stores_covered}/{row.stores_total} magazine · {row.days_uncovered} zile neacoperite</span>
+                    </div>
+                    <div className="coverage-meter" aria-label={`Acoperire ${coverage}%`}><span style={{ width: `${coverage}%` }} /></div>
+                    <strong className="coverage-value">{coverage}%</strong>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        </>
       )}
-      {report && <OverviewBody report={report} />}
-    </section>
-  );
-}
-
-interface OverviewBodyProps {
-  report: OverviewReport;
-}
-
-function OverviewBody({ report }: OverviewBodyProps) {
-  const { kpis, managers, needs_attention } = report;
-  const scopedManagers = managers.filter((row) => row.stores_total > 0);
-  return (
-    <div className="overview-grid">
-      <KpiCard
-        title="Magazine acoperite"
-        value={`${kpis.stores_covered} / ${kpis.stores_total}`}
-        tone={kpis.stores_covered === kpis.stores_total ? "ok" : "warn"}
-      />
-      <KpiCard
-        title="Zile neacoperite"
-        value={String(kpis.days_uncovered)}
-        tone={kpis.days_uncovered === 0 ? "ok" : "err"}
-      />
-      <KpiCard
-        title="Conflicte agent/zi"
-        value={String(kpis.conflicts)}
-        tone={kpis.conflicts === 0 ? "ok" : "err"}
-      />
-      <KpiCard
-        title="Zile suplimentare"
-        value={`${kpis.extra_home_days} acasă · ${kpis.extra_other_days} alt mag.`}
-        tone="muted"
-      />
-      <KpiCard
-        title="Vânzări neatribuite"
-        value={String(kpis.sales_unattributed)}
-        tone={kpis.sales_unattributed === 0 ? "ok" : "warn"}
-      />
-      <KpiCard
-        title="E-pay"
-        value={kpis.epay_fresh ? "Proaspăt" : `${kpis.epay_invalid} invalide`}
-        tone={kpis.epay_fresh ? "ok" : "warn"}
-      />
-      <KpiCard
-        title="Google / Export"
-        value={`${kpis.sheet_sync_total} joburi · ${kpis.sheet_sync_stale} pending · ${kpis.sheet_sync_error} failed`}
-        tone={kpis.sheet_sync_error > 0 ? "err" : kpis.sheet_sync_stale > 0 ? "warn" : "ok"}
-      />
-      <KpiCard
-        title="Revizie"
-        value={`${report.state} · rev ${report.revision}`}
-        tone="muted"
-      />
-
-      <section className="overview-card overview-needs" aria-label="Necesită atenție">
-        <h3>Necesită atenție</h3>
-        {needs_attention.length === 0 ? (
-          <p className="muted">Nicio excepție deschisă.</p>
-        ) : (
-          <ul className="needs-list">
-            {needs_attention.slice(0, 10).map((item) => (
-              <li key={`${item.code}-${item.business_date}-${item.store_id ?? ""}`}>
-                <span className={`severity-chip severity-${item.severity}`}>
-                  S{item.severity}
-                </span>
-                <strong>{item.title}</strong>
-                <span className="muted">{item.detail}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="overview-card overview-managers" aria-label="Manageri">
-        <h3>Manageri</h3>
-        <table className="managers-table">
-          <thead>
-            <tr>
-              <th scope="col">Manager</th>
-              <th scope="col">Magazine acoperite</th>
-              <th scope="col">Zile neacoperite</th>
-            </tr>
-          </thead>
-          <tbody>
-            {scopedManagers.map((row) => (
-              <tr key={row.user_id}>
-                <td>{row.display_name}</td>
-                <td>
-                  {row.stores_covered} / {row.stores_total}
-                </td>
-                <td>{row.days_uncovered}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
     </div>
   );
 }
 
-interface KpiCardProps {
-  title: string;
+interface MetricProps {
+  label: string;
   value: string;
-  tone: "ok" | "warn" | "err" | "muted";
+  detail: string;
+  tone: "ok" | "warn" | "err" | "neutral";
 }
 
-function KpiCard({ title, value, tone }: KpiCardProps) {
+function Metric({ label, value, detail, tone }: MetricProps) {
   return (
-    <article className={`kpi-card tone-${tone}`} aria-label={title}>
-      <span className="kpi-title muted">{title}</span>
-      <span className="kpi-value">{value}</span>
+    <article className={`metric-card metric-${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
     </article>
   );
+}
+
+function initials(name: string): string {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("");
 }
