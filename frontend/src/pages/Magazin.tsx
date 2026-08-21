@@ -65,7 +65,11 @@ export function Magazin({ api, storeId, months, monthsError }: MagazinProps) {
       });
       setTotals(totalsResponse);
       setAttribution({ ...attributionResponse, rows: attributionResponse.rows.filter((row) => row.store_id === storeId) });
-      setGridRows(gridResponseRows.filter((row) => row.store_id === storeId));
+      setGridRows(
+        gridResponseRows.filter(
+          (row) => row.store_id === storeId && row.revision === gridResponse.revision,
+        ),
+      );
       setFreshness(freshnessResponse);
       setProjection(projectionResponse);
     }).catch((e: unknown) => {
@@ -84,6 +88,10 @@ export function Magazin({ api, storeId, months, monthsError }: MagazinProps) {
 
   const salesByPerson = new Map<string, number>();
   attribution?.rows.forEach((row) => salesByPerson.set(row.person_id, (salesByPerson.get(row.person_id) ?? 0) + Number(row.amount)));
+  const storeSalesTotal = Array.from(salesByPerson.values()).reduce(
+    (total, amount) => total + amount,
+    0,
+  );
 
   return (
     <section className="card" aria-label="Magazin">
@@ -101,7 +109,7 @@ export function Magazin({ api, storeId, months, monthsError }: MagazinProps) {
         <section>
           <h3>Atribuire vânzări</h3>
           {people.map((person) => <div key={person.id}>{person.display_name} — {salesByPerson.get(person.id)?.toFixed(2) ?? "0.00"} RON</div>)}
-          <p>Total magazin: {attribution ? `${Number(attribution.company_total).toFixed(2)} RON` : "—"}</p>
+          <p>Total magazin: {attribution ? `${storeSalesTotal.toFixed(2)} RON` : "—"}</p>
         </section>
         <section>
           <h3>E-pay</h3>

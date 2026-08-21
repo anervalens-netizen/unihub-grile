@@ -111,7 +111,7 @@ function PageRouter({ api, route, months, monthsError }: PageRouterProps) {
       return (
         <Magazin
           api={api}
-          storeId={route.segments[1] ?? null}
+          storeId={route.segments[0] ?? null}
           months={months}
           monthsError={monthsError}
         />
@@ -120,7 +120,7 @@ function PageRouter({ api, route, months, monthsError }: PageRouterProps) {
       return (
         <Agent
           api={api}
-          personId={route.segments[1] ?? null}
+          personId={route.segments[0] ?? null}
           months={months}
           monthsError={monthsError}
         />
