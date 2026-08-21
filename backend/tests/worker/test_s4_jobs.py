@@ -18,7 +18,6 @@ from sqlalchemy.exc import IntegrityError
 
 from ugrile.connectors.fixtures import FIXTURE_TENANT_ID
 from ugrile.domain.enums import JobKind
-from ugrile.repositories.models import ExportRun
 from ugrile.worker.jobs import get_handler, known_kinds
 from ugrile.worker.worker import WORKER_LOCKED_BY, enqueue, run_once
 
@@ -37,17 +36,16 @@ def test_export_xlsx_store_handler_persists_export_run(session):
         tenant_id=FIXTURE_TENANT_ID,
         kind=JobKind.EXPORT_XLSX_STORE.value,
         idempotency_key="xlsx-store-1",
-        payload={"store_id": "store_x", "month": "2026-08"},
+        payload={"store_id": "store_x", "month_id": "month_x"},
     )
     session.commit()
+    # Handler validates month_id/store_id; the unknown month id moves the
+    # row to FAILED with a typed DOMAIN_ERROR reason.
     row, result = run_once(locked_by=WORKER_LOCKED_BY)
-    assert result is not None
-    assert result.status == "DONE"
-    assert result.payload["stage"] == "ENQUEUED_S4"
-    session.commit()
-    runs = list(session.query(ExportRun))
-    assert runs and runs[0].kind == "EXPORT_XLSX_STORE"
-    assert runs[0].status == "ENQUEUED"
+    assert result is None
+    assert row is not None
+    assert row.status == "FAILED"
+    assert "month not found" in (row.last_error or "")
 
 
 def test_google_projection_store_handler_requires_month_id(session):

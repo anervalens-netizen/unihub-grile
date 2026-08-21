@@ -209,20 +209,130 @@ def _job_export_scaffold(
 
 
 def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
-    return _job_export_scaffold(
-        session, tenant_id, payload, kind=JobKind.EXPORT_XLSX_STORE, label="xlsx_store"
+    """S5b real writer for per-store XLSX export."""
+    from ..repositories.months import MonthRepository
+    from ..services.xlsx_export import (
+        record_export_run,
+        render_store_export,
+    )
+
+    month_id = payload.get("month_id")
+    store_id = payload.get("store_id")
+    if not month_id or not store_id:
+        raise DomainError(
+            "month_id and store_id are required",
+            details={"payload": payload},
+        )
+    month = MonthRepository(session).get(month_id)
+    if month.tenant_id != tenant_id:
+        raise DomainError(
+            "tenant mismatch in EXPORT_XLSX_STORE payload",
+            details={"month_tenant": month.tenant_id, "tenant": tenant_id},
+        )
+    envelope = render_store_export(
+        session, tenant_id=tenant_id, month=month, store_id=store_id
+    )
+    artifact_uri = payload.get("artifact_uri") or envelope.filename
+    record_export_run(
+        session,
+        tenant_id=tenant_id,
+        kind=JobKind.EXPORT_XLSX_STORE.value,
+        envelope=envelope,
+        artifact_uri=artifact_uri,
+    )
+    return JobResult(
+        status="DONE",
+        payload={
+            "filename": envelope.filename,
+            "checksum_sha256": envelope.checksum,
+            "summary": envelope.summary,
+        },
     )
 
 
 def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
-    return _job_export_scaffold(
-        session, tenant_id, payload, kind=JobKind.EXPORT_XLSX_BULK, label="xlsx_bulk"
+    """S5b real writer for bulk ZIP export."""
+    from ..repositories.months import MonthRepository
+    from ..services.xlsx_export import (
+        record_export_run,
+        render_bulk_export,
+    )
+
+    month_id = payload.get("month_id")
+    if not month_id:
+        raise DomainError(
+            "month_id is required",
+            details={"payload": payload},
+        )
+    month = MonthRepository(session).get(month_id)
+    if month.tenant_id != tenant_id:
+        raise DomainError(
+            "tenant mismatch in EXPORT_XLSX_BULK payload",
+            details={"month_tenant": month.tenant_id, "tenant": tenant_id},
+        )
+    store_ids = payload.get("store_ids")
+    envelope = render_bulk_export(
+        session,
+        tenant_id=tenant_id,
+        month=month,
+        store_ids=[str(s) for s in store_ids] if store_ids else None,
+    )
+    artifact_uri = payload.get("artifact_uri") or envelope.filename
+    record_export_run(
+        session,
+        tenant_id=tenant_id,
+        kind=JobKind.EXPORT_XLSX_BULK.value,
+        envelope=envelope,
+        artifact_uri=artifact_uri,
+    )
+    return JobResult(
+        status="DONE",
+        payload={
+            "filename": envelope.filename,
+            "checksum_sha256": envelope.checksum,
+            "summary": envelope.summary,
+        },
     )
 
 
 def _job_export_pontaj_only(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
-    return _job_export_scaffold(
-        session, tenant_id, payload, kind=JobKind.EXPORT_PONTAJ_ONLY, label="pontaj_only"
+    """S5b real writer for the pontaj-only workbook."""
+    from ..repositories.months import MonthRepository
+    from ..services.xlsx_export import (
+        record_export_run,
+        render_pontaj_only_export,
+    )
+
+    month_id = payload.get("month_id")
+    if not month_id:
+        raise DomainError(
+            "month_id is required",
+            details={"payload": payload},
+        )
+    month = MonthRepository(session).get(month_id)
+    if month.tenant_id != tenant_id:
+        raise DomainError(
+            "tenant mismatch in EXPORT_PONTAJ_ONLY payload",
+            details={"month_tenant": month.tenant_id, "tenant": tenant_id},
+        )
+    envelope = render_pontaj_only_export(
+        session, tenant_id=tenant_id, month=month
+    )
+    artifact_uri = payload.get("artifact_uri") or envelope.filename
+    record_export_run(
+        session,
+        tenant_id=tenant_id,
+        kind=JobKind.EXPORT_PONTAJ_ONLY.value,
+        envelope=envelope,
+        artifact_uri=artifact_uri,
+    )
+    return JobResult(
+        status="DONE",
+        payload={
+            "filename": envelope.filename,
+            "checksum_sha256": envelope.checksum,
+            "summary": envelope.summary,
+        },
     )
 
 
