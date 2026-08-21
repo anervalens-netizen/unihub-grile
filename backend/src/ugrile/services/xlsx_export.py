@@ -36,15 +36,18 @@ from decimal import Decimal
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.worksheet import Worksheet
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..domain.enums import ConnectorGeneration
+from ..domain.rule_pack import RULE_PACK_VERSION
 from ..repositories.models import (
     ExportRun,
     GridCalculation,
     Month,
     Person,
     PontajProjection,
+    SalesStoreDay,
     Store,
 )
 
@@ -95,6 +98,37 @@ def _checksum(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _determine_generation(
+    session: Session,
+    *,
+    tenant_id: str,
+    year: int,
+    month: int,
+) -> str:
+    """Return the canonical connector generation for the bulk export.
+
+    Prefer the unique generation carried by ``SalesStoreDay`` rows for the
+    tenant/month when exactly one exists; otherwise fall back to
+    ``FIXTURE_V1`` (the only connector generation at S5). The fallback
+    is acceptable because no live connector is wired yet.
+    """
+
+    rows = list(
+        session.execute(
+            select(SalesStoreDay.generation)
+            .distinct()
+            .where(
+                SalesStoreDay.tenant_id == tenant_id,
+                func.extract("year", SalesStoreDay.business_date) == year,
+                func.extract("month", SalesStoreDay.business_date) == month,
+            )
+        ).scalars()
+    )
+    if len(rows) == 1:
+        return rows[0]
+    return ConnectorGeneration.FIXTURE_V1.value
+
+
 def _header_fill() -> PatternFill:
     return PatternFill("solid", fgColor="1F5FBF")
 
@@ -122,9 +156,22 @@ def _write_grila_tab(
     ws["A2"] = f"Cod intern: {store.internal_code}"
     ws["A3"] = f"Luna: {month.year:04d}-{month.month:02d}  Revizie: {month.revision}"
     ws["A4"] = f"Schema: {SCHEMA}"
-    headers = ["Persoana", "Acord global", "Salariu fix", "Tichete", "Comision principal",
-               "Bonus", "Plata fixa extra", "Comision EXTRA_OTHER", "Comision SIM",
-               "Comision E-pay", "Incentive", "Flip", "Total salariu", "Salariu cash"]
+    headers = [
+        "Persoana",
+        "Acord global",
+        "Salariu fix",
+        "Tichete",
+        "Comision principal",
+        "Bonus",
+        "Plata fixa extra",
+        "Comision EXTRA_OTHER",
+        "Comision SIM",
+        "Comision E-pay",
+        "Incentive",
+        "Flip",
+        "Total salariu",
+        "Salariu cash",
+    ]
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=6, column=col, value=header)
         cell.fill = _header_fill()
@@ -155,9 +202,13 @@ def _write_grila_tab(
             cell.alignment = Alignment(horizontal="right")
         row += 1
     if holiday_labels:
-        ws.cell(row=row + 1, column=1, value="Sarbatori legale (marker informativ):").font = Font(italic=True)
+        ws.cell(row=row + 1, column=1, value="Sarbatori legale (marker informativ):").font = Font(
+            italic=True
+        )
         for offset, (d, label) in enumerate(sorted(holiday_labels.items()), start=1):
-            ws.cell(row=row + 1 + offset, column=2, value=f"{d.strftime('%d/%m/%Y')}").border = _thin_border()
+            ws.cell(
+                row=row + 1 + offset, column=2, value=f"{d.strftime('%d/%m/%Y')}"
+            ).border = _thin_border()
             ws.cell(row=row + 1 + offset, column=3, value=label).border = _thin_border()
 
 
@@ -270,9 +321,7 @@ def render_store_export(
     )
     persons = {
         p.id: p
-        for p in session.execute(
-            select(Person).where(Person.tenant_id == tenant_id)
-        ).scalars()
+        for p in session.execute(select(Person).where(Person.tenant_id == tenant_id)).scalars()
     }
 
     wb = Workbook()
@@ -331,9 +380,7 @@ def render_pontaj_only_export(
     )
     persons = {
         p.id: p
-        for p in session.execute(
-            select(Person).where(Person.tenant_id == tenant_id)
-        ).scalars()
+        for p in session.execute(select(Person).where(Person.tenant_id == tenant_id)).scalars()
     }
 
     wb = Workbook()
@@ -379,6 +426,12 @@ def render_bulk_export(
         raise ValueError("NO_STORES")
 
     entries: list[dict[str, object]] = []
+    generation = _determine_generation(
+        session,
+        tenant_id=tenant_id,
+        year=month.year,
+        month=month.month,
+    )
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for store in stores:
@@ -402,10 +455,14 @@ def render_bulk_export(
             "year": month.year,
             "month": month.month,
             "revision": month.revision,
+            "generation": generation,
+            "rule_pack_version": RULE_PACK_VERSION,
             "store_count": len(entries),
             "entries": entries,
         }
-        zf.writestr("manifest.json", json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2))
+        zf.writestr(
+            "manifest.json", json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2)
+        )
     payload = buffer.getvalue()
     filename = f"ugrile_{month.year:04d}-{month.month:02d}_bulk.zip"
     checksum = _checksum(payload)

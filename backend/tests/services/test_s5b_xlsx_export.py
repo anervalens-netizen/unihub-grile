@@ -56,12 +56,16 @@ def _seed_full_month(session, faker_tenant, store_id: str, person_id: str) -> No
                 )
             ],
         )
-        if not session.execute(
-            select(SalesPersonDayProjection).where(
-                SalesPersonDayProjection.tenant_id == faker_tenant["tenant_id"],
-                SalesPersonDayProjection.business_date == date(2026, 8, day),
+        if (
+            not session.execute(
+                select(SalesPersonDayProjection).where(
+                    SalesPersonDayProjection.tenant_id == faker_tenant["tenant_id"],
+                    SalesPersonDayProjection.business_date == date(2026, 8, day),
+                )
             )
-        ).scalars().first():
+            .scalars()
+            .first()
+        ):
             session.add(
                 SalesPersonDayProjection(
                     tenant_id=faker_tenant["tenant_id"],
@@ -76,9 +80,7 @@ def _seed_full_month(session, faker_tenant, store_id: str, person_id: str) -> No
                     working_kind="NORMAL",
                 )
             )
-    GridService(session).compute_and_persist(
-        tenant_id=faker_tenant["tenant_id"], month=month
-    )
+    GridService(session).compute_and_persist(tenant_id=faker_tenant["tenant_id"], month=month)
     session.commit()
 
 
@@ -117,9 +119,7 @@ def test_pontaj_only_export_spans_every_person(session, faker_tenant):
         person_id=faker_tenant["person_a_id"],
     )
     month = MonthRepository(session).get_or_create(faker_tenant["tenant_id"], 2026, 8)
-    envelope = render_pontaj_only_export(
-        session, tenant_id=faker_tenant["tenant_id"], month=month
-    )
+    envelope = render_pontaj_only_export(session, tenant_id=faker_tenant["tenant_id"], month=month)
     workbook = load_workbook(io.BytesIO(envelope.bytes_))
     assert workbook.active is not None
     ws = workbook.active
@@ -134,14 +134,28 @@ def test_bulk_export_zips_per_store_with_manifest(session, faker_tenant):
         person_id=faker_tenant["person_a_id"],
     )
     month = MonthRepository(session).get_or_create(faker_tenant["tenant_id"], 2026, 8)
-    envelope = render_bulk_export(
-        session, tenant_id=faker_tenant["tenant_id"], month=month
-    )
+    envelope = render_bulk_export(session, tenant_id=faker_tenant["tenant_id"], month=month)
     with zipfile.ZipFile(io.BytesIO(envelope.bytes_)) as zf:
         names = zf.namelist()
         manifest_bytes = zf.read("manifest.json")
     manifest = json.loads(manifest_bytes)
     assert "manifest.json" in names
     assert manifest["schema"] == "UGRILE-S5-XLSX-V1"
+    # Frozen AC-14 contract: manifest MUST carry the source generation
+    # and the rule pack version that produced the workbooks. Source is
+    # the connector generation (FIXTURE_V1 at S5) and the canonical V1
+    # rule pack ("mobiup-v1-compat").
+    assert manifest["generation"] == "FIXTURE_V1"
+    assert manifest["rule_pack_version"] == "mobiup-v1-compat"
     assert manifest["store_count"] >= 1
-    assert all(entry["checksum_sha256"] == entry["checksum_sha256"] for entry in manifest["entries"])
+    # Each entry's checksum must match the bytes persisted in the ZIP
+    # (proves the manifest is bound to the actual workbook, not an
+    # independent commissioning field).
+    with zipfile.ZipFile(io.BytesIO(envelope.bytes_)) as zf:
+        manifest_checksums = {
+            entry["filename"]: entry["checksum_sha256"] for entry in manifest["entries"]
+        }
+        for filename, expected_checksum in manifest_checksums.items():
+            assert (
+                hashlib.sha256(zf.read(filename)).hexdigest() == expected_checksum
+            ), f"checksum mismatch for {filename}"

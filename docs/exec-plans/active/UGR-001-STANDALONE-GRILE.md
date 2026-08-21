@@ -439,6 +439,53 @@ S7 gate: AC-18 plus a separately approved cutover contract.
   0007 downgrade/upgrade round-trip re-backfills correctly. The new focused
   tests fail on the pre-remediation source. AC-15 remains `UNVERIFIED` (only
   a read-only audit may mark it PASS).
+- 2026-08-21: S5b structural repair builder packet landed in exact commit
+  ahead of `fd67d67` (no prior control-state docs edit was present on the
+  worktree before the packet). The two concrete Luna S5b/AC-12 + AC-14
+  findings are repaired end-to-end:
+  (1) canary key contract — `ugrile.services.canary._actual_keys` and
+  `_expected_keys` now consume the actual adapter payload shape emitted
+  by `ugrile.services.google._build_payload`: Pontaj rows carry
+  `business_date` + `person_id` (no `month_id` is written), and Grila
+  rows carry `business_date` + `person_id` (no `store_id`/`month_id` —
+  the projection is store-scoped), so the canonical key contract is
+  `pontaj::<business_date>::<person>` and
+  `grila::<business_date>::<person>`. The expected lattice is built
+  from `SiteDayAssignment` (WORKING) and `PontajProjection` rows at the
+  projection revision read out of the payload via
+  `canary._payload_revision`, so the contract is precisely what the
+  adapter actually persists. The relaxed
+  `len(unexpected_keys) >= 1` placeholder check is removed; the new
+  test asserts `result.ok is True` on a clean seed and `result.ok is
+  False` with `missing_keys` non-empty on a tampered payload (one Grila
+  row dropped from the persisted JSON), pinning both the positive and
+  negative paths.
+  (2) bulk manifest contract — `ugrile.services.xlsx_export.render_bulk_export`
+  now writes `generation` (sourced from the unique `SalesStoreDay.generation`
+  for the tenant/month; fallback `FIXTURE_V1`) and `rule_pack_version`
+  (`mobiup-v1-compat` from `ugrile.domain.rule_pack.RULE_PACK_VERSION`)
+  into the `manifest.json` block. The bulk export test asserts both
+  fields are present and that each entry's `checksum_sha256` matches
+  the actual bytes in the ZIP (the previous tautology
+  `entry["checksum_sha256"] == entry["checksum_sha256"]` is replaced
+  by a real byte comparison). The `_seed_projection` helper in the
+  canary test now invokes the projection at the post-CAS revision
+  (`month.revision`); the previous `month.revision + 1` left the
+  projection with no PontajProjection rows and could not satisfy the
+  structural lattice. Checks on the exact commit: `278 passed`
+  (265 SQLite + 13 PostgreSQL integration; one new test added to
+  `test_s5b_canary.py` for the negative path), `ruff check src tests`
+  clean, `mypy --strict src` clean on 65 source files; fresh PostgreSQL
+  17 `alembic upgrade head` lands at `5a7b9c1d3e2f` with `alembic check`
+  reporting `No new upgrade operations detected.` Real PostgreSQL
+  smoke (`postgresql+psycopg://grile:grile@127.0.0.1:55432/grile`)
+  confirms `canary.ok = True` on a clean seed and `canary.ok = False`
+  with `missing_keys = ['grila::2026-09-01::person_smoke2_a']` after
+  tampering the payload; bulk export manifest carries
+  `generation=FIXTURE_V1` and `rule_pack_version=mobiup-v1-compat` on
+  the same fixture. AC-12 and AC-14 remain `UNVERIFIED` (only a
+  read-only audit may mark them PASS); the S5b code is now ready for
+  a fresh Luna audit, with no acceptance status change recorded.
 
 ## Attempts, failures, and discoveries
 
