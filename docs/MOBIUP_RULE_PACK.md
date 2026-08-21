@@ -1,179 +1,268 @@
-# Mobiup rule pack — contract grilă și Pontaj
+# Mobiup rule pack — grilă și Pontaj
 
-Status: contract de compatibilitate pentru Stage 3
+Status: **canonical Mobiup compatibility contract**  
+Initial version: `mobiup-v1-compat`
 
-Versiune inițială: `mobiup-v1-compat`
+This document defines Mobiup-specific payroll/Pontaj behavior only. It does not
+define project status, architecture or roadmap; those are controlled by issues
+#3/#4 and the canonical architecture/product documents.
 
-Surse read-only: V1 `grile-salarii@c131c21`, writerul/pilotul Retail V2 și
-capturile acceptate de utilizator.
+Sources used to establish compatibility were legacy V1, the Retail V2 pilot and
+accepted visual/business references. Those sources are evidence, not runtime
+dependencies.
 
-Acest document explică regulile Mobiup. Ele trebuie implementate într-un rule
-pack versionat și nu hardcodate în domeniul generic UniHub Grile. În caz de
-diferență între acest contract și o formulă legacy, Stage 3 se oprește și cere o
-decizie business; nu „repară” rezultatul prin aproximare.
+Mobiup rules must remain in a versioned rule pack and must not be scattered
+through the generic UniHub Grile domain/API.
 
-## 1. Autorități și intrări
+## 1. Authoritative inputs
 
-- calendarul managerului decide persoana, magazinul și clasificarea zilei;
-- connectorul furnizează vânzarea fizică magazin/zi, targetul lunar al
-  magazinului, cantitatea SIM și incentivele;
-- condițiile salariale effective-dated furnizează salariul fix și tichetele de
-  masă; managerul de program nu le editează;
-- Google Sheet furnizează numai cele două cantități E-pay validate;
-- calculele folosesc ID-uri stabile de persoană/magazin, niciodată numele sau
-  codul POS/TL ca identitate.
+- Grile calendar decides person, store and working classification for each day.
+- Connector snapshot supplies physical store/day sales, store monthly target,
+  authoritative selling-day divisor, SIM quantity and external incentive inputs.
+- Effective-dated HR/payroll master supplies fixed salary, meal tickets and the
+  accepted Flip adjustment state/value.
+- Google Sheet supplies only validated E-pay quantities.
+- Stable IDs are used for identity; names/POS/TL labels are presentation or
+  provenance only.
 
-V1 păstra salariul fix ca valoare, fără să îl derive. Valorile legacy observate
-sunt `2400` și `2600` RON. Acestea sunt dovezi de compatibilitate, nu o listă
-hardcodată pentru produsul nou. Tichetele sunt de asemenea intrare lunară; în
-capturile de referință valoarea este `480` RON.
+Missing payroll-significant data is an explicit anomaly. A preview may have a
+documented fallback where the implementation contract permits one, but a final
+close cannot silently treat an unknown required value as authoritative zero.
 
-## 2. Target și atribuire
+Observed legacy fixed salary values such as `2400`/`2600 RON` and ticket value
+`480 RON` are compatibility evidence, not hardcoded allowed-value lists.
 
-Pentru fiecare magazin:
+## 2. Target and attribution
+
+For a store:
 
 ```text
-target_zi_magazin = target_lunar_magazin / zile_vânzare_magazin
+target_day_store = monthly_store_target / store_sales_days
 ```
 
-Targetul principal al persoanei este suma targetelor zilnice pentru zilele în
-care lucrează în magazinul de bază, atât `NORMAL`, cât și `EXTRA_HOME`.
-`EXTRA_OTHER` folosește targetul zilnic al magazinului-gazdă și rămâne separat
-de targetul/realizatul principal de acasă.
+`store_sales_days` is the authoritative source divisor.
 
-Întreaga vânzare fizică a magazinului/zi este creditată persoanei din calendar.
-Reatribuirea schimbă numai creditul personal; totalul magazinului și companiei
-nu se copiază și nu se modifică.
+The person's main target is the sum of daily targets for days worked in the home
+store as `NORMAL` or `EXTRA_HOME`.
 
-## 3. Comisionul principal
+`EXTRA_OTHER` uses the host-store daily target and remains separate from the home
+main target/result.
 
-`progres = realizat_principal / target_principal`. Pentru target zero rezultatul
-este zero și se ridică o anomalie de date, nu se produce procent infinit.
+The entire physical store/day sale is credited to the person selected by the
+calendar. Reassignment changes personal credit only; store/company physical
+totals do not change or duplicate.
 
-| Progres | Comision principal |
+If the authoritative selling-day divisor is missing, emit an explicit anomaly.
+Any preview fallback must remain visible and must be classified correctly by the
+close policy.
+
+## 3. Main commission
+
+```text
+progress = realised_main / target_main
+```
+
+If target is zero, commission/progress behavior follows the deterministic engine
+contract and a data anomaly is emitted; no infinite percentage is produced.
+
+| Progress | Main commission |
 |---|---:|
 | `< 80%` | `0` |
-| `>= 80%` și `< 100%` | `3% × realizat_principal` |
-| `>= 100%` și `< 120%` | `3% × realizat_principal + 200 RON` |
-| `>= 120%` | `3% × realizat_principal + 400 RON` |
+| `>= 80%` and `< 100%` | `3% × realised_main` |
+| `>= 100%` and `< 120%` | `3% × realised_main + 200 RON` |
+| `>= 120%` | `3% × realised_main + 400 RON` |
 
-Comisionul principal se rotunjește la RON întreg.
+Main commission is rounded to whole RON using the rule-pack rounding policy.
 
-## 4. Zile suplimentare
+## 4. Extra days
 
-Orice zi clasificată `EXTRA_HOME` sau `EXTRA_OTHER` adaugă plata fixă de
-`150 RON/zi`.
-
-- `EXTRA_HOME`: vânzarea și targetul zilei intră în realizatul/targetul principal
-  de acasă; nu există încă un al doilea comision procentual pentru aceeași
-  vânzare;
-- `EXTRA_OTHER`: vânzarea și targetul magazinului-gazdă rămân într-o linie
-  separată. Dacă `realizat_zi / target_zi >= 0,79`, se acordă `3% × realizat_zi`;
-  altfel comisionul acelei zile este zero.
-
-Pragul `0,79` este pragul tehnic exact din V1 și trebuie păstrat în primul
-golden master. Fiecare comision `EXTRA_OTHER` se rotunjește individual la RON
-întreg, apoi se însumează. Plata fixă de `150 RON` și comisionul procentual sunt
-două componente diferite și trebuie afișate separat în audit.
-
-## 5. SIM, E-pay și incentive
-
-| Componentă | Regulă |
-|---|---:|
-| SIM eligibil | `3 RON × cantitate` |
-| E-pay `<50 lei` | `5 RON × cantitate` |
-| E-pay `>=50 lei` | `12 RON × cantitate` |
-| Incentive lunar | valoarea autoritativă primită din Campaigns/connector |
-
-Cantitățile E-pay sunt numere întregi `0..10`. SIM nu este introdus manual în
-Sheet; vine din sursa de vânzări. Incentivul nu se recalculează din grilă.
-
-## 6. Total salarial
-
-Motorul păstrează componentele separat și calculează:
+Every `EXTRA_HOME` or `EXTRA_OTHER` day adds:
 
 ```text
-total_salariu = salariu_fix
-              + tichete_masă
-              + comision_principal
-              + plată_fixă_zile_suplimentare
-              + comision_EXTRA_OTHER
-              + comision_SIM
-              + comision_Epay
-              + incentive_lunar
-              + ajustare_Flip_dacă_este_activă
-
-salariu_cash = total_salariu - tichete_masă
+150 RON / day
 ```
 
-`total_salariu` include tichetele. Acest lucru explică exemplul V2 vizibil:
-`2600 + 480 + 27 SIM + 350 incentive = 3457 RON`, când celelalte componente
-sunt zero.
+### EXTRA_HOME
 
-Toate calculele monetare folosesc `Decimal`. Compatibilitatea cu Google
-`ROUND(...,0)` cere rotunjire `ROUND_HALF_UP` pentru valorile pozitive. Payloadul
-de calcul păstrează intrările, componentele nerotunjite/rotunjite, versiunea
-rule pack și hashurile deterministe.
+- store must equal home store;
+- day sale and target enter the main home result/target;
+- there is no second percentage commission on the same sale;
+- the fixed extra-day pay remains a separate component.
+
+### EXTRA_OTHER
+
+- store must differ from home store;
+- host-store sale and target are evaluated separately;
+- if `realised_day / target_day >= 0.79`, commission is `3% × realised_day`;
+- below `0.79`, percentage commission for that extra-other day is zero;
+- each extra-other percentage commission is rounded individually to whole RON,
+  then summed;
+- fixed `150 RON` and percentage commission are separate auditable components.
+
+The `0.79` threshold is an intentional legacy compatibility rule and must be
+covered by golden edge tests.
+
+## 5. SIM, E-pay and incentive
+
+| Component | Rule |
+|---|---:|
+| Eligible SIM | `3 RON × quantity` |
+| E-pay `<50 lei` | `5 RON × quantity` |
+| E-pay `>=50 lei` | `12 RON × quantity` |
+| Monthly incentive | authoritative external input |
+
+E-pay quantity is integer `0..10` per category/person. Invalid observations are
+audited and do not erase last-good.
+
+SIM is not manually entered through Sheet. Incentive is an external authoritative
+input and is not reverse-engineered from the grid.
+
+If this rule pack is active, the final close requires the expected E-pay input
+set to be valid and fresh under the active `ClosePolicy`.
+
+## 6. Salary total
+
+The engine stores components separately and computes:
+
+```text
+total_salary = fixed_salary
+             + meal_tickets
+             + main_commission
+             + extra_fixed_pay
+             + extra_other_commission
+             + sim_commission
+             + epay_commission
+             + monthly_incentive
+             + Flip_adjustment_if_active
+
+salary_cash = total_salary - meal_tickets
+```
+
+`total_salary` includes meal tickets.
+
+Compatibility example:
+
+```text
+2600 + 480 + 27 SIM + 350 incentive = 3457 RON
+```
+
+when all other components are zero.
+
+All monetary calculations use `Decimal`. Compatibility with the accepted Google
+`ROUND(...,0)` behavior uses `ROUND_HALF_UP` for positive values unless a later
+versioned rule explicitly changes it.
+
+Persisted calculation evidence includes:
+- canonical inputs;
+- raw/rounded components where needed;
+- rule-pack version/hash;
+- revision/source generation;
+- input/output hashes;
+- anomalies.
 
 ## 7. Pontaj standard Mobiup
 
-Pontajul este o proiecție read-only a calendarului. Nu este formular și nu are
-o a doua autoritate.
+Pontaj is a read-only projection of the calendar. It is not a second attendance
+authority.
 
-### Structura fixă a tabului `Pontaj`
+### Fixed `Pontaj` layout
 
-- zilele `1..31` sunt coloanele `C:AG`;
-- coloana `AH` este totalul lunar de ore nete;
-- zona compatibilă este `C8:AG31`, adică opt blocuri consecutive de câte trei
-  rânduri, cu rândurile de început `8, 11, 14, 17, 20, 23, 26, 29`;
-- magazinul standard cu doi agenți folosește blocurile care încep la rândurile
-  `8` și `11`; restul rămân goale, dar structura se păstrează pentru export;
-- pentru un bloc care începe la rândul `r`: `r` conține orele nete zilnice,
-  `r+1` intervalul, iar `r+2` pauza;
-- totalul persoanei este `AHr = SUM(Cr:AGr)`. Pentru cei doi agenți standard,
-  totalurile sunt `AH8` și `AH11`.
+- days `1..31` are Excel columns `C:AG`;
+- column `AH` contains monthly net-hours total;
+- compatibility area is `C8:AG31`;
+- eight potential three-row blocks start at rows `8, 11, 14, 17, 20, 23, 26, 29`;
+- standard two-person store uses blocks starting at rows `8` and `11`;
+- for block start row `r`:
+  - `r` = net hours;
+  - `r+1` = interval;
+  - `r+2` = break;
+- monthly total is `AHr = SUM(Cr:AGr)`.
 
-### Proiecția unei zile
+### Daily projection
 
-| Calendar | rând ore nete | rând interval | rând pauză |
+| Calendar state | Net hours | Interval | Break |
 |---|---:|---|---:|
-| `NORMAL`, `EXTRA_HOME`, `EXTRA_OTHER` | `11` | `10:00-22:00` | `1` |
-| `OFF`, `LEAVE`, zi inexistentă în lună | gol | gol | gol |
+| `NORMAL` | `11` | `10:00-22:00` | `1` |
+| `EXTRA_HOME` | `11` | `10:00-22:00` | `1` |
+| `EXTRA_OTHER` | `11` | `10:00-22:00` | `1` |
+| `OFF` | blank | blank | blank |
+| `LEAVE` | blank | blank | blank |
+| non-existent date in month | blank | blank | blank |
 
-Weekendurile se evidențiază galben după luna selectată. Evidențierea nu schimbă
-orele. La orice modificare mid-month, Pontajul se reconstruiește din întreaga
-revizie a calendarului și înlocuiește proiecția anterioară; nu se face patch pe
-celule individuale și nu se păstrează editări manuale din Sheet.
+Weekends are visually highlighted according to the selected month. Weekend
+formatting does not change hours/pay by itself.
 
-Intervalul `10:00-22:00`, pauza de `60` minute și rezultatul de `11` ore nete
-sunt politica standard Mobiup. Motorul generic poate primi alte politici prin
-alt rule pack, dar aplicația Mobiup nu prezintă managerului o configurare per
-magazin în prima versiune.
+The standard policy is:
+- interval `10:00–22:00`;
+- break `60 minutes`;
+- net `11 hours`.
 
-## 8. Golden fixtures obligatorii pentru Stage 3
+A calendar change rebuilds/updates the authoritative Pontaj projection for the
+same business revision. Manual Sheet changes are not preserved as attendance
+truth.
 
-1. progres principal `79,99%`, `80%`, `99,99%`, `100%`, `119,99%`, `120%`;
-2. `EXTRA_HOME` cu plata fixă și fără dublarea comisionului;
-3. `EXTRA_OTHER` sub `0,79`, exact `0,79` și peste prag;
-4. reatribuire între persoane cu total fizic neschimbat;
-5. SIM și ambele categorii E-pay la `0`, `1`, `10`;
-6. exemplul V2 `2600 + 480 + 27 + 350 = 3457`;
-7. schimbare mid-month care mută o zi și reconstruiește Pontajul `11/interval/1`
-   și totalurile `AH`;
-8. target zero, vânzare lipsă și zi neacoperită ca anomalii explicite;
-9. reproducere din același payload/hash cu rezultat identic.
+## 8. Holidays
 
-## 9. Decizii confirmate înainte de S3
+Romanian legal holidays are stored/versioned with an administrative override
+mechanism.
 
-- Salariul fix și tichetele vin dintr-un master HR/payroll effective-dated;
-  Grile citește snapshot-ul versionat și nu permite editare TL.
-- Ajustarea legacy `Flip` rămâne activă în produsul nou și trebuie inclusă în
-  golden fixtures/calculul versionat.
-- Sărbătorile folosesc un calendar legal România versionat, cu override admin;
-  efectul inițial este doar marker informativ — nu modifică automat programul,
-  Pontajul, targetul sau plata.
-- `close` este executat numai de admin în prima versiune; reopen-ul rămâne
-  admin-only și auditat.
+For `mobiup-v1-compat` their initial effect is **informational only**:
+- they may be displayed/marked;
+- they do not automatically change schedule;
+- they do not automatically change Pontaj;
+- they do not automatically change target or pay.
 
-Aceste decizii deschid analiza S3, fără a autoriza încă integrarea Retail,
-modificarea surselor legacy sau operații pe date live.
+A different effect requires a new explicit/versioned business decision, not an
+implicit code change.
+
+## 9. Salary master and Flip
+
+- fixed salary and meal tickets come from an effective-dated master snapshot;
+- manager schedule UI does not edit these values;
+- missing required master input is an explicit payroll anomaly;
+- accepted legacy `Flip` adjustment remains a separately represented versioned
+  calculation component.
+
+## 10. Required golden/edge fixtures
+
+The candidate suite must include at least:
+
+1. main progress `79.99%`, `80%`, `99.99%`, `100%`, `119.99%`, `120%`;
+2. `EXTRA_HOME` fixed pay with no duplicate percentage commission;
+3. `EXTRA_OTHER` below `0.79`, exactly `0.79`, above threshold;
+4. personal reassignment with unchanged physical store/company total;
+5. SIM at representative edge quantities;
+6. both E-pay categories at `0`, `1`, `10` plus invalid observations;
+7. example `2600 + 480 + 27 + 350 = 3457`;
+8. mid-month schedule change and Pontaj reconstruction;
+9. target zero;
+10. missing sale;
+11. missing selling-day divisor;
+12. missing salary master;
+13. closed-month mutation rejection;
+14. identical canonical input producing identical result/hash.
+
+## 11. Close classification
+
+This document identifies financial significance; the versioned close policy owns
+the final blocker classification.
+
+At minimum, the candidate must not close as financially valid when a required
+payroll input is unknown/stale/unvalidated. This includes expected E-pay when the
+active rule pack uses it and required salary/master/source generation inputs.
+
+Warnings that do not affect payroll determinism may remain non-blocking if the
+policy states so explicitly.
+
+## 12. Versioning
+
+Any intentional change to formulas, thresholds, rounding, Pontaj policy or
+financial input semantics requires:
+- a new rule-pack version or explicit backward-compatible versioned change;
+- updated canonical hash;
+- updated golden tests;
+- migration/reconciliation impact assessment;
+- tracker/contract update.
+
+Do not silently change `mobiup-v1-compat` behavior to make a failing historical
+example pass.
