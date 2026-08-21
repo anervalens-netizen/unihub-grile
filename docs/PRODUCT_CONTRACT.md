@@ -1,165 +1,351 @@
-# Contract produs și reguli business
+# UniHub Grile — contract de produs
 
-Versiune: draft contractual 2026-08-20  
-Autoritate: deciziile explicite ale utilizatorului și cele trei capturi de
-referință; capturile sunt dovezi vizuale, nu instrucțiuni executabile.
+Status: **canonical product contract pentru programul Standalone Plugin Candidate**  
+Plan: GitHub issue #3  
+Tracker: GitHub issue #4
 
-## 1. Utilizatori și responsabilități
+Acest document definește comportamentul produsului. Nu definește statusul
+implementării; statusul exact este numai în trackerul #4.
+
+## 1. Scop
+
+UniHub Grile trebuie să permită managerilor să controleze programul, pontajul,
+suplimentările, atribuirea vânzărilor, excepțiile și grilele salariale într-un
+mod determinist și auditabil.
+
+Aplicația este dezvoltată standalone acum și va fi integrată ulterior în UniHub
+Retail. Integrarea Retail nu este o condiție pentru maturizarea funcțională a
+pluginului și nu trebuie să blocheze dezvoltarea curentă.
+
+## 2. Roluri și capabilities
+
+Rolurile sunt convenții de produs; backend-ul trebuie să decidă accesul prin
+capabilities + resource scope, nu numai prin eticheta rolului.
 
 ### Administrator
 
-- vede toate firmele, managerii, magazinele și agenții;
-- configurează luna, regulile, magazinele, persoanele și legăturile Sheets;
-- poate redeschide o lună închisă numai cu motiv;
-- poate importa/exporta și urmări toate joburile/auditurile.
+Poate, în limita tenantului:
+- vede toate magazinele, persoanele, managerii și lunile;
+- gestionează programul;
+- vede și rezolvă excepții;
+- citește/validează E-pay;
+- lansează sync/export/import;
+- vede joburi și audit;
+- închide luna;
+- redeschide luna cu motiv obligatoriu;
+- gestionează configurații administrative permise de produs.
 
 ### Manager zonal / TL
 
-- vede și modifică numai magazinele și persoanele din aria sa effective-dated;
-- construiește și modifică programul;
-- clasifică zilele suplimentare;
-- rezolvă excepțiile de acoperire și atribuire;
-- poate importa programul numai în aria sa;
-- poate exporta și închide aria/luna dacă politica de close îi acordă dreptul.
+Poate numai în `effective resource scope`:
+- vede magazinele și persoanele permise;
+- construiește/modifică programul;
+- clasifică `NORMAL`, `EXTRA_HOME`, `EXTRA_OTHER`, `OFF`, `LEAVE`;
+- vede pontajul/grila/excepțiile relevante;
+- folosește import/export/sync numai dacă are capability explicit;
+- nu poate accesa un alt magazin doar cunoscând `store_id`.
+
+Dreptul de `close` rămâne administrativ până când o politică viitoare spune
+explicit altceva.
 
 ### Agent
 
-- nu are editor în aplicație în prima versiune;
-- primește linkul Google Sheet al magazinului;
-- vede grila, rezultatele, calendarul și pontajul;
-- poate modifica doar cantitățile E-pay permise.
+În candidate-ul curent:
+- nu are editor în aplicația Grile;
+- primește proiecția Google Sheet a magazinului;
+- vede numai informația destinată magazinului/persoanelor respective;
+- poate modifica exclusiv cantitățile E-pay permise de contractul Sheet.
 
-## 2. Calendar și program
+Un viitor acces direct al agentului în Retail/Grile este în afara acestui
+program.
 
-- Granularitatea este ziua întreagă; nu există schimb de tură ca funcție business.
-- Fiecare magazin are în mod normal doi agenți, dar lucrează unul singur pe zi.
-- Managerul poate rescrie direct alocarea oricărei zile deschise.
-- Tipuri de zi lucrată:
-  - `NORMAL`: persoana lucrează în magazinul său de bază;
-  - `EXTRA_HOME`: persoana lucrează suplimentar în magazinul său de bază;
-  - `EXTRA_OTHER`: persoana lucrează suplimentar în alt magazin.
-- Stări fără lucru: `OFF`, `LEAVE`. Ele apar în calendarul persoanei, nu ocupă
-  acoperirea magazinului.
-- Aplicația nu oferă un wizard separat „schimb de tură”. Managerul editează
-  zilele implicate, iar validarea arată imediat goluri sau conflicte.
-- În lună deschisă, orice modificare recalculează pontajul, atribuirea vânzărilor
-  și grila. Schimbarea este auditabilă cu înainte/după.
+## 3. Scope și autorizare
 
-## 3. Atribuirea vânzărilor
+Orice operație trebuie să verifice două dimensiuni:
 
-- Sursa fizică este totalul vânzărilor magazinului din ziua respectivă.
-- Pentru că există un singur agent lucrător pe magazin/zi, întreaga vânzare este
-  creditată persoanei selectate în calendar.
-- Codurile POS/TL pot fi păstrate ca proveniență și control de anomalie, dar nu
-  decid identitatea persoanei. Calendarul managerului decide.
-- La `EXTRA_OTHER`, persoana primește creditul comercial pentru magazinul-gazdă.
-- La `EXTRA_HOME`, vânzarea este deja a magazinului/persoanei; numai clasificarea
-  zilei și efectul salarial suplimentar se schimbă.
-- Totalul magazinului, firmei și companiei nu se modifică prin atribuire și nu se
-  dublează.
-- Dacă un magazin are accidental zero sau două persoane într-o zi deschisă, ziua
-  este excepție blocantă pentru close și nu se atribuie automat.
+```text
+tenant authorization
+        +
+resource authorization (store/person/month/export/job)
+```
 
-## 4. Pontaj
+Resource scope este effective-dated unde modelul business o cere.
 
-- Pontajul este o proiecție a calendarului, nu un formular independent.
-- Contractul exact de celule, rânduri, interval, pauză și total este definit în
-  `docs/MOBIUP_RULE_PACK.md`; pentru Mobiup standardul este `10:00-22:00`, pauză
-  `1` oră și `11` ore nete pe zi lucrată.
-- O modificare retroactivă a calendarului actualizează pontajul imediat în DB și
-  asincron în Sheet/export.
-- Nu există modificare manuală directă a pontajului în Google Sheet.
+Reguli:
+- admin vede tenant-wide numai dacă principalul are capability corespunzător;
+- managerul vede numai aria curentă/effective-dated;
+- read și write folosesc aceeași sursă centrală de scope;
+- export/download/status/job endpoints respectă același scope ca ecranele;
+- frontend-ul poate ascunde o acțiune indisponibilă, dar backend-ul rămâne
+  autoritatea de securitate.
 
-## 4.1. Calcul salarial Mobiup
+## 4. Calendar și program
 
-Formula completă, pragurile de comision, plata suplimentarelor, SIM, E-pay,
-rotunjirea și totalul care include tichetele sunt contractate în
-`docs/MOBIUP_RULE_PACK.md`. Motorul generic nu conține constante Mobiup;
-selectează un rule pack versionat.
+Granularitatea business este ziua întreagă.
 
-## 5. E-pay
+### Stări lucrate
 
-- Există două categorii per agent: `<50 lei` și `>=50 lei`.
-- Fiecare categorie este un dropdown de cantitate între `0` și `10`, inclusiv.
-- Sunt patru celule editabile per grilă standard cu doi agenți.
-- Ultima observație validă devine cantitatea curentă; fiecare schimbare rămâne în
-  istoric.
-- Valoare goală, text, fracție, negativă sau peste 10 este invalidă și nu
-  suprascrie ultima valoare bună.
-- Înainte de close, aplicația citește obligatoriu cele patru celule și arată
-  managerului valorile care vor intra în calcul.
-- După close nu se mai ingestă E-pay până la un reopen explicit.
+- `NORMAL` — persoana lucrează în home store;
+- `EXTRA_HOME` — persoana lucrează suplimentar în home store;
+- `EXTRA_OTHER` — persoana lucrează suplimentar în alt store.
 
-## 6. Luna și close
+### Stări fără lucru
 
-- `DRAFT`: program incomplet permis, calculele sunt previzualizări.
-- `OPEN`: programul și E-pay pot fi modificate; calculele sunt curente.
-- `CLOSED`: program, E-pay, atribuire și calcule imuabile.
-- `REOPENED`: stare auditată care permite corecția, urmată de un close nou.
-- Close-ul verifică cel puțin:
-  - fiecare magazin deschis are exact un agent/zi;
-  - nicio persoană nu lucrează în două magazine/zi;
-  - toate vânzările disponibile sunt atribuite sau marcate explicit lipsă;
-  - E-pay a fost citit și validat;
-  - calculele sunt complete și folosesc aceeași generație/revizie;
-  - Sheet-urile pot fi stale fără a altera calculul, dar starea lor este vizibilă.
+- `OFF` — liber;
+- `LEAVE` — concediu.
 
-## 7. Google Sheets
+Invariante:
+- max. un agent lucrător per store/date;
+- max. un store lucrat per person/date;
+- `EXTRA_HOME` cere `store == home_store`;
+- `EXTRA_OTHER` cere `store != home_store`;
+- `OFF/LEAVE` nu ocupă acoperirea magazinului;
+- draftul poate conține goluri vizibile; close nu poate.
 
-- Legăturile magazinelor sunt permanente și nu se recreează la reset lunar.
-- Agentul vede numai informația relevantă magazinului său și persoanelor alocate
-  acelui magazin; nu încărcăm vânzările întregii rețele în taburi ascunse.
-- Sheet-ul poate fi regenerat din baza aplicației.
-- Business logic și autoritatea financiară nu depind de formule editabile.
-- Sync-ul afișează data/ora, generația și eventualul status stale/error.
+Managerul editează direct ziua. Nu există un wizard separat „schimb de tură”.
 
-## 8. Import program Excel
+Orice write folosește revision/CAS sau un mecanism echivalent care previne lost
+update. Conflictul stale trebuie să păstreze contextul utilizatorului și să ofere
+o cale clară de refresh/retry.
 
-Importul este o facilitate de tranziție, dar rămâne suportată:
+## 5. Pontaj
 
-1. managerul descarcă modelul pentru luna și aria sa;
-2. modelul este prepopulat cu persoane, magazine și programul existent;
-3. managerul modifică dropdown-urile;
-4. upload-ul creează un preview cu diferențe și erori;
-5. apply-ul este explicit, atomic și protejat de revision;
-6. după apply, calendarul/pontajul/calculele sunt regenerate și se lansează
-   proiecția Google.
+Pontajul este **derivat din calendar** și nu are o a doua autoritate.
 
-Fișierul nu poate crea persoane sau magazine noi. Identificarea folosește coduri
-stabile ascunse/tehnice, nu potrivire liberă după nume.
+Pentru Mobiup, orele și layout-ul sunt definite de
+`docs/MOBIUP_RULE_PACK.md`.
 
-## 9. Export Excel
+O modificare a calendarului trebuie să actualizeze proiecția pontajului în
+aceeași revizie business sau într-o secvență tranzacțională echivalentă care nu
+expune rezultate incompatibile.
 
-- Export per magazin: un XLSX cu taburile `Grila` și `Pontaj`.
-- Export filtrat bulk: ZIP cu câte un XLSX per magazin, grupat logic după manager
-  și firmă, plus manifest cu lună, revision, reguli și checksumuri.
-- Export pontaj-only: disponibil pentru filtrul curent.
-- Exporturile conțin valori stabile și formule de prezentare compatibile Excel;
-  nu au legături externe către Google/Retail.
-- Un export închis este legat de exacta revizie de close și este reproductibil.
+Nu există editare manuală a pontajului în Google Sheet.
 
-## 10. Non-goals inițiale
+## 6. Atribuirea vânzărilor
 
-- editor sau cont de agent în aplicație;
-- cereri/aprobări de schimb de tură;
-- pontaj biometric sau confirmare individuală de prezență;
-- ture multiple în aceeași zi;
-- mai mulți agenți simultan într-un magazin;
-- editare complet bidirecțională Google Sheets;
-- calcul din codul POS ca identitate personală;
-- integrare directă în Retail înainte ca aplicația standalone să treacă pilotul.
+Sursa fizică este vânzarea magazinului/zi din connector.
 
-## 11. Decizii confirmate înainte de Stage 3
+```text
+sales_store_day = adevăr fizic
+calendar        = persoana care a lucrat
+sales_person_day = credit derivat
+```
 
-Formula legacy și Pontajul standard sunt documentate din sursele V1/V2, iar
-următoarele autorități au fost confirmate pentru Stage 3:
+Reguli:
+- întreaga vânzare a magazinului/zi este creditată agentului planificat;
+- mutarea agentului schimbă creditul personal, nu totalul magazinului;
+- `EXTRA_OTHER` creditează persoana pentru store-ul gazdă;
+- `EXTRA_HOME` nu dublează vânzarea;
+- ziua cu zero/multiple assignments rămâne anomalie explicită;
+- missing sale nu este convertit în „vânzare zero validă” fără marcaj/anomalie.
 
-- salariul fix și tichetele: master HR/payroll effective-dated;
-- ajustarea legacy `Flip`: rămâne activă și versionată în calcul;
-- sărbătorile: calendar legal România versionat cu override admin, inițial doar
-  marker informativ fără efect automat asupra programului, Pontajului, targetului
-  sau plății;
-- close: numai admin în prima versiune; reopen admin-only și auditat.
+## 7. Rule pack și calcul salarial
 
-Aceste decizii nu deschid integrarea Retail sau accesul la date live; ele doar
-permit definirea și testarea contractului S3 standalone.
+Mobiup folosește un rule pack versionat definit în
+`docs/MOBIUP_RULE_PACK.md`.
+
+Motorul trebuie să păstreze:
+- canonical inputs;
+- rule-pack version/hash;
+- revision/generation;
+- componente calculate separat;
+- input/output hashes;
+- anomalii explicite;
+- `Decimal` și politica de rotunjire specificată.
+
+Regulile Mobiup nu se distribuie ca `if`/constante prin API și repositories.
+
+Preview-ul poate fi calculat cu warning-uri. Rezultatul final de close trebuie
+să respecte politica de blocare din secțiunea următoare.
+
+## 8. E-pay
+
+Categorii inițiale Mobiup per agent:
+- `<50 lei`;
+- `>=50 lei`.
+
+Valori acceptate: întreg `0..10`.
+
+Pentru un magazin standard cu doi agenți rezultă patru inputuri așteptate.
+
+Reguli:
+- readback-ul validează exact persoanele/categoriile așteptate;
+- blank/text/fraction/negative/>10 este invalid;
+- invalidul este auditat și nu șterge ultima valoare bună;
+- freshness are timestamp/prag explicit;
+- după close nu se acceptă ingest business fără reopen;
+- dacă rule pack-ul folosește E-pay, lipsa/freshness invalidă este blocker la
+  close.
+
+## 9. Anomalii și excepții
+
+Orice anomalie relevantă are:
+- cod stabil;
+- store/person/date unde este cazul;
+- mesaj și context;
+- severitate;
+- clasificare `informational`, `warning` sau `blocking_for_close`;
+- acțiune/recomandare de remediere unde este posibil.
+
+Exemple:
+- store/day neacoperit;
+- persoană în două store-uri;
+- `EXTRA_HOME/OTHER` invalid;
+- vânzare lipsă;
+- target zero/lipsă;
+- sales-day divisor lipsă;
+- salary master lipsă;
+- E-pay lipsă/stale/invalid;
+- generații/revizii incompatibile;
+- Google projection stale/error.
+
+Nu toate warning-urile trebuie să blocheze preview-ul. Orice condiție care poate
+face salariul final nedeterminat sau nevalidat trebuie să blocheze close-ul.
+
+## 10. Luna, close și reopen
+
+Stări business:
+- `DRAFT` — program incomplet permis; calculele sunt preview;
+- `OPEN` — mutații permise conform capabilities;
+- `CLOSED` — program, E-pay, atribuire și rezultatul final sunt imuabile;
+- `REOPENED` — corecție auditată înainte de un nou close.
+
+Close folosește o politică versionată și verifică cel puțin:
+- acoperire validă a fiecărui store/day obligatoriu;
+- nicio persoană în două store-uri/zi;
+- vânzări/targete necesare prezente și reconciliabile;
+- E-pay fresh/complet dacă este folosit;
+- salary/master inputs necesare prezente;
+- calculele complete și pe revision/generation compatibilă;
+- anomalii `blocking_for_close == 0`;
+- concurrency/revision corectă la momentul finalizării.
+
+Google Sheet stale poate fi vizibil ca problemă operațională fără să altereze
+engine-ul; dacă însă politica cere un readback/projection canary pentru close,
+acea precondiție devine blocker explicit, nu warning ascuns.
+
+Close persistă snapshot/digest/audit. Reopen:
+- admin-only;
+- motiv obligatoriu;
+- creează audit nou;
+- nu șterge close-ul anterior;
+- increment/revision coerent;
+- permite apoi recalcul și un nou close.
+
+## 11. Audit
+
+Business mutations relevante trebuie să producă audit append-only.
+
+Minimum pentru program/calendar:
+- actor/principal;
+- tenant;
+- resource;
+- before;
+- after;
+- revision before/after;
+- source (`UI`, `XLSX`, system etc.);
+- request/correlation id;
+- timestamp.
+
+Aceeași disciplină se aplică E-pay admin actions, import apply, close și reopen.
+
+## 12. Google Sheets
+
+Google Sheet este o **proiecție regenerabilă** și o suprafață de input E-pay
+restrânsă.
+
+Contract:
+- binding stabil store↔workbook;
+- `Grila` + `Pontaj` conform specului UX;
+- numai inputurile E-pay desemnate editabile;
+- fără date din alte store-uri;
+- fără business logic financiară autoritativă în formule editabile;
+- projection metadata: generation/revision/rule-pack/timestamp;
+- last-good rămâne disponibil la failure;
+- sync/readback rulează asincron în worker.
+
+## 13. Import program XLSX
+
+Flux:
+1. download template pentru lună/scope;
+2. identificatori tehnici/version manifest;
+3. upload;
+4. preview fără writes;
+5. listă diff + blockers;
+6. apply explicit și atomic;
+7. revision/CAS protejează împotriva stale;
+8. calendar/pontaj/attribution/grid sunt regenerate;
+9. external projections se lansează async.
+
+Fișierul nu creează liber stores/people și nu folosește matching după nume ca
+identitate.
+
+## 14. Export XLSX
+
+Tipuri:
+- per-store: `Grila` + `Pontaj`;
+- bulk scoped: ZIP + manifest/checksums;
+- pontaj-only scoped.
+
+Reguli:
+- reproducibil pentru revision/generation dată;
+- fără referințe externe la Retail/Google;
+- fără date în afara resource scope;
+- verificare prin parsing workbook, nu doar „file exists”;
+- export mare este job asincron;
+- artefactele au retention/cleanup bounded.
+
+## 15. Frontend
+
+Ecranele primare candidate:
+- Hub;
+- Program & Calendar;
+- Magazin;
+- Agent/detail unde aduce valoare operațională;
+- Excepții;
+- Management/close/reopen;
+- jobs/sync/export status unde este necesar.
+
+Reguli UX:
+- design compatibil vizual cu UniHub Retail, dar app standalone în dezvoltare;
+- toate datele operaționale vin din API real;
+- nicio acțiune fake în production path;
+- capability-aware controls;
+- subsystem errors independente;
+- stări loading/empty/stale/retry/403/409/error;
+- desktop first, tablet/mobile utilizabil;
+- keyboard accessibility pentru acțiunile principale.
+
+## 16. Integrarea Retail — contract, nu implementare curentă
+
+În acest program Retail rămâne nemodificat.
+
+Grile pregătește intern contracte pentru:
+- identity/capabilities;
+- tenant/timezone;
+- stores/hierarchy;
+- people/home-store/activity;
+- manager/effective scopes;
+- sales store/day;
+- targets;
+- incentive/alte inputuri cerute de rule pack.
+
+Detalii: `docs/RETAIL_INTEGRATION_CONTRACT.md`.
+
+## 17. Non-goals până la server-test candidate
+
+- modificarea UniHub Retail;
+- autentificare Retail end-to-end;
+- mutarea Grile în runtime/deploy Retail;
+- agent self-service complex;
+- schimb de tură cu workflow de aprobare;
+- pontaj biometric;
+- ture multiple într-o zi;
+- editare bidirecțională generală în Google;
+- calcul salarial din cod POS ca identitate;
+- formule financiare autoritative în Sheet.
+
+## 18. Definition of done al produsului standalone candidate
+
+Acest contract este suficient de implementat pentru test pe server numai când
+`SERVER-TEST-READY` din issue #4 este bifat conform `docs/QUALITY_GATES.md`.
