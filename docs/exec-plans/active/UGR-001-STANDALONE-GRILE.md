@@ -99,7 +99,7 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 | AC-13 | Numai cele patru dropdown-uri E-pay sunt editabile; valorile 0..10 sunt ingerate și auditate, invalidul păstrează last-good | fără inbound general | protection/read tests + blank/text/fraction/11 cases + close readback | Google canary edit/read | S5 contract repairs on `b3d0089`: `record_readback` enforces `len(observations) == len(working_agents)*2` (exactly four cells for a 2-agent store) and rejects when a `person_id` is not in the store/month's working agents. Independent MiniMax M3 verifier on exact `b3d0089`: 4 valid obs → 200/valid=4; 3 obs → 422; non-working `person_id` → 422; mixed valid+invalid ("abc", −3) → 200/invalid=2 with `raw_value` preserved; `freshness.is_fresh=True / fresh_count=4` after the last-valid readback (last-good retention confirmed). | PASS |
 | AC-14 | Exportul per magazin are `Grila`+`Pontaj`; bulk ZIP și pontaj-only respectă filtrele, manifestul și nu au external links | nu exportă alte arii | parse/render/round-trip + checksum tests | download browser, render sample | S5 contract repairs on `b3d0089`: `render_store_export` produces Grila V2 cards (rows 6/7/9/10) + Pontaj C8:AG31 (day 1..31 in D..AG, blocks of 8/11, AH total, weekend highlight); per-magazin filtering excludes other stores' people/calendar; `render_bulk_export` writes a manifest.json with `generation`, `rule_pack_version`, and per-entry `checksum_sha256`; `render_pontaj_only_export` honours `store_ids`. Independent MiniMax M3 verifier on exact `b3d0089` confirmed via openpyxl introspection: Grila V2 cards at rows 6/7/9/10 with the two-card band; Pontaj C8:AG31 with day1=D4, day31=AG34, AH="Total ore (AH)"; strict per-store filtering (no `po_a`/`po_b` leakage); bulk ZIP manifest contains `generation`/`rule_pack_version`/`entries[*].checksum_sha256`; pontaj-only `store_ids=[store_x]` returns single-sheet `['Pontaj']` workbook. | PASS |
 | AC-15 | Close validează toate blocantele și îngheață luna; reopen este admin-only, motivat și auditat append-only | niciun overwrite de istoric | transaction/concurrency/audit tests | close/reopen browser flow | exact-commit Luna audit GO on `7b96f20f086d7311c65a63929322d7bfa202e241` via provider `openai`: full open-store/day lattice blockers (STORE_DAY_UNCOVERED, multiple working, invalid kind, full-lattice sale/target), serialized close/reopen via `SELECT FOR UPDATE` before any state/revision decision, expected_revision under lock, digest-chained append-only audit with `verify_chain`, admin-only enforcement, and MONTH_CLOSED write rejection (verified by standalone verifier-authored probe against disposable PG 17). S5a wires the three deferred blockers (`EPAY_FRESH_READBACK_REQUIRED`, `SHEET_CANARY_REQUIRED`, `EXTERNAL_RECONCILIATION_REQUIRED`) as informational items in the close checklist without bypassing the S3 ones. S4 candidate at `0e852ea` adds the real checklist → explicit confirmation → close POST → refresh + audit timeline UI; round 3 verifier confirmed `GET /months/{id}/close-checklist` returns blockers + `expected_revision` on the disposable PG17. Admin-only reasoned reopen preserved. | PASS |
-| AC-16 | p95 overview <500 ms pilot/<1 s target; save DB <500 ms; Google/export async; jobs durable/idempotent | fără polling Google frecvent | benchmark/query count, restart/retry tests | local/staging measurements | S5 polling-contract repair on `0b2f10c` (on top of `b3d0089`): the API now pre-creates a PENDING `ExportRun` at enqueue, returns its `id` as the synchronous `job_id`, and passes it to the durable worker as `payload.export_run_id`; the three export handlers update the pre-created row to `DONE` (with `artifact_uri` + `checksum_sha256`) on success or `FAILED` (with `errors`) on any exception before re-raising. Polling with the enqueue `job_id` now reads the same row the worker wrote. End-to-end contract covered by 6 new focused API tests on `0b2f10c` against SQLite (PENDING→DONE transition, `artifact_uri == hint`, xlsx/zip bytes, `sha256(summary.checksum_sha256) == sha256(file)`). Previous S5 verdict on `b3d0089` was premature on the polling contract and is reverted. Read-only audit on `0b2f10c` against a disposable PG17 is the next step; AC-16 stays UNVERIFIED until that audit confirms the contract end-to-end. | UNVERIFIED |
+| AC-16 | p95 overview <500 ms pilot/<1 s target; save DB <500 ms; Google/export async; jobs durable/idempotent | fără polling Google frecvent | benchmark/query count, restart/retry tests | local/staging measurements | S5 polling-contract repair on `0b2f10c` (on top of `b3d0089`): the API now pre-creates a PENDING `ExportRun` at enqueue, returns its `id` as the synchronous `job_id`, and passes it to the durable worker as `payload.export_run_id`; the three export handlers update the pre-created row to `DONE` (with `artifact_uri` + `checksum_sha256`) on success or `FAILED` (with `errors`) on any exception before re-raising. Polling with the enqueue `job_id` now reads the same row the worker wrote. End-to-end contract covered by 6 new focused API tests on `0b2f10c` against SQLite (PENDING→DONE transition, `artifact_uri == hint`, xlsx/zip bytes, `sha256(summary.checksum_sha256) == sha256(file)`). Read-only independent audit on `0b2f10c` against disposable PG17 (`ugrile-pg-local` on 127.0.0.1:55432, alembic head `5a7b9c1d3e2f`) via `minimax:MiniMax-M3` (session ledger verified) returned **GO / PASS** with all 8 probe steps ok=true (seed_tenant, seed_month, enqueue_store, polling_done, polling_done_bulk, polling_done_pontaj_only, polling_failed, polling_404); static checks ruff + mypy on the 3 touched files clean. Verdict at `.agent/evidence/UGR-001/S5/s5b-ac16-polling-audit.txt`. | PASS |
 | AC-17 | Un pilot shadow complet reconciliază program, pontaj, vânzări, E-pay, grile și exporturi fără a modifica V1/V2 live | V1/V2 live unchanged | manifest per store/day/person + explained zero/unresolved diffs | copied canaries only | deferred to S6. | UNVERIFIED |
 | AC-18 | Integrarea Retail folosește contract versionat și capabilitate optională; Grile rămâne deployabil fără Retail | fără shared DB schema final | contract tests + Retail-off probe + exact integration diff | staging then formal Retail gate | deferred to S7. | UNVERIFIED |
 
@@ -111,8 +111,8 @@ Structura exactă poate fi ajustată în Stage 1, dar separarea de responsabilit
 | S2 | Calendar + pontaj + XLSX schedule import: APIs, revisions, derived projections, preview/apply atomic | S1 GO | builder 2 | 3 | PASS |
 | S3 | Sales attribution + supplementary classification + rule-pack/grid engine + close/reopen core | S2 GO + business-source confirmations | builder 3 | 2 | PASS |
 | S4 | Manager UI complete: Overview, Program, Store, Agent, Exceptions, Close, responsive/performance | S3 GO | builder 4 | 2 | PASS |
-| S5 | Google adapter + bounded E-pay inbound + XLSX exports + copied canary | S4 GO + Google canary authority | builder 5 | 3 | BUILDING |
-| S6 | Shadow pilot, reconciliation, observability, backup/runbook, production-readiness verdict | S5 GO | builder 6 | 0 | BACKLOG |
+| S5 | Google adapter + bounded E-pay inbound + XLSX exports + copied canary | S4 GO + Google canary authority | builder 5 | 3 | PASS |
+| S6 | Shadow pilot, reconciliation, observability, backup/runbook, production-readiness verdict | S5 GO | builder 6 | 0 | READY |
 | S7 | Versioned Retail integration, optional navigation/auth, formal migration/cutover | S6 GO + Retail stable + explicit opening | future | 0 | BACKLOG |
 
 Stages are sequential because schema, financial rules, state management and UI
@@ -1126,6 +1126,31 @@ Resume note for the morning user:
   Live Google canary remains blocked by contract (zero live sheets).
   Vite build blocker preserved as-is and remains a separate local
   ownership issue.
+
+- 2026-08-21 S5 GO/PASS at exact commit `0b2f10c9a3c1869c74552f7a88babb8a2b5e61d4`.
+  Independent read-only audit via `provider: minimax, model: MiniMax-M3`
+  (session ledger verified, every assistant turn tagged
+  `provider:"minimax", model:"MiniMax-M3"`) on a disposable PostgreSQL 17
+  (`ugrile-pg-local` on 127.0.0.1:55432, alembic at head
+  `5a7b9c1d3e2f`) returned **GO / PASS** with the full 8-step probe
+  green: `seed_tenant`, `seed_month`, `enqueue_store` (returns a real
+  `ExportRun.id` in PENDING), `polling_done` (DONE with
+  `sha256(file) == summary.checksum_sha256` and `artifact_uri ==
+  hint`), `polling_done_bulk` (ZIP), `polling_done_pontaj_only`
+  (XLSX), `polling_failed` (bogus month_id → ExportRun FAILED with
+  errors + OutboxJob FAILED), `polling_404` (404 with
+  `EXPORT_JOB_NOT_FOUND`). Static checks ruff + mypy clean on the 3
+  source files the fix touched (`xlsx_export.py`, `api/s5b.py`,
+  `worker/jobs.py`). Full verdict at
+  `.agent/evidence/UGR-001/S5/s5b-ac16-polling-audit.txt`. The previous
+  S5 verdict on `b3d0089` (premature) is fully superseded; AC-16
+  table row now reads PASS. Browser proof remains UNVERIFIED (Vite
+  EACCES on `frontend/dist` is a separate ownership blocker). Live
+  Google canary remains blocked by contract (zero live sheets). S6
+  is now open; the exact next step is to draft the S6 shadow-pilot
+  acceptance contract (cohort, reconciliation counts, restart and
+  provider-failure evidence, restore proof) and freeze it before any
+  builder work begins.
 
 ## Resume procedure
 
