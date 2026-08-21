@@ -1,15 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProgramGrid, ProgramCell, ProgramRow } from "../api/client";
 
 export interface ProgramMatrixProps {
   grid: ProgramGrid;
-  /** Pixel height of the virtualized viewport. Default 480. */
   viewportHeight?: number;
-  /** Row height in pixels; defaults to 36 (matches the calendar cell height). */
   rowHeight?: number;
-  /** Called when the user clicks a cell (skipped when the cell is locked). */
   onCellClick?: (rowId: string, cell: ProgramCell) => void;
-  /** Optional controlled editor for an unlocked cell. */
   editing?: { rowId: string; businessDate: string } | null;
   editValue?: { personId: string; storeId: string; status: string; workingKind: string };
   people?: Array<{ id: string; label: string; homeStoreId: string }>;
@@ -25,13 +21,6 @@ interface RowRange {
   end: number;
 }
 
-/**
- * Virtualized 31-day matrix.
- *
- * The grid can be wide (75+ rows) but only ~12-18 fit on screen at once.
- * The component renders only the visible rows + a small overscan window so
- * DOM nodes stay bounded regardless of store count.
- */
 export function ProgramMatrix({
   grid,
   viewportHeight = 480,
@@ -62,38 +51,75 @@ export function ProgramMatrix({
   const totalHeight = total * rowHeight;
   const offsetTop = range.start * rowHeight;
   const slice = grid.rows.slice(range.start, range.end);
+  const editingContext = useMemo(() => {
+    if (!editing) return null;
+    const row = grid.rows.find((candidate) => candidate.row_id === editing.rowId);
+    const cell = row?.cells.find((candidate) => candidate.business_date === editing.businessDate);
+    return row && cell ? { row, cell } : null;
+  }, [editing, grid.rows]);
 
   return (
     <div className="program-matrix">
-      <div className="program-matrix-legend" role="list" aria-label="Legendă">
-        {grid.legend.map((badge) => (
-          <span key={badge} className={`legend-chip badge-${badge}`} role="listitem">
-            {badge}
-          </span>
-        ))}
+      <div className="program-matrix-topline">
+        <div className="program-matrix-legend" role="list" aria-label="Legendă">
+          {grid.legend.map((badge) => (
+            <span key={badge} className={`legend-chip badge-${badge}`} role="listitem">
+              {labelBadge(badge)}
+            </span>
+          ))}
+        </div>
+        <span className="matrix-revision">Revizie {grid.revision}</span>
       </div>
+
+      {editingContext && editValue && onEditChange && (
+        <section className="program-cell-editor-panel" aria-label="Editor program">
+          <div className="editor-context">
+            <span className="eyebrow">EDITARE PROGRAM</span>
+            <strong>{editingContext.row.label}</strong>
+            <span>{formatDate(editingContext.cell.business_date)}</span>
+          </div>
+          <label>
+            <span>Agent</span>
+            <select value={editValue.personId} onChange={(event) => onEditChange({ ...editValue, personId: event.target.value })}>
+              {people.map((person) => <option key={person.id} value={person.id}>{person.label}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Magazin</span>
+            <select value={editValue.storeId} onChange={(event) => onEditChange({ ...editValue, storeId: event.target.value })}>
+              {stores.map((store) => <option key={store.id} value={store.id}>{store.label}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Tip zi</span>
+            <select value={editValue.workingKind} onChange={(event) => onEditChange({ ...editValue, workingKind: event.target.value })}>
+              <option value="NORMAL">Normal</option>
+              <option value="EXTRA_HOME">Suplimentar aici</option>
+              <option value="EXTRA_OTHER">Suplimentar alt magazin</option>
+            </select>
+          </label>
+          <div className="editor-actions">
+            <button type="button" className="button-secondary" onClick={onCancelEdit} disabled={saving}>Anulează</button>
+            <button type="button" className="button-primary" onClick={onSave} disabled={saving}>{saving ? "Salvez…" : "Salvează"}</button>
+          </div>
+        </section>
+      )}
+
       <div
         ref={containerRef}
         className="program-matrix-scroll"
         style={{ height: viewportHeight }}
-        onScroll={(event) =>
-          setScrollTop((event.target as HTMLDivElement).scrollTop)
-        }
+        onScroll={(event) => setScrollTop((event.target as HTMLDivElement).scrollTop)}
         role="grid"
         aria-rowcount={total}
         aria-colcount={grid.dates.length + 1}
       >
         <div className="program-matrix-header" role="row">
-          <span className="program-matrix-cell program-matrix-cell-header" role="columnheader">
-            Rând
-          </span>
+          <span className="program-matrix-cell program-matrix-cell-header program-matrix-corner" role="columnheader">Magazin / Agent</span>
           {grid.dates.map((date) => (
-            <span
-              key={date}
-              className="program-matrix-cell program-matrix-cell-header"
-              role="columnheader"
-            >
-              {Number(date.slice(-2))}
+            <span key={date} className="program-matrix-cell program-matrix-cell-header" role="columnheader">
+              <small>{weekday(date)}</small>
+              <strong>{Number(date.slice(-2))}</strong>
             </span>
           ))}
         </div>
@@ -106,24 +132,12 @@ export function ProgramMatrix({
               rowHeight={rowHeight}
               onCellClick={onCellClick}
               editing={editing}
-              editValue={editValue}
-              people={people}
-              stores={stores}
-              onEditChange={onEditChange}
-              onSave={onSave}
-              onCancelEdit={onCancelEdit}
-              saving={saving}
             />
           ))}
-          <div
-            style={{ height: totalHeight - offsetTop - slice.length * rowHeight }}
-            aria-hidden="true"
-          />
+          <div style={{ height: totalHeight - offsetTop - slice.length * rowHeight }} aria-hidden="true" />
         </div>
       </div>
-      <p className="muted">
-        Randări virtualizate: {slice.length} / {total} rânduri vizibile.
-      </p>
+      <p className="matrix-footnote">{total} rânduri · {grid.dates.length} zile · editorul se deschide deasupra matricei pentru a păstra calendarul lizibil.</p>
     </div>
   );
 }
@@ -133,54 +147,25 @@ interface ProgramMatrixRowProps {
   rowHeight: number;
   onCellClick?: (rowId: string, cell: ProgramCell) => void;
   editing?: { rowId: string; businessDate: string } | null;
-  editValue?: { personId: string; storeId: string; status: string; workingKind: string };
-  people: Array<{ id: string; label: string; homeStoreId: string }>;
-  stores: Array<{ id: string; label: string }>;
-  onEditChange?: (value: { personId: string; storeId: string; status: string; workingKind: string }) => void;
-  onSave?: () => void;
-  onCancelEdit?: () => void;
-  saving: boolean;
 }
 
-function ProgramMatrixRow({ row, rowHeight, onCellClick, editing, editValue, people, stores, onEditChange, onSave, onCancelEdit, saving }: ProgramMatrixRowProps) {
+function ProgramMatrixRow({ row, rowHeight, onCellClick, editing }: ProgramMatrixRowProps) {
   return (
     <div className="program-matrix-row" style={{ height: rowHeight }} role="row">
-      <span
-        className="program-matrix-cell program-matrix-cell-row-label"
-        role="rowheader"
-      >
-        {row.label}
-      </span>
+      <span className="program-matrix-cell program-matrix-cell-row-label" role="rowheader">{row.label}</span>
       {row.cells.map((cell) => {
-        const isEditing = editing?.rowId === row.row_id && editing.businessDate === cell.business_date;
-        if (isEditing && !cell.locked && editValue && onEditChange) {
-          return (
-            <div key={cell.business_date} className="program-matrix-cell program-cell-editor">
-              <select aria-label="Agent pentru celulă" value={editValue.personId} onChange={(event) => onEditChange({ ...editValue, personId: event.target.value })}>
-                {people.map((person) => <option key={person.id} value={person.id}>{person.label}</option>)}
-              </select>
-              <select aria-label="Magazin pentru celulă" value={editValue.storeId} onChange={(event) => onEditChange({ ...editValue, storeId: event.target.value })}>
-                {stores.map((store) => <option key={store.id} value={store.id}>{store.label}</option>)}
-              </select>
-              <select aria-label="Clasificare" value={editValue.workingKind} onChange={(event) => onEditChange({ ...editValue, workingKind: event.target.value })}>
-                <option value="NORMAL">Normal</option><option value="EXTRA_HOME">Extra aici</option><option value="EXTRA_OTHER">Extra alt magazin</option>
-              </select>
-              <button type="button" className="primary" onClick={onSave} disabled={saving}>{saving ? "Salvez…" : "Salvează"}</button>
-              <button type="button" onClick={onCancelEdit} disabled={saving}>Anulează</button>
-            </div>
-          );
-        }
+        const selected = editing?.rowId === row.row_id && editing.businessDate === cell.business_date;
         return (
           <button
             key={cell.business_date}
             type="button"
-            className={`program-matrix-cell badge-${cell.badge ?? "UNCOVERED"} ${cell.locked ? "locked" : ""}`}
+            className={`program-matrix-cell matrix-day badge-${cell.badge ?? "UNCOVERED"} ${cell.locked ? "locked" : ""} ${selected ? "selected" : ""}`}
             disabled={cell.locked}
             aria-label={`${row.label} pe ${cell.business_date}: ${cell.badge ?? "fără acoperire"}`}
             title={`${row.label} pe ${cell.business_date}: ${cell.display_name ?? "fără agent"} (${cell.badge ?? "UNCOVERED"})${cell.locked ? " · BLOCAT" : ""}`}
             onClick={() => onCellClick?.(row.row_id, cell)}
           >
-            {cell.badge === "NORMAL" || cell.badge === "EXTRA_HOME" || cell.badge === "EXTRA_OTHER" ? shortName(cell.display_name) : cell.badge ?? ""}
+            {cell.badge === "NORMAL" || cell.badge === "EXTRA_HOME" || cell.badge === "EXTRA_OTHER" ? shortName(cell.display_name) : shortBadge(cell.badge)}
           </button>
         );
       })}
@@ -190,6 +175,39 @@ function ProgramMatrixRow({ row, rowHeight, onCellClick, editing, editValue, peo
 
 function shortName(displayName: string | null): string {
   if (!displayName) return "?";
-  const tokens = displayName.split(/\s+/);
-  return tokens.slice(0, 2).map((token) => token[0]).join("").toUpperCase();
+  return displayName.split(/\s+/).filter(Boolean).slice(0, 2).map((token) => token[0]).join("").toUpperCase();
+}
+
+function shortBadge(badge: string | null): string {
+  if (!badge) return "—";
+  if (badge === "CONCEDIU") return "C";
+  if (badge === "LIBER" || badge === "OFF") return "L";
+  if (badge === "UNCOVERED") return "!";
+  if (badge === "BLOCAT") return "×";
+  return badge.slice(0, 2);
+}
+
+function labelBadge(badge: string): string {
+  const labels: Record<string, string> = {
+    NORMAL: "Normal",
+    EXTRA_HOME: "Extra aici",
+    EXTRA_OTHER: "Extra alt magazin",
+    LIBER: "Liber",
+    OFF: "Liber",
+    CONCEDIU: "Concediu",
+    UNCOVERED: "Neacoperit",
+    BLOCAT: "Blocat",
+  };
+  return labels[badge] ?? badge;
+}
+
+function weekday(date: string): string {
+  const [year, month, day] = date.split("-").map(Number);
+  const labels = ["D", "L", "M", "M", "J", "V", "S"];
+  return labels[new Date(Date.UTC(year, month - 1, day)).getUTCDay()] ?? "";
+}
+
+function formatDate(date: string): string {
+  const [year, month, day] = date.split("-");
+  return `${day}.${month}.${year}`;
 }
