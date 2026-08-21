@@ -65,14 +65,14 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
     <div className="command-page">
       <section className="command-hero">
         <div>
-          <span className="eyebrow">NETWORK CONTROL</span>
-          <h2>Rețeaua, într-o singură privire</h2>
-          <p>Prioritizează excepțiile, intră direct într-un magazin și modifică programul fără să pierzi contextul lunii.</p>
+          <span className="eyebrow">GRILE / LUNA ÎN CURS</span>
+          <h2>Overview — program și grile</h2>
+          <p>Situația lunii într-o prezentare densă, apropiată de UniHub Retail, cu acces direct pe magazin.</p>
         </div>
         <div className="command-hero-actions">
           <MonthSelector months={months} value={monthId} onChange={setMonthId} error={monthsError} />
-          <button type="button" className="button-secondary" onClick={() => navigate("program")}>Deschide calendarul</button>
-          <button type="button" className="button-primary" onClick={() => navigate("exceptions")}>Vezi excepțiile</button>
+          <button type="button" className="button-secondary" onClick={() => navigate("program")}>Program</button>
+          <button type="button" className="button-primary" onClick={() => navigate("exceptions")}>Excepții</button>
         </div>
       </section>
 
@@ -82,40 +82,39 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
       {report && (
         <>
           <section className="kpi-strip" aria-label="Indicatori principali">
-            <Metric label="Magazine acoperite" value={`${report.kpis.stores_covered}/${report.kpis.stores_total}`} detail="acoperire program" tone={report.kpis.stores_covered === report.kpis.stores_total ? "ok" : "warn"} />
-            <Metric label="Zile neacoperite" value={String(report.kpis.days_uncovered)} detail="necesită programare" tone={report.kpis.days_uncovered === 0 ? "ok" : "err"} />
+            <Metric label="Magazine" value={`${report.kpis.stores_covered}/${report.kpis.stores_total}`} detail="cu program acoperit" tone={report.kpis.stores_covered === report.kpis.stores_total ? "ok" : "warn"} />
+            <Metric label="Zile neacoperite" value={String(report.kpis.days_uncovered)} detail="necesită completare" tone={report.kpis.days_uncovered === 0 ? "ok" : "err"} />
             <Metric label="Conflicte" value={String(report.kpis.conflicts)} detail="agent / zi" tone={report.kpis.conflicts === 0 ? "ok" : "err"} />
             <Metric label="Suplimentare" value={String(report.kpis.extra_home_days + report.kpis.extra_other_days)} detail={`${report.kpis.extra_home_days} aici · ${report.kpis.extra_other_days} extern`} tone="neutral" />
-            <Metric label="Vânzări neatribuite" value={String(report.kpis.sales_unattributed)} detail="de verificat" tone={report.kpis.sales_unattributed === 0 ? "ok" : "warn"} />
+            <Metric label="Vânzări neatribuite" value={String(report.kpis.sales_unattributed)} detail="reconciliere" tone={report.kpis.sales_unattributed === 0 ? "ok" : "warn"} />
           </section>
 
           <div className="command-grid">
             <section className="panel network-panel">
               <div className="panel-heading">
-                <div>
-                  <span className="eyebrow">MAGAZINE</span>
-                  <h3>Control rețea</h3>
-                </div>
+                <div><span className="eyebrow">MAGAZINE / STRUCTURĂ</span><h3>Control rețea</h3></div>
                 <span className="context-pill">{report.state} · rev {report.revision}</span>
               </div>
-              <div className="store-grid">
+
+              <div className="retail-overview-table">
+                <div className="retail-overview-row head">
+                  <span>Magazin</span><span>Cod</span><span>Firmă</span><span>Status</span><span>Excepții</span><span></span>
+                </div>
                 {stores.map((store) => {
                   const issue = issuesByStore.get(store.id);
                   const status = !issue ? "ok" : issue.severity >= 2 ? "err" : "warn";
                   return (
-                    <button key={store.id} type="button" className="store-command-card" onClick={() => navigate("store", store.id)}>
-                      <div className="store-card-topline">
+                    <div className="retail-overview-row" key={store.id}>
+                      <button type="button" className="retail-store-link" onClick={() => navigate("store", store.id)}>{store.name}</button>
+                      <span>{store.internal_code}</span>
+                      <span>{store.company_code || "—"}</span>
+                      <span className="retail-status">
                         <span className={`status-dot status-${status === "ok" ? "online" : status === "warn" ? "checking" : "offline"}`} />
-                        <span>{status === "ok" ? "Operațional" : status === "warn" ? "Necesită atenție" : "Intervenție"}</span>
-                        <span className="store-code">{store.internal_code}</span>
-                      </div>
-                      <strong>{store.name}</strong>
-                      <small>{store.company_code || "Fără firmă"}</small>
-                      <div className="store-card-footer">
-                        <span>{issue ? `${issue.count} excepție${issue.count === 1 ? "" : "i"}` : "Fără excepții"}</span>
-                        <span className="store-open">Control →</span>
-                      </div>
-                    </button>
+                        {status === "ok" ? "OK" : status === "warn" ? "Atenție" : "Intervenție"}
+                      </span>
+                      <span>{issue?.count ?? 0}</span>
+                      <button type="button" className="retail-store-link retail-open" onClick={() => navigate("store", store.id)}>Deschide</button>
+                    </div>
                   );
                 })}
               </div>
@@ -123,10 +122,7 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
 
             <section className="panel attention-panel">
               <div className="panel-heading">
-                <div>
-                  <span className="eyebrow">PRIORITĂȚI</span>
-                  <h3>Necesită atenție</h3>
-                </div>
+                <div><span className="eyebrow">CONTROL CALITATE</span><h3>Necesită atenție</h3></div>
                 <span className="count-badge">{report.needs_attention.length}</span>
               </div>
               {report.needs_attention.length === 0 ? (
@@ -141,10 +137,7 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
                       onClick={() => item.store_id ? navigate("store", item.store_id) : navigate("exceptions")}
                     >
                       <span className={`severity-rail severity-${item.severity}`} />
-                      <span className="attention-copy">
-                        <strong>{item.title}</strong>
-                        <small>{item.detail}</small>
-                      </span>
+                      <span className="attention-copy"><strong>{item.title}</strong><small>{item.detail}</small></span>
                       <span className="attention-date">{item.business_date?.slice(8, 10) ?? "—"}</span>
                     </button>
                   ))}
@@ -154,22 +147,14 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
           </div>
 
           <section className="panel managers-panel">
-            <div className="panel-heading">
-              <div>
-                <span className="eyebrow">RESPONSABILITATE</span>
-                <h3>Manageri</h3>
-              </div>
-            </div>
+            <div className="panel-heading"><div><span className="eyebrow">MANAGERI REGIONALI</span><h3>Completare pe structură</h3></div></div>
             <div className="manager-cards">
               {report.managers.filter((row) => row.stores_total > 0).map((row) => {
-                const coverage = row.stores_total === 0 ? 0 : Math.round((row.stores_covered / row.stores_total) * 100);
+                const coverage = Math.round((row.stores_covered / row.stores_total) * 100);
                 return (
                   <article className="manager-card" key={row.user_id}>
                     <div className="manager-avatar" aria-hidden="true">{initials(row.display_name)}</div>
-                    <div className="manager-copy">
-                      <strong>{row.display_name}</strong>
-                      <span>{row.stores_covered}/{row.stores_total} magazine · {row.days_uncovered} zile neacoperite</span>
-                    </div>
+                    <div className="manager-copy"><strong>{row.display_name}</strong><span>{row.stores_total} magazine · {row.days_uncovered} zile neacoperite</span></div>
                     <div className="coverage-meter" aria-label={`Acoperire ${coverage}%`}><span style={{ width: `${coverage}%` }} /></div>
                     <strong className="coverage-value">{coverage}%</strong>
                   </article>
