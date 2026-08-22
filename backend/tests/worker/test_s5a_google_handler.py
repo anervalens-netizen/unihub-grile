@@ -1,17 +1,8 @@
 """S5a worker tests — fake Google adapter handler.
 
-The ``GOOGLE_PROJECTION_STORE`` handler must:
-
-* build a deterministic structural projection for the store/month
-  (using only the local DB rows; no network I/O),
-* call the fake adapter to persist the projection in
-  ``sheet_projection_runs`` + ``sheet_bindings``,
-* return a ``DONE`` payload carrying the generation fingerprint so the
-  manager UI can verify the run.
-
-A provider failure (``UGR_S5_GOOGLE_FAIL=1``) raises
-``GoogleAdapterError`` so the durable worker marks the row ``FAILED``;
-the last-good projection is preserved by the adapter.
+The ``GOOGLE_PROJECTION_STORE`` handler must build the local structural
+projection, preserve last-good state, and surface provider outages as bounded
+retryable jobs. Business/payload errors remain terminal.
 """
 
 from __future__ import annotations
@@ -21,20 +12,15 @@ from datetime import UTC, datetime
 import pytest
 
 from ugrile.connectors.fixtures import FIXTURE_GENERATION
-from ugrile.connectors.google import (
-    is_provider_failing,
-    read_store_projection,
-)
+from ugrile.connectors.google import is_provider_failing, read_store_projection
 from ugrile.domain.enums import DayStatus, JobKind, MonthState, WorkingKind
-from ugrile.repositories.models import Month, OutboxJob, SiteDayAssignment
+from ugrile.repositories.models import Month, OutboxJob, SheetProjectionRun, SiteDayAssignment
 from ugrile.repositories.months import MonthRepository
 from ugrile.worker.worker import WORKER_LOCKED_BY, enqueue, run_once
 
 
 def _open_month(session, faker_tenant) -> Month:
-    month = MonthRepository(session).get_or_create(
-        faker_tenant["tenant_id"], 2026, 8
-    )
+    month = MonthRepository(session).get_or_create(faker_tenant["tenant_id"], 2026, 8)
     month.state = MonthState.OPEN
     session.flush()
     return month
@@ -76,13 +62,12 @@ def test_google_projection_handler_writes_adapter_payload(session, faker_tenant)
 
     row, result = run_once(locked_by=WORKER_LOCKED_BY)
     assert row is not None and result is not None
+    assert row.status == "DONE"
     assert result.status == "DONE"
     assert result.payload["label"] == "google_projection_s5a"
     assert result.payload["store_id"] == faker_tenant["store_id"]
     assert result.payload["generation"] == FIXTURE_GENERATION
-    session.commit()
 
-    # Readback must return the structural projection persisted by the adapter.
     projection = read_store_projection(
         session,
         tenant_id=faker_tenant["tenant_id"],
@@ -92,16 +77,17 @@ def test_google_projection_handler_writes_adapter_payload(session, faker_tenant)
     assert projection.generation == FIXTURE_GENERATION
     assert "rows" in projection.grila
     assert "rows" in projection.pontaj
-    # The Grila lattice carries the WORKING row we seeded.
     grila_rows = projection.grila.get("rows", [])
     assert any(
-        row.get("business_date") == "2026-08-01"
-        and row.get("status") == "WORKING"
-        for row in grila_rows
+        entry.get("business_date") == "2026-08-01"
+        and entry.get("status") == "WORKING"
+        for entry in grila_rows
     )
 
 
-def test_google_projection_handler_fails_when_provider_failing(monkeypatch, session, faker_tenant):
+def test_google_projection_provider_failure_is_retried_and_diagnostic_is_kept(
+    monkeypatch, session, faker_tenant
+):
     month = _open_month(session, faker_tenant)
     _seed_working(session, faker_tenant, month)
     monkeypatch.setenv("UGR_S5_GOOGLE_FAIL", "1")
@@ -124,12 +110,29 @@ def test_google_projection_handler_fails_when_provider_failing(monkeypatch, sess
 
     row, result = run_once(locked_by=WORKER_LOCKED_BY)
     assert row is not None
-    assert result is None  # the worker surfaces the failure via None
-    assert row.status == "FAILED"
+    assert result is None
+    assert row.status == "PENDING"
+    assert row.attempts == 1
+    assert "RETRYABLE" in (row.last_error or "")
     assert "UGR_S5_GOOGLE_FAIL" in (row.last_error or "")
-    session.commit()
+    assert row.locked_by is None
+    assert row.locked_at is None
 
-    # The adapter has no last-good to retain — readback returns None.
+    # The provider-authored FAILED diagnostic commits with the retry decision.
+    failed_run = (
+        session.query(SheetProjectionRun)
+        .filter_by(
+            tenant_id=faker_tenant["tenant_id"],
+            store_id=faker_tenant["store_id"],
+            status="FAILED",
+        )
+        .order_by(SheetProjectionRun.id.desc())
+        .first()
+    )
+    assert failed_run is not None
+    assert "UGR_S5_GOOGLE_FAIL" in (failed_run.last_error or "")
+
+    # There was no prior good projection, so retry state must not invent one.
     assert (
         read_store_projection(
             session,
@@ -141,7 +144,7 @@ def test_google_projection_handler_fails_when_provider_failing(monkeypatch, sess
 
 
 def test_google_projection_handler_rejects_cross_tenant_payload(session, faker_tenant):
-    """Tenant mismatch must abort the job before the adapter runs."""
+    """Tenant mismatch is a terminal domain failure, not a retry candidate."""
 
     month = _open_month(session, faker_tenant)
     enqueue(
@@ -163,11 +166,12 @@ def test_google_projection_handler_rejects_cross_tenant_payload(session, faker_t
     assert row is not None
     assert result is None
     assert row.status == "FAILED"
+    assert "TERMINAL" in (row.last_error or "")
     assert "tenant" in (row.last_error or "").lower()
 
 
 def test_google_projection_handler_requires_payload(session, faker_tenant):
-    """A missing ``store_id`` / ``month_id`` raises a domain error."""
+    """A missing ``store_id`` / ``month_id`` is terminal validation."""
 
     enqueue(
         session,
@@ -183,6 +187,7 @@ def test_google_projection_handler_requires_payload(session, faker_tenant):
     assert result is None
     assert row.status == "FAILED"
     assert row.last_error is not None
+    assert "TERMINAL" in row.last_error
 
 
 @pytest.mark.skip(reason="OutboxJob model is registered; smoke assertion only.")
