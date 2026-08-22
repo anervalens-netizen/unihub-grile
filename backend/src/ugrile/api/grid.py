@@ -30,6 +30,7 @@ from ..repositories.models import GridCalculation, Month, Person
 from ..repositories.months import MonthRepository
 from ..repositories.salary import SalaryRepository
 from ..services.attribution import AttributionService
+from ..services.attribution_scope import scope_attribution
 from ..services.auth import Principal, assert_same_tenant
 from ..services.authorization import (
     Capability,
@@ -183,7 +184,6 @@ def get_attribution(
 ) -> AttributionMonthOut:
     authorize(principal, Capability.GRID_READ)
     month = _month_or_404(session, month_id, principal)
-    allowed = month_store_ids(session, principal, month)
     if store_id is not None:
         authorize_store_for_month(
             session,
@@ -192,7 +192,6 @@ def get_attribution(
             month=month,
             store_id=store_id,
         )
-        allowed = {store_id}
 
     attribution_service = AttributionService(session)
     latest_rows = attribution_service.latest_attribution(
@@ -205,7 +204,14 @@ def get_attribution(
         month=month,
         revision=attribution_revision,
     )
-    visible_source_rows = [row for row in summary.attributed if row.store_id in allowed]
+    visible_source_rows, anomalies = scope_attribution(
+        session,
+        principal=principal,
+        month=month,
+        rows=summary.attributed,
+        anomalies=summary.anomalies,
+        requested_store_id=store_id,
+    )
     rows = [
         AttributionRowOut(
             person_id=row.person_id,
@@ -220,16 +226,6 @@ def get_attribution(
         for row in visible_source_rows
     ]
     visible_total = sum((row.amount for row in visible_source_rows), Decimal("0"))
-
-    anomalies: list[dict[str, object]] = []
-    for anomaly in summary.anomalies:
-        anomaly_store = anomaly.get("store_id")
-        if anomaly_store is None:
-            if principal.role.value == "ADMIN" and store_id is None:
-                anomalies.append(dict(anomaly))
-            continue
-        if str(anomaly_store) in allowed:
-            anomalies.append(dict(anomaly))
 
     return AttributionMonthOut(
         month_id=month.id,
