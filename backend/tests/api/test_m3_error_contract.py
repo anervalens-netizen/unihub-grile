@@ -16,6 +16,16 @@ def _month(faker_tenant, *, state: MonthState, revision: int) -> str:
         return month.id
 
 
+def _working_cell(faker_tenant) -> dict[str, str]:
+    return {
+        "person_id": faker_tenant["person_a_id"],
+        "business_date": "2026-08-12",
+        "status": "WORKING",
+        "store_id": faker_tenant["store_id"],
+        "working_kind": "NORMAL",
+    }
+
+
 def test_auth_error_uses_canonical_top_level_envelope(client):
     response = client.get("/session")
 
@@ -31,18 +41,16 @@ def test_month_closed_promotes_semantic_conflict_code(client, faker_tenant):
     month_id = _month(faker_tenant, state=MonthState.CLOSED, revision=7)
 
     response = client.post(
-        f"/months/{month_id}/calendar/apply",
+        f"/months/{month_id}/program/cell?expected_revision=7",
         headers=ADMIN,
-        json={"expected_revision": 7, "changes": []},
+        json=_working_cell(faker_tenant),
     )
 
     assert response.status_code == 409
     assert response.json() == {
         "code": "MONTH_CLOSED",
-        "message": "month is closed",
-        # Top-level code is authoritative; generic legacy conflicts keep this
-        # alias during migration so older internal consumers do not break.
-        "details": {"code": "MONTH_CLOSED", "month_id": month_id},
+        "message": "month is closed; reopen before editing",
+        "details": {"month_id": month_id},
     }
 
 
@@ -50,9 +58,9 @@ def test_stale_revision_has_typed_409_payload(client, faker_tenant):
     month_id = _month(faker_tenant, state=MonthState.OPEN, revision=3)
 
     response = client.post(
-        f"/months/{month_id}/calendar/apply",
+        f"/months/{month_id}/program/cell?expected_revision=2",
         headers=ADMIN,
-        json={"expected_revision": 2, "changes": []},
+        json=_working_cell(faker_tenant),
     )
 
     assert response.status_code == 409
@@ -69,13 +77,7 @@ def test_fastapi_http_exception_is_unwrapped(client, faker_tenant):
     response = client.post(
         f"/months/{month_id}/program/cell?expected_revision=9",
         headers=ADMIN,
-        json={
-            "person_id": faker_tenant["person_a_id"],
-            "business_date": "2026-08-12",
-            "status": "WORKING",
-            "store_id": faker_tenant["store_id"],
-            "working_kind": "NORMAL",
-        },
+        json=_working_cell(faker_tenant),
     )
 
     assert response.status_code == 409
