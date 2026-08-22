@@ -96,9 +96,9 @@ def month_store_ids(
 ) -> set[str]:
     """Return the union of stores visible to the principal during the month.
 
-    Admins are tenant-wide through ``effective_store_ids``. Managers can have
-    effective-dated changes mid-month, so month-scoped read operations use the
-    union of all daily scopes rather than guessing a single date.
+    Admin scope is tenant-wide and independent of effective date, so resolve it
+    once. Managers can change scope mid-month and still require the union of all
+    daily effective scopes.
     """
 
     if month.tenant_id != principal.tenant_id:
@@ -109,6 +109,13 @@ def month_store_ids(
                 "requested_tenant": month.tenant_id,
             },
         )
+    if principal.role is RoleName.ADMIN:
+        return effective_store_ids(
+            session,
+            principal,
+            date(month.year, month.month, 1),
+        )
+
     days = monthrange(month.year, month.month)[1]
     visible: set[str] = set()
     for day_number in range(1, days + 1):
