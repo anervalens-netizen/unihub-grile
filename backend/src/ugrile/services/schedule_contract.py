@@ -44,6 +44,7 @@ def catalog_hash(stores: dict[str, str], people: list[dict[str, str]]) -> str:
                     row["person_id"],
                     row.get("home_store_code", ""),
                     row.get("manager_code", ""),
+                    row.get("effective_home_fingerprint", ""),
                 )
                 for row in people
             ),
