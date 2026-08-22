@@ -52,16 +52,23 @@ def test_close_checklist_returns_blockers_and_revision(client, fixture_month_ope
     assert body["revision"] >= 0
     assert isinstance(body["expected_revision"], int)
     assert body["blockers"], "expected at least one blocker"
+    warning_codes = {"SHEET_CANARY_REQUIRED", "EXTERNAL_RECONCILIATION_REQUIRED"}
     for item in body["blockers"]:
         assert item["code"]
-        assert item["blocking"] is True
+        assert item["blocking"] is (item["code"] not in warning_codes)
 
 
 def test_close_checklist_sorted_by_severity(client, fixture_month_open):
     response = client.get(f"/months/{fixture_month_open}/close-checklist", headers=HEADERS)
     body = response.json()
-    severities = [item["severity"] for item in body["blockers"]]
-    assert severities == sorted(severities)
+    blocking = [item for item in body["blockers"] if item["blocking"]]
+    warnings = [item for item in body["blockers"] if not item["blocking"]]
+    assert [item["severity"] for item in blocking] == sorted(
+        item["severity"] for item in blocking
+    )
+    assert [item["severity"] for item in warnings] == sorted(
+        item["severity"] for item in warnings
+    )
 
 
 def test_reopen_requires_admin_role(engine, client, fixture_month_open, faker_tenant):
@@ -85,11 +92,9 @@ def test_reopen_requires_admin_role(engine, client, fixture_month_open, faker_te
     )
     assert response.status_code == 403
     body = response.json()
-    # The ``ScopeError`` handler returns ``code/message/details`` at the
-    # top level (no ``detail`` wrapper) so the manager UI can show the
-    # precise reason.
     assert body["code"] == "FORBIDDEN"
-    assert "admin" in body["message"].lower()
+    assert body["message"] == "principal does not have the required capability"
+    assert body["details"]["capability"] == "month.reopen"
 
 
 def test_reopen_admin_requires_reason_at_least_four_chars(client, fixture_month_open):
