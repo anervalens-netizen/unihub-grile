@@ -15,7 +15,7 @@ from datetime import date
 from sqlalchemy import select
 
 from ..domain.close import BlockerDetail, CloseValidation
-from ..domain.close_policy import policy_for_rule_pack
+from ..domain.close_policy import ClosePolicy, policy_for_rule_pack
 from ..domain.enums import CloseBlockerCode
 from ..domain.grid import GridAnomalyCode
 from ..domain.rule_pack import RULE_PACK_VERSION, get_default_rule_pack
@@ -205,7 +205,7 @@ class PolicyCloseService(CloseService):
     def _grid_anomaly_blocker(
         row: GridCalculation,
         anomaly: object,
-        policy: object,
+        policy: ClosePolicy,
     ) -> BlockerDetail | None:
         if not isinstance(anomaly, dict):
             return PolicyCloseService._invalid_grid_payload(
@@ -224,8 +224,7 @@ class PolicyCloseService(CloseService):
                 ),
                 message=f"unknown grid anomaly fails closed: {code_value}",
             )
-        close_policy = policy_for_rule_pack(get_default_rule_pack())
-        if not close_policy.grid_is_blocking(anomaly_code):
+        if not policy.grid_is_blocking(anomaly_code):
             return None
         return BlockerDetail(
             code=CloseBlockerCode.GRID_ANOMALY_BLOCKING,
@@ -236,7 +235,7 @@ class PolicyCloseService(CloseService):
             ),
             message=(
                 f"blocking grid anomaly {anomaly_code.value}: "
-                f"{str(anomaly.get('message') or 'no detail')}"
+                f"{(anomaly.get('message') or 'no detail')!s}"
             ),
         )
 
