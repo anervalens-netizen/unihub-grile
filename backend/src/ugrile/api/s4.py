@@ -42,11 +42,11 @@ from ..services.auth import Principal, assert_same_tenant, effective_store_ids
 from ..services.authorization import Capability, authorize
 from ..services.calendar import CalendarChange, CalendarService
 from ..services.close import ReopenRequest
-from ..services.overview import ProgramService
 from ..services.person_scope import effective_home_store_map
 from ..services.policy_checklist import PolicyCloseChecklistService
 from ..services.policy_close import PolicyCloseService
 from ..services.scoped_overview import ScopedExceptionService, ScopedOverviewService
+from ..services.scoped_program import ScopedProgramService
 
 router = APIRouter(prefix="/months", tags=["manager-ui"])
 
@@ -169,7 +169,7 @@ def get_program(
         raise ScopeError("perspective must be 'stores' or 'people'")
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
-    grid = ProgramService(session).month_grid(
+    grid = ScopedProgramService(session).month_grid(
         tenant_id=principal.tenant_id,
         month=month,
         perspective=perspective,
