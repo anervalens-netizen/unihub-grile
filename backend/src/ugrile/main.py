@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import Response
 
 from .api.assignments import router as assignments_router
 from .api.catalog import router as catalog_router
@@ -27,14 +29,16 @@ from .api.schedule import router as schedule_router
 from .api.session import router as session_router
 from .api.worker_api import router as worker_router
 from .core.config import get_settings
-from .core.correlation import bind_correlation_id, resolve_request_correlation_id
+from .core.correlation import (
+    CORRELATION_HEADER,
+    bind_correlation_id,
+    resolve_request_correlation_id,
+)
 from .core.logging import configure_logging, get_logger
 from .domain.errors import DomainError
 
 configure_logging()
 log = get_logger("ugrile.api")
-
-CORRELATION_HEADER = "X-Correlation-ID"
 
 
 def create_app() -> FastAPI:
@@ -50,7 +54,10 @@ def create_app() -> FastAPI:
     )
 
     @app.middleware("http")
-    async def _correlation_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+    async def _correlation_middleware(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         correlation_id = resolve_request_correlation_id(request.headers.get(CORRELATION_HEADER))
         with bind_correlation_id(correlation_id):
             response = await call_next(request)
