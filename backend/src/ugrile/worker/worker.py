@@ -162,7 +162,9 @@ def _retryable_exception(exc: Exception) -> bool:
 
 def _error_text(exc: Exception) -> str:
     if isinstance(exc, DomainError):
-        return f"{exc.code}: {exc.message}"
+        detail_code = exc.details.get("code")
+        code = detail_code if isinstance(detail_code, str) and detail_code else exc.code
+        return f"{code}: {exc.message}"
     text = str(exc)
     return f"{exc.__class__.__name__}: {text if text else repr(exc)}"
 
