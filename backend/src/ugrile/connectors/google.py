@@ -101,6 +101,23 @@ def _last_run_for(session: Session, *, tenant_id: str, store_id: str) -> SheetPr
     )
 
 
+def _last_successful_run_for(
+    session: Session,
+    *,
+    tenant_id: str,
+    store_id: str,
+) -> SheetProjectionRun | None:
+    """Return the newest persisted successful projection, ignoring failures."""
+
+    return (
+        session.query(SheetProjectionRun)
+        .filter_by(tenant_id=tenant_id, store_id=store_id, status="DONE")
+        .filter(SheetProjectionRun.last_success_generation.isnot(None))
+        .order_by(SheetProjectionRun.id.desc())
+        .first()
+    )
+
+
 def _binding_for(session: Session, *, tenant_id: str, store_id: str) -> SheetBinding | None:
     return (
         session.query(SheetBinding).filter_by(tenant_id=tenant_id, store_id=store_id).one_or_none()
@@ -180,16 +197,11 @@ def write_store_projection(
         )
 
     if is_provider_failing():
-        # Append a NEW FAILED row alongside any prior DONE rows so the
-        # last-good payload is preserved untouched (AC-12 fail-closed
-        # semantics). When no prior DONE exists, the FAILED row is the
-        # only row and surfaces the absence to the canary readback.
-        last_run = _last_run_for(session, tenant_id=tenant_id, store_id=store_id)
-        last_success = (
-            last_run.last_success_generation
-            if last_run is not None and last_run.status == "DONE"
-            else None
-        )
+        # Append a NEW FAILED row alongside prior DONE rows. The authoritative
+        # last-good payload remains the newest successful row, even after
+        # multiple consecutive provider failures.
+        last_good = _last_successful_run_for(session, tenant_id=tenant_id, store_id=store_id)
+        last_success = last_good.last_success_generation if last_good is not None else None
         now = _now_utc()
         session.add(
             SheetProjectionRun(
@@ -262,18 +274,12 @@ def read_store_projection(
 ) -> StoreProjection | None:
     """Return the last-good projection for one store, or ``None``.
 
-    The function reads the most recent ``sheet_projection_runs`` row
-    whose ``last_success_generation`` is non-null and whose status is
-    ``DONE``. Failed runs are ignored: the last-good payload always
-    wins.
+    Failed attempts are diagnostic rows only. Readback always returns the
+    newest successful payload and therefore cannot expose an attempted-but-not-
+    persisted provider projection as if it were last-good state.
     """
 
-    row = (
-        session.query(SheetProjectionRun)
-        .filter_by(tenant_id=tenant_id, store_id=store_id)
-        .order_by(SheetProjectionRun.id.desc())
-        .first()
-    )
+    row = _last_successful_run_for(session, tenant_id=tenant_id, store_id=store_id)
     if row is None or row.last_success_generation is None:
         return None
     payload = _json_loads(row.payload)
@@ -294,12 +300,7 @@ def last_error(
 ) -> str | None:
     """Return the most recent adapter error string for the store."""
 
-    row = (
-        session.query(SheetProjectionRun)
-        .filter_by(tenant_id=tenant_id, store_id=store_id)
-        .order_by(SheetProjectionRun.id.desc())
-        .first()
-    )
+    row = _last_run_for(session, tenant_id=tenant_id, store_id=store_id)
     return row.last_error if row is not None else None
 
 
@@ -311,12 +312,7 @@ def last_run_at(
 ) -> datetime | None:
     """Return the ``last_run_at`` of the most recent projection run."""
 
-    row = (
-        session.query(SheetProjectionRun)
-        .filter_by(tenant_id=tenant_id, store_id=store_id)
-        .order_by(SheetProjectionRun.id.desc())
-        .first()
-    )
+    row = _last_run_for(session, tenant_id=tenant_id, store_id=store_id)
     return row.last_run_at if row is not None else None
 
 

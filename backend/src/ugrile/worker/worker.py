@@ -1,32 +1,24 @@
-"""One durable worker.
+"""Durable outbox worker with committed leases and bounded recovery.
 
-The worker is the single process that consumes the ``outbox_jobs`` table. It
-is designed for synchronous use during S1 (one in-process loop) so the API
-can prove the read/write separation and so later stages can replace the loop
-with an OS scheduler without touching the job registry.
+The worker is the single authority that executes ``outbox_jobs``. Claims are
+committed before handler execution so a process crash leaves visible RUNNING
+state instead of an invisible transaction. A later worker deterministically
+recovers an expired lease, while active handlers keep the row locked for their
+execution transaction so another worker cannot steal a long-running live job.
 
-* ``claim_next`` locks the next pending row using ``SELECT ... FOR UPDATE
-  SKIP LOCKED`` semantics — every PostgreSQL version we target supports
-  this, and SQLite in tests serialises naturally.
-* ``run_once`` is the unit of work exposed to the API and tests; it commits
-  on success and marks the row FAILED on domain errors.
-* ``run_forever`` is the production loop with a small poll interval.
-* ``python -m ugrile.worker.worker`` invokes ``run_forever`` so the S1
-  contract (one durable worker) has a real executable entrypoint.
+Queue guarantees implemented here:
 
-Authority and idempotency
--------------------------
-
-The contract is explicit: the worker is the **only** authority that
-executes jobs. The API layer is permitted to enqueue; it MUST NOT run a job
-inline. This module enforces the boundary by always requiring ``locked_by``
-to be the worker's own identifier — the API helpers in
-``ugrile.api.worker_api`` are restricted to enqueue/list.
-
-The job row carries the tenant id in its ``tenant_id`` column. The handler
-receives that tenant id as a separate parameter so it can scope its work;
-the API cannot substitute a different tenant by tampering with the payload
-because the row's tenant is authoritative.
+* only due ``PENDING`` jobs (``run_after <= now``) can be claimed;
+* claims use ``SELECT .. FOR UPDATE SKIP LOCKED`` and persist attempts/lease;
+* stale ``RUNNING`` jobs are requeued after the configured lease timeout, or
+  terminally failed once their retry budget is exhausted;
+* explicitly retryable provider/infrastructure failures use bounded
+  deterministic exponential backoff;
+* business/domain validation failures are terminal and are never retried;
+* handler-authored failure diagnostics (for example last-good Google state or
+  an ExportRun FAILED marker) commit together with job settlement when the
+  transaction is healthy; a poisoned DB transaction falls back to a clean
+  settlement transaction.
 """
 
 from __future__ import annotations
@@ -34,10 +26,11 @@ from __future__ import annotations
 import signal
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
@@ -47,6 +40,7 @@ from ..domain.enums import JobKind
 from ..domain.errors import DomainError
 from ..repositories.models import OutboxJob
 from .jobs import JobResult, get_handler
+from .policy import retry_delay_seconds, retry_policy_for
 
 log = get_logger("ugrile.worker")
 
@@ -57,21 +51,91 @@ WORKER_LOCKED_BY = "ugrile-worker"
 class RunSummary:
     processed: int = 0
     done: int = 0
+    retried: int = 0
     failed: int = 0
     empty_polls: int = 0
 
 
-def claim_next(session: Session, *, locked_by: str) -> OutboxJob | None:
-    """Atomically claim the next pending job.
+def recover_stale_jobs(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    lease_seconds: int | None = None,
+) -> tuple[int, int]:
+    """Recover expired RUNNING leases.
 
-    Uses ``with_for_update(skip_locked=True)`` on PostgreSQL; SQLite ignores
-    the option but still serialises because of the global write lock.
+    Returns ``(requeued, failed)``. A stale row below its per-kind attempt budget
+    becomes immediately due ``PENDING`` work. Once the budget is exhausted it
+    becomes terminal ``FAILED`` so no job can remain stranded forever.
     """
 
+    now_value = now or _utcnow()
+    lease = lease_seconds or get_settings().worker_lease_seconds
+    cutoff = now_value - timedelta(seconds=lease)
+    rows = list(
+        session.execute(
+            select(OutboxJob)
+            .where(
+                OutboxJob.status == "RUNNING",
+                or_(OutboxJob.locked_at.is_(None), OutboxJob.locked_at <= cutoff),
+            )
+            .order_by(OutboxJob.id)
+            .with_for_update(skip_locked=True)
+        ).scalars()
+    )
+    requeued = 0
+    failed = 0
+    for row in rows:
+        policy = retry_policy_for(row.kind)
+        previous_worker = row.locked_by or "unknown"
+        if row.attempts >= policy.max_attempts:
+            row.status = "FAILED"
+            row.last_error = (
+                "LEASE_EXPIRED_MAX_ATTEMPTS: "
+                f"worker={previous_worker}; attempts={row.attempts}/{policy.max_attempts}"
+            )
+            failed += 1
+        else:
+            row.status = "PENDING"
+            row.run_after = now_value
+            row.last_error = (
+                "LEASE_EXPIRED: "
+                f"worker={previous_worker}; recovering attempt {row.attempts}"
+            )
+            requeued += 1
+        row.locked_at = None
+        row.locked_by = None
+    if rows:
+        session.flush()
+    return requeued, failed
+
+
+def claim_next(
+    session: Session,
+    *,
+    locked_by: str,
+    now: datetime | None = None,
+    lease_seconds: int | None = None,
+) -> OutboxJob | None:
+    """Atomically claim the next due job after stale-lease recovery.
+
+    The caller owns the transaction. ``run_once`` commits this claim before
+    handler execution; direct tests/operators may also call it transactionally.
+    """
+
+    now_value = now or _utcnow()
+    recover_stale_jobs(
+        session,
+        now=now_value,
+        lease_seconds=lease_seconds,
+    )
     stmt = (
         select(OutboxJob)
-        .where(OutboxJob.status == "PENDING")
-        .order_by(OutboxJob.id)
+        .where(
+            OutboxJob.status == "PENDING",
+            OutboxJob.run_after <= now_value,
+        )
+        .order_by(OutboxJob.run_after, OutboxJob.id)
         .limit(1)
         .with_for_update(skip_locked=True)
     )
@@ -80,62 +144,165 @@ def claim_next(session: Session, *, locked_by: str) -> OutboxJob | None:
         return None
     row.status = "RUNNING"
     row.attempts += 1
-    row.locked_at = _utcnow()
+    row.locked_at = now_value
     row.locked_by = locked_by
     session.flush()
     return row
 
 
+def _retryable_exception(exc: Exception) -> bool:
+    """Classify failures that are safe to retry under the job idempotency contract."""
+
+    from ..connectors.google import GoogleAdapterError
+
+    if isinstance(exc, GoogleAdapterError):
+        return True
+    return isinstance(exc, ConnectionError | TimeoutError | OSError | OperationalError)
+
+
+def _error_text(exc: Exception) -> str:
+    if isinstance(exc, DomainError):
+        return f"{exc.code}: {exc.message}"
+    text = str(exc)
+    return f"{exc.__class__.__name__}: {text if text else repr(exc)}"
+
+
+def _settle_failure(row: OutboxJob, exc: Exception, *, now: datetime) -> None:
+    """Move one RUNNING row to retryable PENDING or terminal FAILED."""
+
+    policy = retry_policy_for(row.kind)
+    error = _error_text(exc)
+    retryable = _retryable_exception(exc)
+    if retryable and row.attempts < policy.max_attempts:
+        delay = retry_delay_seconds(row.kind, row.attempts)
+        row.status = "PENDING"
+        row.run_after = now + timedelta(seconds=delay)
+        row.last_error = (
+            f"RETRYABLE attempt={row.attempts}/{policy.max_attempts} "
+            f"retry_in={delay}s: {error}"
+        )
+        log.warning(
+            "job_retry_scheduled",
+            kind=row.kind,
+            attempts=row.attempts,
+            max_attempts=policy.max_attempts,
+            retry_in_seconds=delay,
+            error=error,
+        )
+    else:
+        row.status = "FAILED"
+        reason = "RETRY_EXHAUSTED" if retryable else "TERMINAL"
+        row.last_error = f"{reason} attempt={row.attempts}/{policy.max_attempts}: {error}"
+        log.warning(
+            "job_failed",
+            kind=row.kind,
+            attempts=row.attempts,
+            max_attempts=policy.max_attempts,
+            retryable=retryable,
+            error=error,
+        )
+    row.locked_at = None
+    row.locked_by = None
+
+
+def _settle_in_clean_transaction(
+    *,
+    job_id: int,
+    locked_by: str,
+    exc: Exception,
+) -> OutboxJob | None:
+    """Fallback settlement after the handler transaction itself became unusable."""
+
+    with session_scope() as settlement_session:
+        row = settlement_session.execute(
+            select(OutboxJob).where(OutboxJob.id == job_id).with_for_update()
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        if row.status == "RUNNING" and row.locked_by == locked_by:
+            _settle_failure(row, exc, now=_utcnow())
+            settlement_session.flush()
+        settled = row
+    return settled
+
+
 def run_once(
     *, locked_by: str = WORKER_LOCKED_BY
 ) -> tuple[OutboxJob | None, JobResult | None]:
-    """Process a single job inside its own transaction.
+    """Claim, commit the lease, then execute exactly one due job.
 
-    Returns the row and the result. ``row`` is ``None`` when there is no
-    pending work; ``result`` is ``None`` when the row failed (the exception
-    is re-raised to the caller for visibility).
+    Claim and execution use separate transactions. A normal handler failure is
+    settled inside the execution transaction so handler-authored diagnostic
+    rows survive. If that transaction cannot flush/commit, it is rolled back and
+    only the outbox state is settled in a fresh transaction.
     """
 
-    with session_scope() as session:
-        row = claim_next(session, locked_by=locked_by)
-        if row is None:
+    with session_scope() as claim_session:
+        claimed = claim_next(claim_session, locked_by=locked_by)
+        if claimed is None:
             return None, None
-        try:
-            handler = get_handler(row.kind)
-            payload = _parse_payload(row.payload)
-            result = handler(session, row.tenant_id, payload)
-        except DomainError as exc:
-            row.status = "FAILED"
-            row.last_error = f"{exc.code}: {exc.message}"
-            log.warning("job_failed", kind=row.kind, error=exc.code, message=exc.message)
-            return row, None
-        except Exception as exc:  # pragma: no cover - last-resort guard
-            row.status = "FAILED"
-            row.last_error = f"UNEXPECTED: {exc!r}"
-            log.error("job_crashed", kind=row.kind, error=repr(exc))
-            return row, None
-        else:
-            row.status = result.status
-            row.last_error = None
-            return row, result
+        job_id = claimed.id
+
+    handler_error: Exception | None = None
+    execution_row: OutboxJob | None = None
+    result: JobResult | None = None
+    try:
+        with session_scope() as execution_session:
+            row = execution_session.execute(
+                select(OutboxJob).where(OutboxJob.id == job_id).with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return None, None
+            if row.status != "RUNNING" or row.locked_by != locked_by:
+                log.warning(
+                    "job_lease_lost_before_execution",
+                    job_id=job_id,
+                    status=row.status,
+                    locked_by=row.locked_by,
+                    expected_locked_by=locked_by,
+                )
+                return row, None
+
+            try:
+                handler = get_handler(row.kind)
+                payload = _parse_payload(row.payload)
+                result = handler(execution_session, row.tenant_id, payload)
+            except Exception as exc:
+                handler_error = exc
+                _settle_failure(row, exc, now=_utcnow())
+            else:
+                row.status = result.status
+                row.last_error = None
+                row.locked_at = None
+                row.locked_by = None
+            execution_session.flush()
+            execution_row = row
+    except Exception as transaction_exc:
+        settlement_error = handler_error or transaction_exc
+        settled = _settle_in_clean_transaction(
+            job_id=job_id,
+            locked_by=locked_by,
+            exc=settlement_error,
+        )
+        return settled or claimed, None
+
+    if handler_error is not None:
+        return execution_row or claimed, None
+    return execution_row or claimed, result
 
 
 def run_once_safe() -> tuple[OutboxJob | None, JobResult | None]:
-    """``run_once`` wrapper that swallows exceptions for the loop body."""
+    """``run_once`` wrapper that keeps the process loop alive on infrastructure errors."""
 
     try:
         return run_once()
-    except Exception as exc:  # pragma: no cover - last-resort guard
+    except Exception as exc:  # pragma: no cover - database/process guard
         log.error("worker_iteration_crashed", error=repr(exc))
         return None, None
 
 
 def run_forever(*, stop_after_empty_polls: int | None = None) -> RunSummary:
-    """Drive the worker loop until SIGINT or N empty polls.
-
-    ``stop_after_empty_polls`` is the unit-test entry point — production
-    deployments run ``run_forever()`` under a process supervisor.
-    """
+    """Drive the worker loop until SIGINT/SIGTERM or N empty polls."""
 
     settings = get_settings()
     stop_flag = {"stop": False}
@@ -146,23 +313,23 @@ def run_forever(*, stop_after_empty_polls: int | None = None) -> RunSummary:
     signal.signal(signal.SIGINT, _signal)
     signal.signal(signal.SIGTERM, _signal)
 
-    summary = RunSummary(processed=0, done=0, failed=0, empty_polls=0)
+    summary = RunSummary()
     while not stop_flag["stop"]:
         row, result = run_once_safe()
         if row is None:
             summary.empty_polls += 1
-            if stop_after_empty_polls is not None and (
-                summary.empty_polls >= stop_after_empty_polls
-            ):
+            if stop_after_empty_polls is not None and summary.empty_polls >= stop_after_empty_polls:
                 break
             time.sleep(settings.worker_poll_seconds)
             continue
         summary.empty_polls = 0
         summary.processed += 1
-        if result is None:
-            summary.failed += 1
-        else:
+        if result is not None and row.status == "DONE":
             summary.done += 1
+        elif row.status == "PENDING":
+            summary.retried += 1
+        else:
+            summary.failed += 1
     return summary
 
 
@@ -178,7 +345,6 @@ def enqueue(
     """Insert a job row. Caller is responsible for committing."""
 
     if kind not in JobKind.__members__.values() and kind not in [k.value for k in JobKind]:
-        # Allow passing enum members or their values.
         kind = JobKind(kind).value
     row = OutboxJob(
         tenant_id=tenant_id,
@@ -218,11 +384,7 @@ def _utcnow() -> datetime:
 
 
 def main() -> RunSummary:
-    """Programmatic entrypoint used by ``python -m ugrile.worker.worker``.
-
-    The process runs the durable loop under SIGINT/SIGTERM control. The
-    summary is logged on exit so supervisors can verify a clean shutdown.
-    """
+    """Executable durable-worker entrypoint."""
 
     log.info("worker_started", locked_by=WORKER_LOCKED_BY)
     summary = run_forever()
@@ -230,6 +392,7 @@ def main() -> RunSummary:
         "worker_stopped",
         processed=summary.processed,
         done=summary.done,
+        retried=summary.retried,
         failed=summary.failed,
         empty_polls=summary.empty_polls,
     )
@@ -246,6 +409,7 @@ __all__ = [
     "claim_next",
     "enqueue",
     "main",
+    "recover_stale_jobs",
     "run_once",
     "run_once_safe",
     "run_forever",

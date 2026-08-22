@@ -46,6 +46,15 @@ class Settings(BaseSettings):
         validation_alias="UGRILE_WORKER_POLL_SECONDS",
         description="Outbox poll interval for the durable worker loop.",
     )
+    worker_lease_seconds: int = Field(
+        default=1800,
+        ge=30,
+        validation_alias="UGRILE_WORKER_LEASE_SECONDS",
+        description=(
+            "RUNNING job lease timeout. A committed claim older than this can be "
+            "recovered after a worker/process crash."
+        ),
+    )
 
     # Connector / fixture ingestion. Retail remains read-only during the
     # standalone plugin-candidate program.
