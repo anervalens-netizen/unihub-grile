@@ -28,20 +28,22 @@ from ugrile.core import database
 
 pytestmark = [pytest.mark.postgres, pytest.mark.performance]
 
-# Initial ceilings are deliberately above the existing implementation while
-# still small constants independent of 80-store / 160-person cardinality.
-# After the first PostgreSQL CI sample these are tightened to measured headroom.
+# PostgreSQL calibration sample, run 32584789529 / head 8d1c69a:
+# overview=21, program=6, grid=35, store_screen=163 SELECTs. Query ceilings are
+# locked to that measured baseline so any additional round-trip is a visible
+# regression. Latency ceilings are deliberately much wider than the sample to
+# avoid treating shared-runner jitter as an application failure.
 QUERY_BUDGETS = {
-    "overview": 30,
-    "program": 15,
-    "grid": 45,
-    "store_screen": 170,
+    "overview": 21,
+    "program": 6,
+    "grid": 35,
+    "store_screen": 163,
 }
 LATENCY_BUDGET_MS = {
-    "overview": 5000.0,
-    "program": 6000.0,
-    "grid": 2000.0,
-    "store_screen": 12000.0,
+    "overview": 2000.0,
+    "program": 4000.0,
+    "grid": 1000.0,
+    "store_screen": 8000.0,
 }
 
 
