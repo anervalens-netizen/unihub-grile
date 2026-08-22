@@ -35,6 +35,7 @@ from ugrile.domain.identifiers import (
     make_tenant_id,
 )
 from ugrile.domain.rule_pack import hash_inputs
+from ugrile.repositories.epay import month_source
 from ugrile.repositories.holidays import HolidayRepository
 from ugrile.repositories.models import (
     EpayObservation,
@@ -130,6 +131,7 @@ def _seed(pg_session) -> dict[str, str]:
         tickets=Decimal("480"),
         flip=Decimal("0"),
     )
+    month = MonthRepository(pg_session).get_or_create(tenant_id, 2026, 8)
     pg_session.commit()
     observed_at = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
     pg_session.add_all(
@@ -142,7 +144,7 @@ def _seed(pg_session) -> dict[str, str]:
                 value=1,
                 raw_value="1",
                 is_valid=True,
-                source="SHEET",
+                source=month_source(month.id),
                 observed_at=observed_at,
             ),
             EpayObservation(
@@ -153,7 +155,7 @@ def _seed(pg_session) -> dict[str, str]:
                 value=10,
                 raw_value="10",
                 is_valid=True,
-                source="SHEET",
+                source=month_source(month.id),
                 observed_at=observed_at,
             ),
         ]
