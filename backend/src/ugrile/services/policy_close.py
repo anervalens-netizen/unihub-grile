@@ -4,7 +4,8 @@ This service keeps the proven transaction/locking/audit implementation from
 ``CloseService`` while applying the versioned close policy. Final close requires
 fresh month-bound E-pay plus one valid grid snapshot for every active person at
 the exact current month revision. Persisted grid anomalies are enforced here,
-not merely classified in policy metadata.
+not merely classified in policy metadata. The persisted financial values are
+also revalidated against their current authoritative sources before close.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from ..repositories.epay import latest_snapshot
 from ..repositories.models import GridCalculation, Month, Person, Store
 from .close import CloseService
 from .epay import freshness_for_month
+from .financial_inputs import financial_input_mismatch
 
 
 class PolicyCloseService(CloseService):
@@ -78,7 +80,7 @@ class PolicyCloseService(CloseService):
         return CloseValidation(blockers=tuple(blockers))
 
     def _grid_blockers(self, *, tenant_id: str, month: Month) -> list[BlockerDetail]:
-        """Validate exact-revision grid completeness, anomalies and E-pay inputs."""
+        """Validate exact-revision grid completeness, anomalies and live inputs."""
 
         policy = policy_for_rule_pack(get_default_rule_pack())
         people = list(
@@ -156,6 +158,24 @@ class PolicyCloseService(CloseService):
                     blocker = self._grid_anomaly_blocker(row, anomaly, policy)
                     if blocker is not None:
                         blockers.append(blocker)
+
+            financial_mismatch = financial_input_mismatch(
+                self.session,
+                tenant_id=tenant_id,
+                month=month,
+                person=person,
+                row=row,
+            )
+            if financial_mismatch is not None:
+                blockers.append(
+                    BlockerDetail(
+                        code=CloseBlockerCode.GRID_CURRENT_REVISION_REQUIRED,
+                        store_id=row.store_id,
+                        person_id=row.person_id,
+                        business_date=None,
+                        message=f"grid financial inputs are stale: {financial_mismatch}",
+                    )
+                )
 
             inputs = payload.get("inputs")
             epay_inputs = inputs.get("epay") if isinstance(inputs, dict) else None
