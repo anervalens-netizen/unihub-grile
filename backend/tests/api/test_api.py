@@ -98,7 +98,8 @@ def test_create_and_conflict(client, faker_tenant):
     r = client.post(f"/months/{month.id}/assignments", json=payload2, headers=HEADERS)
     assert r.status_code == 409
     body = r.json()
-    assert body["detail"]["code"] == "COVERAGE_INVARIANT"
+    assert body["code"] == "COVERAGE_INVARIANT"
+    assert set(body) == {"code", "message", "details"}
 
 
 def test_ingest_fixture_enqueues_job(client, worker_runner):
