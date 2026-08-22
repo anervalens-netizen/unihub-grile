@@ -1,8 +1,9 @@
-"""Historical month participant and payroll-home resolution.
+"""Historical payroll participant and home-store resolution.
 
 Current catalog flags are operational state, not historical payroll truth. A
 person who leaves or transfers after working in a month must remain present in
-that month's Pontaj/grid/close evidence.
+that month's Pontaj/grid/close evidence. Conversely, monthly payroll ownership
+must never be guessed when dated store history is ambiguous.
 """
 
 from __future__ import annotations
@@ -21,14 +22,27 @@ from ..repositories.models import (
     SiteDayAssignment,
     StoreAssignment,
 )
-from .person_scope import effective_home_store_map
 
 
 @dataclass(frozen=True, slots=True)
 class PayrollHomeStoreResolution:
-    store_id: str
-    changed_during_month: bool
-    unresolved_dates: tuple[date, ...]
+    """One safe month-level home-store resolution.
+
+    ``store_id`` is populated only when the month has exactly one defensible
+    payroll home store. A person with dated history in multiple stores during
+    the same month is deliberately unresolved: the current rule pack has one
+    monthly ownership store and the product contract does not define split
+    monthly semantics yet.
+    """
+
+    store_id: str | None
+    candidate_store_ids: tuple[str, ...]
+    has_dated_history: bool
+
+    @property
+    def ambiguous(self) -> bool:
+        return len(self.candidate_store_ids) > 1
+
 
 
 def _month_bounds(month: Month) -> tuple[date, date]:
@@ -36,6 +50,7 @@ def _month_bounds(month: Month) -> tuple[date, date]:
         date(month.year, month.month, 1),
         date(month.year, month.month, monthrange(month.year, month.month)[1]),
     )
+
 
 
 def month_participant_ids(
@@ -48,10 +63,10 @@ def month_participant_ids(
 
     Rules:
     - any explicit calendar/absence row makes the person a participant;
-    - effective-dated StoreAssignment overlap makes the person a participant,
-      even if the current catalog row is inactive;
+    - effective-dated ``StoreAssignment`` overlap makes the person a
+      participant even if the current catalog row is inactive;
     - current ``is_active`` is a compatibility fallback only for people with no
-      StoreAssignment history at all.
+      ``StoreAssignment`` history at all.
 
     This prevents a leaver from disappearing from the latest Pontaj/grid simply
     because ``people.is_active`` changed after their worked days.
@@ -107,6 +122,7 @@ def month_participant_ids(
     return participant_ids & existing_ids
 
 
+
 def payroll_home_store_for_month(
     session: Session,
     *,
@@ -114,52 +130,43 @@ def payroll_home_store_for_month(
     month: Month,
     person: Person,
 ) -> PayrollHomeStoreResolution:
-    """Resolve a deterministic monthly ownership store from historical data.
+    """Resolve the only safe month-level payroll home store, if one exists.
 
-    The current rule pack persists one monthly home-store id even though
-    authorization/classification is effective-dated per day. When dated history
-    contains a transfer, the latest resolved home store in the month is used for
-    preview/output ownership and ``changed_during_month`` is raised so close can
-    fail on the explicit payroll anomaly rather than silently inventing split
-    monthly semantics.
-
-    Gaps in known dated history are also reported. For legacy people with no
-    dated history, ``effective_home_store_map`` deliberately supplies the
-    current catalog home store as its compatibility fallback.
+    Historical assignments take precedence over the mutable catalog home store.
+    If the person has no dated assignment history, the current catalog value is
+    the explicit legacy fallback. If dated history exists but the month overlaps
+    no assignment, or overlaps more than one distinct store, ``store_id`` is
+    ``None`` so payroll calculation/close can fail closed instead of inventing a
+    monthly ownership rule.
     """
 
     first_day, last_day = _month_bounds(month)
-    dates = {
-        date(month.year, month.month, day)
-        for day in range(1, monthrange(month.year, month.month)[1] + 1)
-    }
-    mapping = effective_home_store_map(
-        session,
-        tenant_id=tenant_id,
-        person_ids={person.id},
-        business_dates=dates,
+    history = list(
+        session.execute(
+            select(StoreAssignment).where(
+                StoreAssignment.tenant_id == tenant_id,
+                StoreAssignment.person_id == person.id,
+            )
+        ).scalars()
     )
-    resolved_by_date = {
-        business_date: mapping[(person.id, business_date)]
-        for business_date in dates
-        if (person.id, business_date) in mapping
-    }
-    unresolved = tuple(sorted(dates - set(resolved_by_date)))
-    distinct = {store_id for store_id in resolved_by_date.values()}
+    if not history:
+        return PayrollHomeStoreResolution(
+            store_id=person.home_store_id,
+            candidate_store_ids=(person.home_store_id,),
+            has_dated_history=False,
+        )
 
-    if resolved_by_date:
-        latest_date = max(resolved_by_date)
-        store_id = resolved_by_date[latest_date]
-    else:
-        # This can happen only with malformed/gapped dated history. Keep preview
-        # deterministic, but the unresolved anomaly must block final close.
-        store_id = person.home_store_id
-
-    _ = (first_day, last_day)  # bounds are kept explicit for future policy evolution.
+    overlapping = [
+        assignment
+        for assignment in history
+        if assignment.effective_from <= last_day
+        and (assignment.effective_to is None or assignment.effective_to >= first_day)
+    ]
+    candidates = tuple(sorted({assignment.store_id for assignment in overlapping}))
     return PayrollHomeStoreResolution(
-        store_id=store_id,
-        changed_during_month=len(distinct) > 1,
-        unresolved_dates=unresolved,
+        store_id=candidates[0] if len(candidates) == 1 else None,
+        candidate_store_ids=candidates,
+        has_dated_history=True,
     )
 
 
