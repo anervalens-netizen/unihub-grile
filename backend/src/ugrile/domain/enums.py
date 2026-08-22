@@ -79,10 +79,8 @@ class CloseBlockerCode(StrEnum):
     """Typed close blockers.
 
     Each blocker represents a deterministic precondition that a month must
-    satisfy before close. Anything that depends on stages beyond S3 (full E-pay
-    refresh, signed Sheet canary readback, external reconciliation) is added
-    here as a typed code so the integrator can wire the missing check later
-    without bypassing existing ones.
+    satisfy before close. Payroll-significant grid snapshots must exist for the
+    exact current revision and may not carry an unresolved blocking grid anomaly.
     """
 
     STORE_DAY_UNCOVERED = "STORE_DAY_UNCOVERED"
@@ -93,6 +91,8 @@ class CloseBlockerCode(StrEnum):
     SALES_ORPHAN_FOR_COVERED_DAY = "SALES_ORPHAN_FOR_COVERED_DAY"
     TARGET_ZERO_FOR_WORKED_STORE = "TARGET_ZERO_FOR_WORKED_STORE"
     EPAY_FRESH_READBACK_REQUIRED = "EPAY_FRESH_READBACK_REQUIRED"
+    GRID_CURRENT_REVISION_REQUIRED = "GRID_CURRENT_REVISION_REQUIRED"
+    GRID_ANOMALY_BLOCKING = "GRID_ANOMALY_BLOCKING"
     SHEET_CANARY_REQUIRED = "SHEET_CANARY_REQUIRED"
     EXTERNAL_RECONCILIATION_REQUIRED = "EXTERNAL_RECONCILIATION_REQUIRED"
 
