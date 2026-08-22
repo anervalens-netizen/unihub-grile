@@ -14,6 +14,11 @@ import {
   type HealthReport,
   type MonthSummary,
 } from "./api/client";
+import {
+  canAccessRoute,
+  type Capability,
+  type SessionInfo,
+} from "./capabilities";
 import { currentRoute, subscribeRoute, type Route } from "./router";
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "/api") as string;
@@ -28,6 +33,8 @@ const tenant = (import.meta.env.VITE_DEV_TENANT ??
 export function App() {
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [session, setSession] = useState<SessionInfo | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [months, setMonths] = useState<MonthSummary[]>([]);
   const [monthsError, setMonthsError] = useState<string | null>(null);
   const [route, setRoute] = useState<Route>(() => currentRoute());
@@ -35,6 +42,10 @@ export function App() {
   const api = useMemo<ApiClient>(
     () => createApiClient({ baseUrl: apiBaseUrl, identity, tenant }),
     [],
+  );
+  const capabilities = useMemo<ReadonlySet<Capability>>(
+    () => new Set(session?.capabilities ?? []),
+    [session],
   );
 
   useEffect(() => subscribeRoute(setRoute), []);
@@ -50,6 +61,16 @@ export function App() {
       })
       .catch((e: unknown) => {
         if (!cancelled) setHealthError(String(e));
+      });
+    api.get<SessionInfo>("/session")
+      .then((principal) => {
+        if (!cancelled) {
+          setSession(principal);
+          setSessionError(null);
+        }
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setSessionError(String(e));
       });
     api.get<MonthSummary[]>("/months")
       .then((list) => {
@@ -68,7 +89,14 @@ export function App() {
 
   return (
     <Layout
-      sidebar={<Nav route={route} months={months} />}
+      sidebar={
+        <Nav
+          route={route}
+          months={months}
+          capabilities={capabilities}
+          role={session?.role ?? null}
+        />
+      }
       header={
         <div className="topbar-inner">
           <div className="topbar-copy">
@@ -84,7 +112,15 @@ export function App() {
         </div>
       }
     >
-      <PageRouter api={api} route={route} months={months} monthsError={monthsError} />
+      <PageRouter
+        api={api}
+        route={route}
+        months={months}
+        monthsError={monthsError}
+        session={session}
+        sessionError={sessionError}
+        capabilities={capabilities}
+      />
     </Layout>
   );
 }
@@ -94,9 +130,40 @@ interface PageRouterProps {
   route: Route;
   months: MonthSummary[];
   monthsError: string | null;
+  session: SessionInfo | null;
+  sessionError: string | null;
+  capabilities: ReadonlySet<Capability>;
 }
 
-function PageRouter({ api, route, months, monthsError }: PageRouterProps) {
+function PageRouter({
+  api,
+  route,
+  months,
+  monthsError,
+  session,
+  sessionError,
+  capabilities,
+}: PageRouterProps) {
+  if (sessionError) {
+    return (
+      <section className="card" aria-label="Drepturi indisponibile">
+        <h2>Nu pot încărca drepturile de acces</h2>
+        <p className="error" role="alert">{sessionError}</p>
+      </section>
+    );
+  }
+  if (!session) {
+    return <section className="card"><p className="muted">Verific drepturile de acces…</p></section>;
+  }
+  if (!canAccessRoute(capabilities, route)) {
+    return (
+      <section className="card" aria-label="Acces indisponibil">
+        <h2>Acces indisponibil</h2>
+        <p className="muted">Rolul {session.role} nu are capability-urile necesare pentru această secțiune.</p>
+      </section>
+    );
+  }
+
   switch (route.name) {
     case "program":
       return <Program api={api} months={months} monthsError={monthsError} />;
