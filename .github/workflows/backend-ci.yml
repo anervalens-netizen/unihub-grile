@@ -55,7 +55,7 @@ jobs:
         run: alembic upgrade head
 
       - name: M3 performance contract
-        run: pytest tests/integration/test_m3_performance.py -q -s
+        run: pytest tests/integration/test_m3_performance.py tests/integration/test_m3_calendar_save_evaluation.py -q -s
 
       - name: Test
         run: pytest tests -q -m "not performance"
