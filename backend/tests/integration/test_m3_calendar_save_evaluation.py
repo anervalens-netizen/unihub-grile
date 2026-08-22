@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import date
 from time import perf_counter
 
 import pytest
@@ -68,7 +69,7 @@ def test_one_cell_save_cost_and_revision_snapshot_invariants(
 ) -> None:
     dataset = seed_performance_dataset(pg_session)
     person_id = dataset.person_ids[0]
-    business_date = "2026-08-01"
+    business_date = date(2026, 8, 1)
 
     selects = 0
     statements = 0
@@ -95,7 +96,7 @@ def test_one_cell_save_cost_and_revision_snapshot_invariants(
                 headers=dataset.headers,
                 json={
                     "person_id": person_id,
-                    "business_date": business_date,
+                    "business_date": business_date.isoformat(),
                     "status": "OFF",
                     "store_id": None,
                     "working_kind": None,
