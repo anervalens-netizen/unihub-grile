@@ -25,7 +25,7 @@ sources instead of substituting zeroes (docs/MOBIUP_RULE_PACK.md §1-2, §5):
   generation per store/date);
 * the monthly incentive comes from the versioned ``IncentiveInput`` row
   (latest version per person/month);
-* E-pay comes from the latest *valid* ``EpayObservation`` per category;
+* E-pay comes from the latest *valid* month-bound ``EpayObservation`` per category;
 * salary/tickets/Flip come from the effective-dated HR/payroll master; a
   missing master row is an explicit ``SALARY_MASTER_MISSING`` marker with
   a documented zero substitution;
@@ -261,9 +261,6 @@ class GridService:
                 )
             ).scalars()
         )
-        # Pontaj rows exist for every day of the month under the active
-        # revision, but in case the schedule is missing we still synthesise
-        # them by treating OFF as the default.
         working_days = 0
         leave_days = 0
         off_days = 0
@@ -276,8 +273,6 @@ class GridService:
                 leave_days += 1
             else:
                 off_days += 1
-        # ``PontajProjection`` covers every day; if no rows at all, default
-        # to month-length OFF so the totals are well-defined.
         if not assignments:
             off_days = days_in_month
 
@@ -301,9 +296,6 @@ class GridService:
         for proj_row in proj_rows:
             sales_index[(proj_row.store_id, proj_row.business_date)] = proj_row.amount
 
-        # Physical store-day rows drive the SIM quantity and the
-        # missing-sale detection. The latest generation per (store, date)
-        # wins — mirroring the attribution projection semantics.
         sale_rows = list(
             self.session.execute(
                 select(SalesStoreDay).where(
@@ -340,9 +332,6 @@ class GridService:
             ).scalars()
         )
         for target_row in store_targets:
-            # The divisor is the connector-authoritative selling-day count
-            # (``zile_vanzare_magazin``); a missing count falls back to the
-            # calendar month length and is surfaced as an explicit marker.
             if target_row.sales_days is not None:
                 divisor = target_row.sales_days
             else:
@@ -377,9 +366,6 @@ class GridService:
                 )
             )
 
-        # Build one row per (date, store_id) for the person, or a single
-        # OFF row per date when the person is not assigned.
-        # The grid engine treats absences implicitly (working_kind=None).
         rows_by_day: dict[date, CalendarGridDay | None] = {}
         for offset in range(days_in_month):
             rows_by_day[date(month.year, month.month, 1 + offset)] = None
@@ -427,8 +413,6 @@ class GridService:
                 sim_quantity=sim_index.get((store_id, d), 0),
             )
         days = [d for d in (rows_by_day[d] for d in sorted(rows_by_day)) if d is not None]
-        # ``first``/``last`` anchor the month window; the engine does not
-        # need them.
         _ = (first, last)
         return days, pontaj, anomalies, target_sources
 
@@ -493,8 +477,6 @@ class GridService:
         if person is None or person.tenant_id != tenant_id:
             raise ValueError(f"person not found: {person_id}")
         anomalies: list[dict[str, object]] = []
-        # SALARY + TICKETS + FLIP from master; on_date is the first day of
-        # the month so the latest effective window is selected.
         first_day = date(month.year, month.month, 1)
         salary, tickets, flip = SalaryRepository(
             self.session
@@ -502,9 +484,6 @@ class GridService:
             tenant_id=tenant_id, person_id=person_id, on_date=first_day
         )
         if salary is None or tickets is None or flip is None:
-            # Missing effective-dated HR/payroll master: substitute zeroes
-            # deterministically and surface an explicit anomaly — never a
-            # silent zero.
             salary = Decimal("0")
             tickets = Decimal("0")
             flip = Decimal("0")
@@ -535,17 +514,13 @@ class GridService:
             home_store_id=person.home_store_id,
         )
         anomalies.extend(day_anomalies)
-        # E-pay snapshot: only valid observations count; the latest valid
-        # row per category per (store, person) wins.
         epay = latest_snapshot(
             self.session,
             tenant_id=tenant_id,
+            month_id=month.id,
             store_id=person.home_store_id,
             person_id=person_id,
         )
-        # Versioned Romanian legal holiday markers + admin overrides:
-        # informational-only canonical inputs (no schedule/Pontaj/target/pay
-        # effect).
         holidays = [
             {
                 "version": marker.version,
@@ -662,8 +637,6 @@ class GridService:
             ).scalars()
         )
 
-    # Convenience for tests / API: read the latest GridCalculation for one
-    # person/month.
     def latest_for_person(
         self, *, tenant_id: str, month_id: str, person_id: str
     ) -> GridCalculation | None:
@@ -680,17 +653,10 @@ class GridService:
         return self.session.execute(stmt).scalar_one_or_none()
 
 
-# Re-export the AttributionService for callers that want both calculations
-# from a single service handle.
 __all__ = [
     "AttributionService",
     "GridService",
     "GridSnapshot",
 ]
 
-
-# ``Store`` is referenced by the schema FKs; the service is given a
-# tenant id and uses ``Person`` to discover the home store id. We import
-# the model here only to keep mypy happy with the unused import pattern
-# used in the rest of the codebase.
 _ = Store
