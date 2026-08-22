@@ -3,10 +3,16 @@
 Export/canary reads are authorized from persisted/requested store resources,
 not merely from role + tenant. New export runs persist their month and store set
 in the summary so later polling/download authorization can be replayed safely.
+
+Export enqueue is idempotent on ``(tenant_id, kind, idempotency_key)``. An exact
+replay returns the original ExportRun instead of creating a second job; reusing
+the same key for a different logical request fails closed. Artifact targets are
+operation-scoped so distinct exports cannot overwrite each other's history.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -16,12 +22,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..api.deps import current_principal, db_session
 from ..domain.enums import JobKind, RoleName
-from ..domain.errors import DomainError, NotFoundError, ScopeError
-from ..repositories.models import ExportRun
+from ..domain.errors import ConflictError, DomainError, NotFoundError, ScopeError
+from ..repositories.models import ExportRun, OutboxJob
 from ..repositories.months import MonthRepository
 from ..services.auth import Principal, assert_same_tenant
 from ..services.authorization import (
@@ -38,9 +45,133 @@ from ..worker.worker import enqueue
 router = APIRouter(prefix="/months", tags=["export"])
 
 
-def _artifact_uri_hint(filename: str) -> str:
+def _artifact_uri_hint(
+    *,
+    tenant_id: str,
+    kind: JobKind,
+    idempotency_key: str,
+    filename: str,
+) -> str:
+    """Return an operation-isolated deterministic artifact target.
+
+    A replay of the same logical operation gets the same path. Different
+    tenants, kinds, or idempotency keys never share a target, so a later export
+    cannot silently mutate bytes behind an older ExportRun.
+    """
+
     base = os.environ.get("UGR_S5_EXPORT_DIR") or tempfile.gettempdir()
-    return os.path.join(base, "ugrile-s5-exports", filename)
+    operation = f"{tenant_id}\0{kind.value}\0{idempotency_key}".encode()
+    operation_id = hashlib.sha256(operation).hexdigest()[:20]
+    return os.path.join(base, "ugrile-s5-exports", operation_id, filename)
+
+
+def _summary_dict(run: ExportRun) -> dict[str, Any]:
+    raw = run.summary
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return dict(decoded) if isinstance(decoded, dict) else {}
+    return {}
+
+
+def _outbox_payload(row: OutboxJob) -> dict[str, Any]:
+    try:
+        decoded = json.loads(row.payload or "{}")
+    except json.JSONDecodeError as exc:
+        raise DomainError(
+            "persisted export job payload is invalid",
+            details={"code": "EXPORT_IDEMPOTENCY_STATE_INVALID", "outbox_job_id": row.id},
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise DomainError(
+            "persisted export job payload is not an object",
+            details={"code": "EXPORT_IDEMPOTENCY_STATE_INVALID", "outbox_job_id": row.id},
+        )
+    return decoded
+
+
+def _existing_export_for_key(
+    session: Session,
+    *,
+    tenant_id: str,
+    month_id: str,
+    kind: JobKind,
+    idempotency_key: str,
+    payload: dict[str, Any],
+) -> ExportRun | None:
+    """Resolve an exact idempotent replay or reject semantic key reuse."""
+
+    row = (
+        session.query(OutboxJob)
+        .filter_by(
+            tenant_id=tenant_id,
+            kind=kind.value,
+            idempotency_key=idempotency_key,
+        )
+        .one_or_none()
+    )
+    if row is None:
+        return None
+
+    persisted_payload = _outbox_payload(row)
+    export_run_id = persisted_payload.get("export_run_id")
+    if not isinstance(export_run_id, int) or export_run_id <= 0:
+        raise DomainError(
+            "persisted export idempotency state has no ExportRun",
+            details={
+                "code": "EXPORT_IDEMPOTENCY_STATE_INVALID",
+                "outbox_job_id": row.id,
+                "idempotency_key": idempotency_key,
+            },
+        )
+    run = session.get(ExportRun, export_run_id)
+    if run is None or run.tenant_id != tenant_id or run.kind != kind.value:
+        raise DomainError(
+            "persisted export idempotency state is inconsistent",
+            details={
+                "code": "EXPORT_IDEMPOTENCY_STATE_INVALID",
+                "outbox_job_id": row.id,
+                "export_run_id": export_run_id,
+            },
+        )
+
+    summary = _summary_dict(run)
+    if summary.get("month_id") != month_id or summary.get("payload") != payload:
+        raise ConflictError(
+            "idempotency key was already used for a different export request",
+            details={
+                "code": "EXPORT_IDEMPOTENCY_KEY_REUSED",
+                "idempotency_key": idempotency_key,
+                "existing_job_id": run.id,
+            },
+        )
+    return run
+
+
+def _export_response(
+    run: ExportRun,
+    *,
+    month_id: str,
+    idempotency_key: str,
+    replayed: bool,
+) -> dict[str, Any]:
+    summary = _summary_dict(run)
+    hint = summary.get("artifact_uri_hint")
+    artifact_uri_hint = str(hint) if isinstance(hint, str) and hint else run.artifact_uri
+    status = "ENQUEUED" if run.status == "PENDING" else run.status
+    return {
+        "kind": run.kind,
+        "month_id": month_id,
+        "job_id": run.id,
+        "idempotency_key": idempotency_key,
+        "status": status,
+        "artifact_uri_hint": artifact_uri_hint,
+        "replayed": replayed,
+    }
 
 
 def _enqueue_export(
@@ -58,52 +189,77 @@ def _enqueue_export(
             "idempotency_key is required",
             details={"code": "EXPORT_KEY_REQUIRED"},
         )
-    export_run = create_pending_export_run(
+
+    existing = _existing_export_for_key(
         session,
         tenant_id=tenant_id,
-        kind=kind.value,
-        summary={
-            "idempotency_key": idempotency_key,
-            "month_id": month_id,
-            "payload": payload,
-        },
-        artifact_uri_hint=artifact_uri_hint,
-    )
-    enqueue(
-        session,
-        tenant_id=tenant_id,
-        kind=kind.value,
+        month_id=month_id,
+        kind=kind,
         idempotency_key=idempotency_key,
-        payload={
-            **payload,
-            "month_id": month_id,
-            "artifact_uri_hint": artifact_uri_hint,
-            "export_run_id": export_run.id,
-        },
+        payload=payload,
     )
-    job_id = export_run.id
-    session.commit()
-    return {
-        "kind": kind.value,
-        "month_id": month_id,
-        "job_id": job_id,
-        "idempotency_key": idempotency_key,
-        "status": "ENQUEUED",
-        "artifact_uri_hint": artifact_uri_hint,
-    }
+    if existing is not None:
+        return _export_response(
+            existing,
+            month_id=month_id,
+            idempotency_key=idempotency_key,
+            replayed=True,
+        )
 
+    try:
+        export_run = create_pending_export_run(
+            session,
+            tenant_id=tenant_id,
+            kind=kind.value,
+            summary={
+                "idempotency_key": idempotency_key,
+                "month_id": month_id,
+                "payload": payload,
+            },
+            artifact_uri_hint=artifact_uri_hint,
+        )
+        enqueue(
+            session,
+            tenant_id=tenant_id,
+            kind=kind.value,
+            idempotency_key=idempotency_key,
+            payload={
+                **payload,
+                "month_id": month_id,
+                "artifact_uri_hint": artifact_uri_hint,
+                "export_run_id": export_run.id,
+            },
+        )
+        session.commit()
+    except IntegrityError:
+        # A concurrent request can win the scoped uniqueness race after our
+        # optimistic lookup. Roll back the losing ExportRun as well, then replay
+        # the committed winner. If there is no exact winner, preserve the DB
+        # failure instead of guessing.
+        session.rollback()
+        winner = _existing_export_for_key(
+            session,
+            tenant_id=tenant_id,
+            month_id=month_id,
+            kind=kind,
+            idempotency_key=idempotency_key,
+            payload=payload,
+        )
+        if winner is None:
+            raise
+        return _export_response(
+            winner,
+            month_id=month_id,
+            idempotency_key=idempotency_key,
+            replayed=True,
+        )
 
-def _summary_dict(run: ExportRun) -> dict[str, Any]:
-    raw = run.summary
-    if isinstance(raw, dict):
-        return dict(raw)
-    if isinstance(raw, str):
-        try:
-            decoded = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-        return dict(decoded) if isinstance(decoded, dict) else {}
-    return {}
+    return _export_response(
+        export_run,
+        month_id=month_id,
+        idempotency_key=idempotency_key,
+        replayed=False,
+    )
 
 
 def _run_store_ids(run: ExportRun, *, month_id: str) -> set[str] | None:
@@ -183,8 +339,13 @@ def enqueue_export_store(
         store_id=store_id,
     )
     idempotency_key = body.get("idempotency_key") or f"store::{store_id}::{month_id}"
+    if not isinstance(idempotency_key, str) or not idempotency_key:
+        raise DomainError("idempotency_key is required", details={"code": "EXPORT_KEY_REQUIRED"})
     artifact_uri_hint = _artifact_uri_hint(
-        f"ugrile_{month.year}-{month.month:02d}_{store_id[:8]}_grila_pontaj.xlsx"
+        tenant_id=principal.tenant_id,
+        kind=JobKind.EXPORT_XLSX_STORE,
+        idempotency_key=idempotency_key,
+        filename=f"ugrile_{month.year}-{month.month:02d}_{store_id[:8]}_grila_pontaj.xlsx",
     )
     return _enqueue_export(
         session,
@@ -223,7 +384,14 @@ def enqueue_export_bulk(
             store_ids=normalized,
         )
     idempotency_key = body.get("idempotency_key") or f"bulk::{month_id}"
-    artifact_uri_hint = _artifact_uri_hint(f"ugrile_{month.year}-{month.month:02d}_bulk.zip")
+    if not isinstance(idempotency_key, str) or not idempotency_key:
+        raise DomainError("idempotency_key is required", details={"code": "EXPORT_KEY_REQUIRED"})
+    artifact_uri_hint = _artifact_uri_hint(
+        tenant_id=principal.tenant_id,
+        kind=JobKind.EXPORT_XLSX_BULK,
+        idempotency_key=idempotency_key,
+        filename=f"ugrile_{month.year}-{month.month:02d}_bulk.zip",
+    )
     return _enqueue_export(
         session,
         tenant_id=principal.tenant_id,
@@ -261,8 +429,13 @@ def enqueue_export_pontaj_only(
             store_ids=normalized,
         )
     idempotency_key = body.get("idempotency_key") or f"pontaj::{month_id}"
+    if not isinstance(idempotency_key, str) or not idempotency_key:
+        raise DomainError("idempotency_key is required", details={"code": "EXPORT_KEY_REQUIRED"})
     artifact_uri_hint = _artifact_uri_hint(
-        f"ugrile_{month.year}-{month.month:02d}_pontaj.xlsx"
+        tenant_id=principal.tenant_id,
+        kind=JobKind.EXPORT_PONTAJ_ONLY,
+        idempotency_key=idempotency_key,
+        filename=f"ugrile_{month.year}-{month.month:02d}_pontaj.xlsx",
     )
     return _enqueue_export(
         session,
