@@ -37,11 +37,11 @@ from ..services.authorization import (
     authorize_store_for_month,
     month_store_ids,
 )
-from ..services.grid import GridService
 from ..services.month_write_gate import (
     lock_month_for_financial_write,
     lock_months_for_salary_write,
 )
+from ..services.payroll_grid import PayrollGridService
 
 router = APIRouter(prefix="/months", tags=["grid"])
 
@@ -58,11 +58,7 @@ def compute_grid(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> GridComputeOut:
-    """Recompute payroll only while the month is open/reopened.
-
-    The month row lock serializes this authoritative financial write with
-    close/reopen so a grid recomputation cannot land after a successful close.
-    """
+    """Recompute payroll only while the month is open/reopened."""
 
     authorize(principal, Capability.GRID_COMPUTE)
     month = lock_month_for_financial_write(
@@ -70,7 +66,7 @@ def compute_grid(
         tenant_id=principal.tenant_id,
         month_id=month_id,
     )
-    _, rows = GridService(session).compute_and_persist(
+    _, rows = PayrollGridService(session).compute_and_persist(
         tenant_id=principal.tenant_id,
         month=month,
     )
@@ -139,12 +135,7 @@ def upsert_salary(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> SalaryMasterOut:
-    """Write payroll master data without changing any closed payroll period.
-
-    Salary windows are effective-dated rather than month-owned. The write gate
-    therefore checks every existing closed tenant month overlapped by the
-    requested effective window, not only the month used to reach this endpoint.
-    """
+    """Write payroll master data without changing any closed payroll period."""
 
     authorize(principal, Capability.PAYROLL_MASTER_WRITE)
     lock_months_for_salary_write(
@@ -177,8 +168,6 @@ def list_salary(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> list[SalaryMasterOut]:
-    """Read payroll master data; current policy is administrator-only."""
-
     authorize(principal, Capability.PAYROLL_MASTER_READ)
     _month_or_404(session, month_id, principal)
     rows = SalaryRepository(session).list_for_tenant(principal.tenant_id)
@@ -192,8 +181,6 @@ def get_attribution(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> AttributionMonthOut:
-    """Return attribution rows, totals and anomalies only inside caller scope."""
-
     authorize(principal, Capability.GRID_READ)
     month = _month_or_404(session, month_id, principal)
     allowed = month_store_ids(session, principal, month)
@@ -271,8 +258,6 @@ def get_holidays(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> HolidayMonthOut:
-    """Read informational versioned holiday markers for the month."""
-
     authorize(principal, Capability.HOLIDAY_READ)
     month = _month_or_404(session, month_id, principal)
     markers = HolidayRepository(session).markers_for_month(
