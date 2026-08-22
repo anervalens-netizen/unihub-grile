@@ -36,22 +36,18 @@ from ..api.schemas import (
 )
 from ..domain.enums import DayStatus, MonthState, WorkingKind
 from ..domain.errors import DomainError, ScopeError
-from ..repositories.models import Month, Person, PontajProjection, SiteDayAssignment
+from ..repositories.models import Month, Person, PontajProjection
 from ..repositories.months import MonthRepository
 from ..services.auth import Principal, assert_same_tenant, effective_store_ids
 from ..services.authorization import Capability, authorize
 from ..services.calendar import CalendarChange, CalendarService
 from ..services.close import ReopenRequest
 from ..services.overview import ExceptionService, OverviewService, ProgramService
+from ..services.person_scope import effective_home_store_map
 from ..services.policy_checklist import PolicyCloseChecklistService
 from ..services.policy_close import PolicyCloseService
 
 router = APIRouter(prefix="/months", tags=["manager-ui"])
-
-
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
 
 
 def _allowed_by_date(session: Session, principal: Principal, month: Month) -> dict[date, set[str]]:
@@ -64,15 +60,12 @@ def _allowed_by_date(session: Session, principal: Principal, month: Month) -> di
     }
 
 
-def _scope_or_admin(session: Session, principal: Principal, month: Month) -> Mapping[date, set[str]] | None:
+def _scope_or_admin(
+    session: Session, principal: Principal, month: Month
+) -> Mapping[date, set[str]] | None:
     if principal.role.value == "ADMIN":
         return None
     return _allowed_by_date(session, principal, month)
-
-
-# ---------------------------------------------------------------------------
-# Overview
-# ---------------------------------------------------------------------------
 
 
 @router.get("/{month_id}/overview", response_model=OverviewOut)
@@ -97,19 +90,12 @@ def get_overview(
         revision=report.revision,
         rule_pack_version=report.rule_pack_version,
         kpis=OverviewKpiOut(**dataclasses.asdict(report.kpis)),
-        managers=[
-            OverviewManagerRowOut(**dataclasses.asdict(row)) for row in report.managers
-        ],
+        managers=[OverviewManagerRowOut(**dataclasses.asdict(row)) for row in report.managers],
         needs_attention=[
             OverviewNeedsAttentionOut(**dataclasses.asdict(row))
             for row in report.needs_attention
         ],
     )
-
-
-# ---------------------------------------------------------------------------
-# Program (per magazine / per agenți)
-# ---------------------------------------------------------------------------
 
 
 @router.get("/{month_id}/program/choices", response_model=ProgramChoicesOut)
@@ -137,19 +123,21 @@ def get_program_choices(
     people = list(
         session.execute(
             select(Person)
-            .where(
-                Person.tenant_id == principal.tenant_id,
-                Person.is_active.is_(True),
-                Person.home_store_id.in_(allowed),
-            )
+            .where(Person.tenant_id == principal.tenant_id, Person.is_active.is_(True))
             .order_by(Person.display_name)
         ).scalars()
+    )
+    effective_home = effective_home_store_map(
+        session,
+        tenant_id=principal.tenant_id,
+        person_ids={person.id for person in people},
+        business_dates={business_date},
     )
     choices = [
         ProgramChoiceOut(
             person_id=person.id,
             display_name=person.display_name,
-            home_store_id=person.home_store_id,
+            home_store_id=effective_home[(person.id, business_date)],
             allowed_store_ids=sorted(allowed),
             working_kinds=[
                 WorkingKind.NORMAL,
@@ -158,6 +146,7 @@ def get_program_choices(
             ],
         )
         for person in people
+        if effective_home.get((person.id, business_date)) in allowed
     ]
     return ProgramChoicesOut(
         month_id=month.id,
@@ -247,11 +236,7 @@ def post_program_cell(
     except DomainError as exc:
         raise HTTPException(
             status_code=exc.http_status,
-            detail={
-                "code": exc.code,
-                "message": exc.message,
-                "details": exc.details,
-            },
+            detail={"code": exc.code, "message": exc.message, "details": exc.details},
         ) from exc
     return CalendarProjectionOut(
         month_id=result.month_id,
@@ -261,11 +246,6 @@ def post_program_cell(
         coverage_count=len(result.coverage),
         pontaj_count=len(result.pontaj),
     )
-
-
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
 
 
 @router.get("/{month_id}/exceptions", response_model=list[ExceptionOut])
@@ -283,11 +263,6 @@ def get_exceptions(
         manager_scope_store_ids=_scope_or_admin(session, principal, month),
     )
     return [ExceptionOut(**dataclasses.asdict(entry)) for entry in entries]
-
-
-# ---------------------------------------------------------------------------
-# Close checklist + reopen
-# ---------------------------------------------------------------------------
 
 
 @router.get("/{month_id}/close-checklist", response_model=CloseChecklistOut)
@@ -340,11 +315,7 @@ def post_reopen(
     except DomainError as exc:
         raise HTTPException(
             status_code=exc.http_status,
-            detail={
-                "code": exc.code,
-                "message": exc.message,
-                "details": exc.details,
-            },
+            detail={"code": exc.code, "message": exc.message, "details": exc.details},
         ) from exc
     session.refresh(month)
     checklist = PolicyCloseChecklistService(session).month_checklist(
@@ -363,18 +334,13 @@ def post_reopen(
     )
 
 
-# ---------------------------------------------------------------------------
-# Pontaj (read-only, per month for the manager page)
-# ---------------------------------------------------------------------------
-
-
 @router.get("/{month_id}/pontaj-totals")
 def get_pontaj_totals(
     month_id: str,
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> dict[str, object]:
-    """Per-person monthly Pontaj totals (hours + day counts)."""
+    """Per-person monthly Pontaj totals filtered by effective home-store scope."""
 
     authorize(principal, Capability.SCHEDULE_READ)
     month = MonthRepository(session).get(month_id)
@@ -389,22 +355,16 @@ def get_pontaj_totals(
             )
         ).scalars()
     )
+    effective_home = effective_home_store_map(
+        session,
+        tenant_id=principal.tenant_id,
+        person_ids={row.person_id for row in rows},
+        business_dates={row.business_date for row in rows},
+    )
     by_person: dict[str, dict[str, float | int]] = {}
     for row in rows:
-        person = (
-            session.execute(
-                select(SiteDayAssignment).where(
-                    SiteDayAssignment.tenant_id == principal.tenant_id,
-                    SiteDayAssignment.month_id == month.id,
-                    SiteDayAssignment.person_id == row.person_id,
-                    SiteDayAssignment.business_date == row.business_date,
-                )
-            )
-            .scalars()
-            .first()
-        )
-        home_store = person.store_id if person else None
-        if home_store and home_store not in allowed.get(row.business_date, set()):
+        home_store = effective_home.get((row.person_id, row.business_date))
+        if home_store is None or home_store not in allowed.get(row.business_date, set()):
             continue
         bucket = by_person.setdefault(
             row.person_id,
