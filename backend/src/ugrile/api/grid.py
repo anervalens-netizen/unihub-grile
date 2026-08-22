@@ -6,7 +6,7 @@ from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..api.deps import current_principal, db_session
@@ -77,7 +77,7 @@ def get_grid(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> list[GridCalculationOut]:
-    """Read only current-rule-pack/current-revision grid rows in caller scope."""
+    """Read the latest available current-rule-pack grid snapshot in caller scope."""
 
     authorize(principal, Capability.GRID_READ)
     month = _month_or_404(session, month_id, principal)
@@ -93,13 +93,24 @@ def get_grid(
         allowed_stores = {store_id}
     if not allowed_stores:
         return []
+
+    latest_revision = session.execute(
+        select(func.max(GridCalculation.revision)).where(
+            GridCalculation.tenant_id == principal.tenant_id,
+            GridCalculation.month_id == month.id,
+            GridCalculation.rule_pack_version == RULE_PACK_VERSION,
+        )
+    ).scalar_one()
+    if latest_revision is None:
+        return []
+
     rows = list(
         session.execute(
             select(GridCalculation)
             .where(
                 GridCalculation.tenant_id == principal.tenant_id,
                 GridCalculation.month_id == month.id,
-                GridCalculation.revision == month.revision,
+                GridCalculation.revision == latest_revision,
                 GridCalculation.rule_pack_version == RULE_PACK_VERSION,
                 GridCalculation.store_id.in_(allowed_stores),
             )
@@ -178,10 +189,16 @@ def get_attribution(
         )
         allowed = {store_id}
 
-    summary = AttributionService(session).summary_for_revision(
+    attribution_service = AttributionService(session)
+    latest_rows = attribution_service.latest_attribution(
         tenant_id=principal.tenant_id,
         month=month,
-        revision=month.revision,
+    )
+    attribution_revision = latest_rows[0].revision if latest_rows else month.revision
+    summary = attribution_service.summary_for_revision(
+        tenant_id=principal.tenant_id,
+        month=month,
+        revision=attribution_revision,
     )
     visible_source_rows = [row for row in summary.attributed if row.store_id in allowed]
     rows = [
@@ -203,8 +220,6 @@ def get_attribution(
     for anomaly in summary.anomalies:
         anomaly_store = anomaly.get("store_id")
         if anomaly_store is None:
-            # Store-less anomalies are safe only for tenant-wide admins. A
-            # manager-scoped response must not leak an out-of-scope person id.
             if principal.role.value == "ADMIN" and store_id is None:
                 anomalies.append(dict(anomaly))
             continue
