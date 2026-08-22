@@ -39,18 +39,18 @@ def scope_attribution(
     """Return only attribution facts whose complete resource tuple is visible."""
 
     if principal.role is RoleName.ADMIN:
-        visible_rows = [
+        admin_rows = [
             row
             for row in rows
             if requested_store_id is None or row.store_id == requested_store_id
         ]
-        visible_anomalies = [
+        admin_anomalies = [
             dict(anomaly)
             for anomaly in anomalies
             if requested_store_id is None
             or str(anomaly.get("store_id") or "") == requested_store_id
         ]
-        return visible_rows, visible_anomalies
+        return admin_rows, admin_anomalies
 
     person_dates: set[tuple[str, date]] = {
         (row.person_id, row.business_date) for row in rows
