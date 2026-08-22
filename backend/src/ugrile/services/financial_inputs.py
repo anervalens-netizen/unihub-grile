@@ -29,7 +29,7 @@ from ..repositories.models import (
     StoreTarget,
 )
 from ..repositories.salary import SalaryRepository
-from .grid import GridService
+from .payroll_grid import PayrollGridService
 
 
 def _as_decimal(value: object) -> Decimal | None:
@@ -155,7 +155,7 @@ def _current_snapshot_mismatch(
     if not isinstance(sales_generation, str) or not sales_generation:
         return "grid payload has no sales generation discriminator"
 
-    expected = GridService(session).compute_for_person(
+    expected = PayrollGridService(session).compute_for_person(
         tenant_id=tenant_id,
         month=month,
         person_id=person.id,
