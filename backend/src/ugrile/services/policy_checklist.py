@@ -16,9 +16,8 @@ from ..domain.close_policy import policy_for_rule_pack
 from ..domain.enums import CloseBlockerCode, MonthState
 from ..domain.rule_pack import get_default_rule_pack
 from ..repositories.models import Month, OutboxJob
-from .overview import CloseChecklist, ChecklistItem
+from .overview import ChecklistItem, CloseChecklist
 from .policy_close import PolicyCloseService
-
 
 _SEVERITY: dict[str, int] = {
     CloseBlockerCode.STORE_DAY_UNCOVERED.value: 1,
