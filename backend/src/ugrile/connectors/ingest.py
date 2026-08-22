@@ -3,8 +3,7 @@
 Accepts a validated ``ConnectorV1Payload`` and applies it to PostgreSQL. The
 ingest is idempotent for the tenant/generation pair: re-running produces the
 same rows and never modifies audit state. Sales rows are upserted by
-(tenant, store, date, generation) — the physical total is immutable; only
-its presence is updated.
+(tenant, store, date, generation).
 
 Tenant safety
 -------------
@@ -16,6 +15,8 @@ Tenant safety
 * Foreign references are validated against the caller tenant before any
   write, so a fixture with a cross-tenant store reference fails fast with a
   precise error.
+* Financial periods touched by sales/targets/incentives are locked before any
+  payload write. A CLOSED period rejects the whole ingest atomically.
 """
 
 from __future__ import annotations
@@ -24,10 +25,11 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from ..domain.errors import ConnectorError, NotFoundError
+from ..domain.enums import MonthState
+from ..domain.errors import ConflictError, ConnectorError, NotFoundError
 from ..domain.identifiers import (
     make_person_id,
     make_store_id,
@@ -36,6 +38,7 @@ from ..domain.identifiers import (
 )
 from ..repositories.models import (
     IncentiveInput,
+    Month,
     Person,
     Store,
     StoreTarget,
@@ -74,6 +77,11 @@ class FixtureConnector:
                 details={"tenant_id": tenant_id},
             )
 
+        # This must run before even catalog writes. The same Month row lock is
+        # used by close/reopen and the other financial write gates, so ingest
+        # cannot race a close into publishing a mixed historical snapshot.
+        self._lock_writable_financial_periods(payload, tenant_id)
+
         tenant = self._ensure_tenant(tenant_id)
         tenant_token = tenant_slug_from_tenant_id(tenant.id)
 
@@ -102,6 +110,48 @@ class FixtureConnector:
         }
 
     # --- helpers -----------------------------------------------------------
+
+    def _lock_writable_financial_periods(
+        self,
+        payload: ConnectorV1Payload,
+        tenant_id: str,
+    ) -> None:
+        periods = {
+            (record.business_date.year, record.business_date.month)
+            for record in payload.sales
+        }
+        periods.update((record.year, record.month) for record in payload.targets)
+        periods.update((record.year, record.month) for record in payload.incentives)
+        if not periods:
+            return
+
+        period_predicates = [
+            and_(Month.year == year, Month.month == month)
+            for year, month in sorted(periods)
+        ]
+        months = list(
+            self.session.execute(
+                select(Month)
+                .where(
+                    Month.tenant_id == tenant_id,
+                    or_(*period_predicates),
+                )
+                .order_by(Month.year, Month.month)
+                .with_for_update()
+            ).scalars()
+        )
+        closed = [month for month in months if month.state == MonthState.CLOSED.value]
+        if closed:
+            raise ConflictError(
+                "fixture ingest touches a closed financial period",
+                details={
+                    "code": "MONTH_CLOSED",
+                    "closed_month_ids": [month.id for month in closed],
+                    "closed_periods": [
+                        f"{month.year:04d}-{month.month:02d}" for month in closed
+                    ],
+                },
+            )
 
     def _ensure_tenant(self, tenant_id: str) -> Tenant:
         existing = self.session.get(Tenant, tenant_id)
