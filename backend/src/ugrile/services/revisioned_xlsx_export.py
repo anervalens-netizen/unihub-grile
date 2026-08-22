@@ -14,9 +14,10 @@ from __future__ import annotations
 import io
 import json
 import zipfile
+from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Iterable
+from typing import Iterable, cast
 
 from openpyxl import Workbook
 from sqlalchemy import select
@@ -113,7 +114,7 @@ def _sales(
     month_id: str,
     store_id: str,
     revision: int,
-) -> dict[tuple[str, object], Decimal]:
+) -> dict[tuple[str, date], Decimal]:
     rows = list(
         session.execute(
             select(SalesPersonDayProjection).where(
@@ -124,7 +125,7 @@ def _sales(
             )
         ).scalars()
     )
-    result: dict[tuple[str, object], Decimal] = {}
+    result: dict[tuple[str, date], Decimal] = {}
     for row in rows:
         key = (row.person_id, row.business_date)
         result[key] = result.get(key, Decimal("0")) + Decimal(str(row.amount))
@@ -196,11 +197,14 @@ def render_store_export_at_revision(
     # The established formatting helper displays ``month.revision`` in the
     # workbook header. Supply a read-only view whose revision is the pinned data
     # revision rather than a later administrative close/reopen revision.
-    month_view = SimpleNamespace(
-        id=month.id,
-        year=month.year,
-        month=month.month,
-        revision=revision,
+    month_view = cast(
+        Month,
+        SimpleNamespace(
+            id=month.id,
+            year=month.year,
+            month=month.month,
+            revision=revision,
+        ),
     )
 
     workbook = Workbook()
