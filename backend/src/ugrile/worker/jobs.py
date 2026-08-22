@@ -209,12 +209,25 @@ def _job_export_scaffold(
 
 
 def _write_bytes(uri: str, payload: bytes) -> None:
-    """Persist the rendered workbook bytes to ``uri`` (a non-tracked path)."""
+    """Atomically publish bytes without exposing a partial target file."""
     import os
+    import tempfile
 
-    os.makedirs(os.path.dirname(uri), exist_ok=True)
-    with open(uri, "wb") as fh:
-        fh.write(payload)
+    directory = os.path.dirname(uri)
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".ugrile-artifact-", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, uri)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _resolve_export_run_id(
