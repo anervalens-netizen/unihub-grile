@@ -99,9 +99,12 @@ def scope_attribution(
         if anomaly_store not in allowed:
             continue
         anomaly_person = anomaly.get("person_id")
-        if isinstance(anomaly_person, str) and anomaly_person:
-            if effective_home.get((anomaly_person, business_date)) not in allowed:
-                continue
+        if (
+            isinstance(anomaly_person, str)
+            and anomaly_person
+            and effective_home.get((anomaly_person, business_date)) not in allowed
+        ):
+            continue
         visible_anomalies.append(dict(anomaly))
 
     return visible_rows, visible_anomalies
