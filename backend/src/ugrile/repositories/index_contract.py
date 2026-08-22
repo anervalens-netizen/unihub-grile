@@ -13,13 +13,7 @@ from __future__ import annotations
 
 from sqlalchemy import Index, text
 
-from .models import (
-    EpayObservation,
-    GridCalculation,
-    OutboxJob,
-    SalesStoreDay,
-    SheetProjectionRun,
-)
+from .models import EpayObservation, GridCalculation, OutboxJob, SalesStoreDay, SheetProjectionRun
 
 
 INDEX_CONTRACT = (
