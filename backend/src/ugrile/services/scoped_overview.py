@@ -288,20 +288,19 @@ class ScopedOverviewService:
 
         pontaj_rows: list[tuple[str, date, str]] = []
         if visible_person_ids:
-            pontaj_rows = list(
-                self.session.execute(
-                    select(
-                        PontajProjection.person_id,
-                        PontajProjection.business_date,
-                        PontajProjection.status,
-                    ).where(
-                        PontajProjection.tenant_id == tenant_id,
-                        PontajProjection.month_id == month.id,
-                        PontajProjection.revision == month.revision,
-                        PontajProjection.person_id.in_(visible_person_ids),
-                    )
-                ).all()
-            )
+            raw_pontaj_rows = self.session.execute(
+                select(
+                    PontajProjection.person_id,
+                    PontajProjection.business_date,
+                    PontajProjection.status,
+                ).where(
+                    PontajProjection.tenant_id == tenant_id,
+                    PontajProjection.month_id == month.id,
+                    PontajProjection.revision == month.revision,
+                    PontajProjection.person_id.in_(visible_person_ids),
+                )
+            ).all()
+            pontaj_rows = [(row[0], row[1], row[2]) for row in raw_pontaj_rows]
         manager_uncovered: dict[str, int] = {key: 0 for key in manager_to_stores}
         for person_id, business_date, status in pontaj_rows:
             home_store = effective_home.get((person_id, business_date))
