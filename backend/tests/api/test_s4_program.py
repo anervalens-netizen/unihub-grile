@@ -129,7 +129,8 @@ def test_program_cell_edit_stale_revision_returns_409(client, fixture_month_with
     )
     assert response.status_code == 409
     body = response.json()
-    assert body["detail"]["code"] == "STALE_REVISION"
+    assert body["code"] == "STALE_REVISION"
+    assert body["details"] == {"expected": 99, "current": 1}
 
 
 def test_program_grid_invalid_perspective_rejected(client, fixture_month_with_calendar):

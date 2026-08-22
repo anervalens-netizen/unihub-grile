@@ -56,14 +56,8 @@ def _assert_month_unchanged(faker_tenant, month_id: str) -> None:
 def _assert_month_closed(response) -> None:
     assert response.status_code == 409, response.text
     body = response.json()
-    semantic_code = (
-        body.get("details", {}).get("code")
-        if isinstance(body.get("details"), dict)
-        else None
-    )
-    if semantic_code is None and isinstance(body.get("detail"), dict):
-        semantic_code = body["detail"].get("code")
-    assert semantic_code == "MONTH_CLOSED", body
+    assert body["code"] == "MONTH_CLOSED", body
+    assert set(body) == {"code", "message", "details"}
 
 
 def test_closed_month_rejects_assignment_compatibility_write(client, faker_tenant):
