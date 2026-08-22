@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from structlog.contextvars import bind_contextvars, unbind_contextvars
 
-_HEADER_NAME = "X-Correlation-ID"
+CORRELATION_HEADER = "X-Correlation-ID"
 _MAX_LENGTH = 128
 _VALID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _current: ContextVar[str | None] = ContextVar("ugrile_correlation_id", default=None)
@@ -58,7 +58,7 @@ def bind_correlation_id(value: str | None) -> Iterator[None]:
 
 
 __all__ = [
-    "_HEADER_NAME",
+    "CORRELATION_HEADER",
     "accepted_correlation_id",
     "bind_correlation_id",
     "current_correlation_id",
