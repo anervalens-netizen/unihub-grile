@@ -129,7 +129,7 @@ def _current_snapshot_mismatch(
     expected = GridService(session).compute_for_person(
         tenant_id=tenant_id,
         month=month,
-        person=person,
+        person_id=person.id,
         sales_generation=sales_generation,
     )
     if expected.inputs_hash != row.inputs_hash:
