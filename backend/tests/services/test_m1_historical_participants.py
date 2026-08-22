@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 
+import pytest
 from sqlalchemy import select
 
 from ugrile.domain.enums import CloseBlockerCode, DayStatus, MonthState, WorkingKind
-from ugrile.repositories.models import Person, PontajProjection, StoreAssignment
+from ugrile.domain.errors import ValidationError
+from ugrile.repositories.models import Person, PontajProjection, Store, StoreAssignment
 from ugrile.repositories.months import MonthRepository
 from ugrile.services.calendar import CalendarChange, CalendarService
 from ugrile.services.close import CloseService
@@ -104,6 +107,85 @@ def test_payroll_grid_includes_inactive_month_participant(session, faker_tenant)
     assert faker_tenant["person_a_id"] in {row.person_id for row in rows}
 
 
+def test_payroll_grid_uses_historical_home_after_later_catalog_transfer(
+    session, faker_tenant
+):
+    month = _open_august(session, faker_tenant)
+    person = session.get(Person, faker_tenant["person_a_id"])
+    assert person is not None
+    person.home_store_id = faker_tenant["other_store_id"]
+    session.add(
+        StoreAssignment(
+            tenant_id=faker_tenant["tenant_id"],
+            person_id=faker_tenant["person_a_id"],
+            store_id=faker_tenant["store_id"],
+            effective_from=date(2026, 8, 1),
+            effective_to=date(2026, 8, 31),
+        )
+    )
+    session.flush()
+    CalendarService(session).apply(
+        month=month,
+        tenant_id=faker_tenant["tenant_id"],
+        expected_revision=0,
+        changes=[
+            CalendarChange(
+                person_id=faker_tenant["person_a_id"],
+                business_date=date(2026, 8, 10),
+                store_id=faker_tenant["store_id"],
+                status=DayStatus.WORKING,
+                working_kind=WorkingKind.NORMAL,
+            )
+        ],
+    )
+
+    _, rows = PayrollGridService(session).compute_and_persist(
+        tenant_id=faker_tenant["tenant_id"],
+        month=month,
+    )
+    row = next(item for item in rows if item.person_id == faker_tenant["person_a_id"])
+    payload = json.loads(row.payload)
+    assert row.store_id == faker_tenant["store_id"]
+    assert payload["inputs"]["home_store_id"] == faker_tenant["store_id"]
+
+
+def test_mid_month_home_transfer_is_not_silently_collapsed(session, faker_tenant):
+    month = _open_august(session, faker_tenant)
+    person = session.get(Person, faker_tenant["person_a_id"])
+    assert person is not None
+    person.home_store_id = faker_tenant["other_store_id"]
+    session.add_all(
+        [
+            StoreAssignment(
+                tenant_id=faker_tenant["tenant_id"],
+                person_id=faker_tenant["person_a_id"],
+                store_id=faker_tenant["store_id"],
+                effective_from=date(2026, 8, 1),
+                effective_to=date(2026, 8, 15),
+            ),
+            StoreAssignment(
+                tenant_id=faker_tenant["tenant_id"],
+                person_id=faker_tenant["person_a_id"],
+                store_id=faker_tenant["other_store_id"],
+                effective_from=date(2026, 8, 16),
+                effective_to=None,
+            ),
+        ]
+    )
+    session.flush()
+
+    with pytest.raises(ValidationError) as exc_info:
+        PayrollGridService(session).compute_and_persist(
+            tenant_id=faker_tenant["tenant_id"],
+            month=month,
+        )
+    assert exc_info.value.details["code"] == "PAYROLL_HOME_STORE_AMBIGUOUS"
+    assert set(exc_info.value.details["candidate_store_ids"]) == {
+        faker_tenant["store_id"],
+        faker_tenant["other_store_id"],
+    }
+
+
 def test_close_requires_grid_for_inactive_month_participant(session, faker_tenant):
     month = _open_august(session, faker_tenant)
     CalendarService(session).apply(
@@ -174,6 +256,38 @@ def test_close_working_kind_uses_historical_home_not_current_catalog(session, fa
         blocker.code == CloseBlockerCode.INVALID_WORKING_KIND
         and blocker.person_id == faker_tenant["person_a_id"]
         and blocker.business_date == date(2026, 8, 10)
+        for blocker in validation.blockers
+    )
+
+
+def test_inactive_historical_store_still_requires_epay_freshness(session, faker_tenant):
+    month = _open_august(session, faker_tenant)
+    CalendarService(session).apply(
+        month=month,
+        tenant_id=faker_tenant["tenant_id"],
+        expected_revision=0,
+        changes=[
+            CalendarChange(
+                person_id=faker_tenant["person_a_id"],
+                business_date=date(2026, 8, 10),
+                store_id=faker_tenant["store_id"],
+                status=DayStatus.WORKING,
+                working_kind=WorkingKind.NORMAL,
+            )
+        ],
+    )
+    store = session.get(Store, faker_tenant["store_id"])
+    assert store is not None
+    store.is_active = False
+    session.flush()
+
+    validation = PolicyCloseService(session)._validation(
+        tenant_id=faker_tenant["tenant_id"],
+        month=month,
+    )
+    assert any(
+        blocker.code == CloseBlockerCode.EPAY_FRESH_READBACK_REQUIRED
+        and blocker.store_id == faker_tenant["store_id"]
         for blocker in validation.blockers
     )
 
