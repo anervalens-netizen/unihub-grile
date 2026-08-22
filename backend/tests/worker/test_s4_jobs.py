@@ -1,14 +1,7 @@
-"""S4 worker tests — the new export / projection job kinds.
+"""S4 worker tests — the export / projection job kinds.
 
-These tests verify the S4 contract:
-
-* The worker registry exposes the four new kinds.
-* Enqueue + run_once moves the row from PENDING → DONE with the
-  expected ``ENQUEUED_S4`` payload.
-* Idempotency keys survive a retry (the unique constraint prevents
-  duplicate rows).
-* SKIP LOCKED discipline: two parallel ``run_once`` calls return at most
-  one row, the other returns ``None``.
+These tests preserve the legacy registry/dispatch contract while the M2 worker
+adds revision-bound execution semantics.
 """
 
 from __future__ import annotations
@@ -33,10 +26,6 @@ def test_registry_contains_s4_kinds():
 def test_export_xlsx_store_handler_persists_export_run(session):
     from ugrile.repositories.models import ExportRun
 
-    # The S5b contract pre-creates the ExportRun at enqueue time so the
-    # polling endpoint and the worker share a stable id. The S4 worker
-    # contract is exercised by enqueuing the job *and* giving the worker
-    # the pre-created run to mark FAILED.
     run = ExportRun(
         tenant_id=FIXTURE_TENANT_ID,
         kind=JobKind.EXPORT_XLSX_STORE.value,
@@ -53,26 +42,23 @@ def test_export_xlsx_store_handler_persists_export_run(session):
         payload={
             "store_id": "store_x",
             "month_id": "month_x",
+            "month_revision": 0,
+            "data_revision": 0,
             "export_run_id": run.id,
         },
     )
     session.commit()
-    # Handler validates month_id/store_id; the unknown month id moves the
-    # OutboxJob row to FAILED with a typed DOMAIN_ERROR reason and also
-    # transitions the pre-created ExportRun to FAILED.
     row, result = run_once(locked_by=WORKER_LOCKED_BY)
     assert result is None
     assert row is not None
     assert row.status == "FAILED"
-    assert "month not found" in (row.last_error or "")
+    assert "month does not exist" in (row.last_error or "")
     session.refresh(run)
     assert run.status == "FAILED"
     assert run.artifact_uri is None
 
 
 def test_google_projection_store_handler_requires_month_id(session):
-    """S5a: the handler now requires both ``store_id`` and ``month_id``."""
-
     enqueue(
         session,
         tenant_id=FIXTURE_TENANT_ID,
@@ -83,11 +69,9 @@ def test_google_projection_store_handler_requires_month_id(session):
     session.commit()
     row, result = run_once(locked_by=WORKER_LOCKED_BY)
     assert row is not None
-    # S5a handler validates the payload and refuses incomplete jobs so
-    # the row moves to ``FAILED`` with a typed ``DOMAIN_ERROR`` reason.
     assert result is None
     assert row.status == "FAILED"
-    assert "store_id and month_id" in (row.last_error or "")
+    assert "missing month_id" in (row.last_error or "")
 
 
 def test_idempotency_key_prevents_duplicate(session):
@@ -98,11 +82,6 @@ def test_idempotency_key_prevents_duplicate(session):
         idempotency_key="dup-1",
     )
     session.commit()
-    # Second enqueue with the same idempotency_key violates the unique
-    # constraint; the test only runs on dialects that enforce it
-    # (PostgreSQL). SQLite silently reuses the row via the upsert path
-    # of the worker, but the explicit duplicate raises IntegrityError on
-    # PostgreSQL.
     try:
         enqueue(
             session,
@@ -113,7 +92,7 @@ def test_idempotency_key_prevents_duplicate(session):
         session.commit()
     except IntegrityError:
         session.rollback()
-        pytest.skip("SQLite tolerates duplicate idempotency keys; PostgreSQL test path required")
+        pytest.skip("SQLite duplicate constraint path differs; PostgreSQL proof is separate")
     row, result = run_once(locked_by=WORKER_LOCKED_BY)
     assert row is not None
     session.commit()

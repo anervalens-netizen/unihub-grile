@@ -2,11 +2,18 @@
 
 All store-facing operations pass through the central capability/resource-scope
 boundary. Tenant equality alone is not sufficient authorization.
+
+Sheet projection enqueue is revision-bound and idempotent. Replays of the same
+logical projection return the existing durable job, while reuse of a key for a
+different month/store/revision fails closed.
 """
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..api.deps import current_principal, db_session
@@ -24,13 +31,14 @@ from ..connectors.google import GoogleAdapterError, read_store_projection
 from ..connectors.google import last_error as google_last_error
 from ..connectors.google import last_run_at as google_last_run_at
 from ..domain.enums import JobKind
-from ..domain.errors import DomainError
-from ..repositories.models import Month, SheetProjectionRun
+from ..domain.errors import ConflictError, DomainError
+from ..repositories.models import Month, OutboxJob, SheetProjectionRun
 from ..repositories.months import MonthRepository
 from ..services.auth import Principal, assert_same_tenant
 from ..services.authorization import Capability, authorize, authorize_store_for_month
 from ..services.epay import freshness_for_month, record_readback
 from ..services.month_write_gate import lock_month_for_financial_write
+from ..services.snapshot_revision import calendar_data_revision
 from ..worker.worker import enqueue
 
 router = APIRouter(prefix="/months", tags=["epay-sheets"])
@@ -40,6 +48,66 @@ def _month_for(session: Session, month_id: str, principal: Principal) -> Month:
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     return month
+
+
+def _job_payload(row: OutboxJob) -> dict[str, object]:
+    try:
+        decoded = json.loads(row.payload or "{}")
+    except json.JSONDecodeError as exc:
+        raise DomainError(
+            "persisted sheet projection job payload is invalid",
+            details={"code": "SHEET_IDEMPOTENCY_STATE_INVALID", "job_id": row.id},
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise DomainError(
+            "persisted sheet projection job payload is not an object",
+            details={"code": "SHEET_IDEMPOTENCY_STATE_INVALID", "job_id": row.id},
+        )
+    return dict(decoded)
+
+
+def _projection_semantic_payload(payload: dict[str, object]) -> dict[str, object]:
+    return {
+        key: payload.get(key)
+        for key in (
+            "month_id",
+            "store_id",
+            "year",
+            "month",
+            "month_revision",
+            "revision",
+        )
+    }
+
+
+def _existing_projection_job(
+    session: Session,
+    *,
+    tenant_id: str,
+    idempotency_key: str,
+    payload: dict[str, object],
+) -> OutboxJob | None:
+    row = (
+        session.query(OutboxJob)
+        .filter_by(
+            tenant_id=tenant_id,
+            kind=JobKind.GOOGLE_PROJECTION_STORE.value,
+            idempotency_key=idempotency_key,
+        )
+        .one_or_none()
+    )
+    if row is None:
+        return None
+    if _projection_semantic_payload(_job_payload(row)) != _projection_semantic_payload(payload):
+        raise ConflictError(
+            "idempotency key was already used for a different sheet projection request",
+            details={
+                "code": "SHEET_IDEMPOTENCY_KEY_REUSED",
+                "idempotency_key": idempotency_key,
+                "existing_job_id": row.id,
+            },
+        )
+    return row
 
 
 @router.post("/{month_id}/epay/readback", response_model=EpayReadbackOut)
@@ -208,24 +276,54 @@ def post_sheet_projection_enqueue(
         month=month,
         store_id=payload.store_id,
     )
-    idempotency_key = payload.idempotency_key or (
-        f"{JobKind.GOOGLE_PROJECTION_STORE.value}:{month.id}:{payload.store_id}"
-    )
-    row = enqueue(
+    data_revision = calendar_data_revision(
         session,
         tenant_id=principal.tenant_id,
-        kind=JobKind.GOOGLE_PROJECTION_STORE.value,
-        idempotency_key=idempotency_key,
-        payload={
-            "month_id": month.id,
-            "store_id": payload.store_id,
-            "year": month.year,
-            "month": month.month,
-            "revision": month.revision,
-            "enqueued_by": principal.user_id,
-        },
+        month_id=month.id,
+        fallback_revision=month.revision,
     )
-    session.commit()
+    idempotency_key = payload.idempotency_key or (
+        f"{JobKind.GOOGLE_PROJECTION_STORE.value}:{month.id}:{payload.store_id}:"
+        f"m{month.revision}:d{data_revision}"
+    )
+    job_payload: dict[str, object] = {
+        "month_id": month.id,
+        "store_id": payload.store_id,
+        "year": month.year,
+        "month": month.month,
+        "month_revision": month.revision,
+        "revision": data_revision,
+        "enqueued_by": principal.user_id,
+    }
+    existing = _existing_projection_job(
+        session,
+        tenant_id=principal.tenant_id,
+        idempotency_key=idempotency_key,
+        payload=job_payload,
+    )
+    if existing is not None:
+        return JobOut.model_validate(existing)
+
+    try:
+        row = enqueue(
+            session,
+            tenant_id=principal.tenant_id,
+            kind=JobKind.GOOGLE_PROJECTION_STORE.value,
+            idempotency_key=idempotency_key,
+            payload=job_payload,
+        )
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        winner = _existing_projection_job(
+            session,
+            tenant_id=principal.tenant_id,
+            idempotency_key=idempotency_key,
+            payload=job_payload,
+        )
+        if winner is None:
+            raise
+        return JobOut.model_validate(winner)
     return JobOut.model_validate(row)
 
 

@@ -17,16 +17,16 @@ loop inside the same process boundary. The job payload carries the tenant
 identifier so the handler can scope its work, regardless of which process
 executes the row.
 
-S4 worker extension
--------------------
+Revision-bound side effects
+---------------------------
 
-The S4 slice adds idempotent handlers for the export/projection job
-kinds. The handlers are registered now so the manager UI can enqueue them
-through the worker API and operators see progress through the existing
-``GET /worker/jobs`` endpoint. The actual XLSX/Google adapter work is
-owned by S5; until then the handlers persist a typed
-``NOT_IMPLEMENTED_S5`` payload and move the row to ``FAILED`` with a
-deterministic error so the job loop stays exercised end-to-end.
+Exports and Sheet projections pin both ``month_revision`` and the
+calendar-derived data revision when they are enqueued. The worker locks the
+in-tenant Month row and revalidates both identities before any side effect.
+That lock remains held for the handler transaction, so calendar edits,
+close/reopen, rendering and projection publication cannot interleave into a
+mixed snapshot. Obsolete jobs fail terminally instead of silently rendering a
+newer revision.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..connectors.fixtures import (
@@ -56,7 +57,8 @@ from ..domain.identifiers import (
     make_tenant_id,
     tenant_slug_from_tenant_id,
 )
-from ..repositories.models import ExportRun, ImportRun
+from ..repositories.models import ExportRun, ImportRun, Month
+from ..services.snapshot_revision import calendar_data_revision
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,12 +211,23 @@ def _job_export_scaffold(
 
 
 def _write_bytes(uri: str, payload: bytes) -> None:
-    """Persist the rendered workbook bytes to ``uri`` (a non-tracked path)."""
+    """Atomically publish bytes without exposing a partial target file."""
     import os
+    import tempfile
 
-    os.makedirs(os.path.dirname(uri), exist_ok=True)
-    with open(uri, "wb") as fh:
-        fh.write(payload)
+    directory = os.path.dirname(uri)
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".ugrile-artifact-", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, uri)
+    except BaseException:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+        raise
 
 
 def _resolve_export_run_id(
@@ -278,38 +291,99 @@ def _resolve_artifact_uri(payload: dict[str, Any], fallback_filename: str) -> st
     return os.path.join(base, "ugrile-s5-exports", fallback_filename)
 
 
-def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
-    """S5b real writer for per-store XLSX export.
+def _required_revision(payload: dict[str, Any], key: str) -> int:
+    value = payload.get(key)
+    if type(value) is not int or value < 0:
+        raise DomainError(
+            "revision-bound job is missing valid revision metadata",
+            details={
+                "code": "JOB_REVISION_METADATA_MISSING",
+                "revision_key": key,
+                "value": value,
+            },
+        )
+    return value
 
-    The whole body runs inside a single ``try/except`` that transitions
-    the pre-created ``ExportRun`` to FAILED on any error before
-    re-raising, so the polling endpoint always sees a terminal status
-    that matches the worker's terminal OutboxJob state.
-    """
 
-    from ..repositories.months import MonthRepository
-    from ..services.xlsx_export import (
-        finalize_export_run,
-        render_store_export,
-    )
+def _lock_revision_bound_month(
+    session: Session,
+    *,
+    tenant_id: str,
+    payload: dict[str, Any],
+    data_revision_key: str,
+) -> tuple[Month, int]:
+    """Lock and attest the exact month/data snapshot requested by a job."""
 
     month_id = payload.get("month_id")
-    store_id = payload.get("store_id")
-    if not month_id or not store_id:
+    if not isinstance(month_id, str) or not month_id:
         raise DomainError(
-            "month_id and store_id are required",
-            details={"payload": payload},
+            "revision-bound job is missing month_id",
+            details={"code": "JOB_MONTH_ID_MISSING"},
         )
+    expected_month_revision = _required_revision(payload, "month_revision")
+    expected_data_revision = _required_revision(payload, data_revision_key)
+    month = session.execute(
+        select(Month)
+        .where(Month.id == month_id, Month.tenant_id == tenant_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if month is None:
+        raise DomainError(
+            "revision-bound job month does not exist in tenant",
+            details={"code": "JOB_MONTH_NOT_FOUND", "month_id": month_id},
+        )
+    if month.revision != expected_month_revision:
+        raise DomainError(
+            "revision-bound job is obsolete because the month revision advanced",
+            details={
+                "code": "JOB_MONTH_REVISION_STALE",
+                "month_id": month.id,
+                "expected": expected_month_revision,
+                "current": month.revision,
+            },
+        )
+    current_data_revision = calendar_data_revision(
+        session,
+        tenant_id=tenant_id,
+        month_id=month.id,
+        fallback_revision=month.revision,
+    )
+    if current_data_revision != expected_data_revision:
+        raise DomainError(
+            "revision-bound job is obsolete because the data revision advanced",
+            details={
+                "code": "JOB_DATA_REVISION_STALE",
+                "month_id": month.id,
+                "expected": expected_data_revision,
+                "current": current_data_revision,
+            },
+        )
+    return month, expected_data_revision
+
+
+def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
+    """Render one store export only from the revision attested at enqueue."""
+
+    from ..services.revisioned_xlsx_export import render_store_export_at_revision
+    from ..services.xlsx_export import finalize_export_run
+
+    store_id = payload.get("store_id")
+    if not isinstance(store_id, str) or not store_id:
+        raise DomainError("store_id is required", details={"payload": payload})
     export_run_id = _resolve_export_run_id(payload, kind=JobKind.EXPORT_XLSX_STORE)
     try:
-        month = MonthRepository(session).get(month_id)
-        if month is None or month.tenant_id != tenant_id:
-            raise DomainError(
-                "month not found or tenant mismatch in EXPORT_XLSX_STORE payload",
-                details={"month_id": month_id, "tenant": tenant_id},
-            )
-        envelope = render_store_export(
-            session, tenant_id=tenant_id, month=month, store_id=store_id
+        month, data_revision = _lock_revision_bound_month(
+            session,
+            tenant_id=tenant_id,
+            payload=payload,
+            data_revision_key="data_revision",
+        )
+        envelope = render_store_export_at_revision(
+            session,
+            tenant_id=tenant_id,
+            month=month,
+            store_id=store_id,
+            revision=data_revision,
         )
         artifact_uri = _resolve_artifact_uri(payload, envelope.filename)
         _write_bytes(artifact_uri, envelope.bytes_)
@@ -345,34 +419,26 @@ def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, 
 
 
 def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
-    """S5b real writer for bulk ZIP export."""
+    """Render a bulk export only from the revision attested at enqueue."""
 
-    from ..repositories.months import MonthRepository
-    from ..services.xlsx_export import (
-        finalize_export_run,
-        render_bulk_export,
-    )
+    from ..services.revisioned_xlsx_export import render_bulk_export_at_revision
+    from ..services.xlsx_export import finalize_export_run
 
-    month_id = payload.get("month_id")
-    if not month_id:
-        raise DomainError(
-            "month_id is required",
-            details={"payload": payload},
-        )
     export_run_id = _resolve_export_run_id(payload, kind=JobKind.EXPORT_XLSX_BULK)
     try:
-        month = MonthRepository(session).get(month_id)
-        if month is None or month.tenant_id != tenant_id:
-            raise DomainError(
-                "month not found or tenant mismatch in EXPORT_XLSX_BULK payload",
-                details={"month_id": month_id, "tenant": tenant_id},
-            )
+        month, data_revision = _lock_revision_bound_month(
+            session,
+            tenant_id=tenant_id,
+            payload=payload,
+            data_revision_key="data_revision",
+        )
         store_ids = payload.get("store_ids")
-        envelope = render_bulk_export(
+        envelope = render_bulk_export_at_revision(
             session,
             tenant_id=tenant_id,
             month=month,
             store_ids=[str(s) for s in store_ids] if store_ids else None,
+            revision=data_revision,
         )
         artifact_uri = _resolve_artifact_uri(payload, envelope.filename)
         _write_bytes(artifact_uri, envelope.bytes_)
@@ -408,34 +474,26 @@ def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, A
 
 
 def _job_export_pontaj_only(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
-    """S5b real writer for the pontaj-only workbook."""
+    """Render Pontaj only from the revision attested at enqueue."""
 
-    from ..repositories.months import MonthRepository
-    from ..services.xlsx_export import (
-        finalize_export_run,
-        render_pontaj_only_export,
-    )
+    from ..services.revisioned_xlsx_export import render_pontaj_only_export_at_revision
+    from ..services.xlsx_export import finalize_export_run
 
-    month_id = payload.get("month_id")
-    if not month_id:
-        raise DomainError(
-            "month_id is required",
-            details={"payload": payload},
-        )
     export_run_id = _resolve_export_run_id(payload, kind=JobKind.EXPORT_PONTAJ_ONLY)
     try:
-        month = MonthRepository(session).get(month_id)
-        if month is None or month.tenant_id != tenant_id:
-            raise DomainError(
-                "month not found or tenant mismatch in EXPORT_PONTAJ_ONLY payload",
-                details={"month_id": month_id, "tenant": tenant_id},
-            )
+        month, data_revision = _lock_revision_bound_month(
+            session,
+            tenant_id=tenant_id,
+            payload=payload,
+            data_revision_key="data_revision",
+        )
         store_ids = payload.get("store_ids")
-        envelope = render_pontaj_only_export(
+        envelope = render_pontaj_only_export_at_revision(
             session,
             tenant_id=tenant_id,
             month=month,
             store_ids=[str(s) for s in store_ids] if store_ids else None,
+            revision=data_revision,
         )
         artifact_uri = _resolve_artifact_uri(payload, envelope.filename)
         _write_bytes(artifact_uri, envelope.bytes_)
@@ -473,45 +531,42 @@ def _job_export_pontaj_only(session: Session, tenant_id: str, payload: dict[str,
 def _job_google_projection_store(
     session: Session, tenant_id: str, payload: dict[str, Any]
 ) -> JobResult:
-    """S5a fake-adapter projection (AC-12 slice).
-
-    The handler materialises the Grila + Pontaj projection for the
-    requested store/month and hands it to the fake adapter. The adapter
-    is the sole writer of ``sheet_projection_runs`` and
-    ``sheet_bindings``; no Google Sheet is touched.
-
-    The worker is the only authority that runs projections, mirroring
-    the S1 durable-worker contract. A provider failure (env
-    ``UGR_S5_GOOGLE_FAIL=1``) raises ``GoogleAdapterError`` and the row
-    moves to ``FAILED`` with the structured ``last_error`` payload; the
-    last-good projection in ``sheet_projection_runs`` is retained.
-    """
+    """Project only the calendar snapshot attested when the job was queued."""
 
     from ..connectors.google import GoogleAdapterError
-    from ..domain.errors import DomainError
-    from ..repositories.months import MonthRepository
     from ..services.google import GoogleProjectionService
 
     store_id = payload.get("store_id")
-    month_id = payload.get("month_id")
-    if not store_id or not month_id:
+    if not isinstance(store_id, str) or not store_id:
         raise DomainError(
-            "store_id and month_id are required for GOOGLE_PROJECTION_STORE",
+            "store_id is required for GOOGLE_PROJECTION_STORE",
             details={"payload": payload},
         )
-    month = MonthRepository(session).get(month_id)
-    if month.tenant_id != tenant_id:
+    month, data_revision = _lock_revision_bound_month(
+        session,
+        tenant_id=tenant_id,
+        payload=payload,
+        data_revision_key="revision",
+    )
+    year = payload.get("year")
+    month_num = payload.get("month")
+    if type(year) is not int or type(month_num) is not int:
         raise DomainError(
-            "tenant mismatch in GOOGLE_PROJECTION_STORE payload",
+            "projection job is missing valid year/month metadata",
+            details={"code": "JOB_PERIOD_METADATA_MISSING"},
+        )
+    if year != month.year or month_num != month.month:
+        raise DomainError(
+            "projection job period metadata does not match the locked month",
             details={
-                "month_tenant": month.tenant_id,
-                "job_tenant": tenant_id,
-                "month_id": month_id,
+                "code": "JOB_PERIOD_METADATA_MISMATCH",
+                "month_id": month.id,
+                "expected_year": month.year,
+                "expected_month": month.month,
+                "payload_year": year,
+                "payload_month": month_num,
             },
         )
-    year = int(payload.get("year") or month.year)
-    month_num = int(payload.get("month") or month.month)
-    revision = int(payload.get("revision") or month.revision)
     service = GoogleProjectionService(session)
     outcome = service.project_store_for_month(
         tenant_id=tenant_id,
@@ -519,7 +574,7 @@ def _job_google_projection_store(
         month_id=month.id,
         year=year,
         month=month_num,
-        revision=revision,
+        revision=data_revision,
         generation=payload.get("generation"),
     )
     # Re-raise so the worker can mark the row FAILED; the last-good row
@@ -527,8 +582,6 @@ def _job_google_projection_store(
     try:
         service.session.flush()
     except GoogleAdapterError:
-        # The adapter raises after marking the FAILED row. Surface the
-        # failure so the durable worker transitions the outbox row.
         raise
     return JobResult(
         status="DONE",
@@ -536,6 +589,7 @@ def _job_google_projection_store(
             "tenant_id": tenant_id,
             "store_id": outcome.store_id,
             "generation": outcome.generation,
+            "revision": data_revision,
             "projection": {
                 "store_id": outcome.projection.store_id,
                 "generation": outcome.projection.generation,

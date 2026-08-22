@@ -246,7 +246,6 @@ class StoreAssignment(Base, TimestampMixin):
         ),
     )
 
-
 class Month(Base, TimestampMixin):
     __tablename__ = "months"
 
@@ -712,7 +711,8 @@ class OutboxJob(Base, TimestampMixin):
     """Typed job row consumed by the single durable worker.
 
     The payload is JSON; ``kind`` selects the handler. ``idempotency_key`` lets
-    the worker safely retry without producing duplicates.
+    the worker safely retry without producing duplicates inside one tenant and
+    job kind while allowing unrelated tenants/kinds to reuse human-readable keys.
     """
 
     __tablename__ = "outbox_jobs"
@@ -734,7 +734,12 @@ class OutboxJob(Base, TimestampMixin):
     locked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("idempotency_key", name="uq_outbox_idempotency"),
+        UniqueConstraint(
+            "tenant_id",
+            "kind",
+            "idempotency_key",
+            name="uq_outbox_tenant_kind_idempotency",
+        ),
         CheckConstraint(
             "kind IN ('FIXTURE_INGEST', 'TENANT_BOOTSTRAP', 'NOOP', "
             "'FIXTURE_INGEST_BY_TENANT', 'EXPORT_XLSX_STORE', 'EXPORT_XLSX_BULK', "
