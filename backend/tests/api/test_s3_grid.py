@@ -89,7 +89,7 @@ def test_grid_compute_requires_admin(engine, faker_tenant, client):
     assert body["rule_pack_version"] == "mobiup-v1-compat"
 
 
-def test_grid_get_returns_only_current_persisted_rows(engine, faker_tenant, client):
+def test_grid_get_returns_latest_persisted_rows(engine, faker_tenant, client):
     from ugrile.core import database
 
     with database.session_scope() as session:
@@ -105,6 +105,34 @@ def test_grid_get_returns_only_current_persisted_rows(engine, faker_tenant, clie
         assert entry["rule_pack_version"] == "mobiup-v1-compat"
         assert len(entry["inputs_hash"]) == 64
         assert len(entry["outputs_hash"]) == 64
+
+
+def test_financial_reads_survive_close_state_revision_bump(engine, faker_tenant, client):
+    """CLOSE increments Month.revision but must not hide the just-approved snapshots."""
+
+    from ugrile.core import database
+
+    with database.session_scope() as session:
+        month_id = _open_month_with_calendar(client, faker_tenant, session)
+    compute = client.post(f"/months/{month_id}/grid/compute", headers=ADMIN)
+    assert compute.status_code == 200
+
+    with database.session_scope() as session:
+        month = MonthRepository(session).get(month_id)
+        assert month.revision == 1
+        month.state = MonthState.CLOSED
+        month.revision = 2
+        session.commit()
+
+    grid = client.get(f"/months/{month_id}/grid", headers=ADMIN)
+    assert grid.status_code == 200, grid.text
+    assert grid.json()
+    assert {row["revision"] for row in grid.json()} == {1}
+
+    attribution = client.get(f"/months/{month_id}/attribution", headers=ADMIN)
+    assert attribution.status_code == 200, attribution.text
+    assert attribution.json()["revision"] == 1
+    assert attribution.json()["company_total"] == "12500.00"
 
 
 def test_salary_upsert_admin_only(engine, faker_tenant, client):
