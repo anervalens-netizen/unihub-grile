@@ -1,7 +1,6 @@
 # M3 performance baseline
 
-This document is the reproducible baseline for `BE-003`, `BE-004`, and `BE-005`.
-It is intentionally a measurement contract, not a claim that the current read paths are already optimized.
+This document is the reproducible performance contract for `BE-003`, `BE-004`, `BE-005`, and the profiled read-path work in `BE-007`. It records both the original calibration and the accepted optimized state.
 
 ## Dataset
 
@@ -23,24 +22,39 @@ Fixture construction is outside the measured latency window.
 
 The CI step `M3 performance contract` runs `tests/integration/test_m3_performance.py` on PostgreSQL 17 and prints `M3_PERF` samples. The Store screen sample deliberately measures the eight GETs currently composed by `frontend/src/pages/Magazin.tsx` as one screen-level budget.
 
-Calibration sample: Backend CI run `32584789529`, branch head `8d1c69a16bbbac6ddb0bc45e3f1f9ed6072b4bcf`.
+Original calibration: Backend CI run `32584789529` on head `8d1c69a16bbbac6ddb0bc45e3f1f9ed6072b4bcf`.
+Optimized calibration: Backend CI run `32586557983` on head `6fc506e2f3e8163fc0fce0be19f8e7cb9583285e`.
 
-| Read path | SELECTs | Observed latency | Query budget | CI latency ceiling |
-| --- | ---: | ---: | ---: | ---: |
-| Overview | 21 | 204.48 ms | 21 | 2,000 ms |
-| Program, stores perspective | 6 | 776.92 ms | 6 | 4,000 ms |
-| Grid | 35 | 20.91 ms | 35 | 1,000 ms |
-| Store screen, 8-request bundle | 163 | 1,823.23 ms | 163 | 8,000 ms |
+| Read path | Baseline SELECTs | Optimized SELECTs | Baseline latency | Optimized observed latency | Accepted query budget | CI latency ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Overview | 21 | 21 | 204.48 ms | 317.50 ms | 21 | 2,000 ms |
+| Program, stores perspective | 6 | 6 | 776.92 ms | 82.23 ms | 6 | 4,000 ms |
+| Grid | 35 | 5 | 20.91 ms | 13.45 ms | 5 | 1,000 ms |
+| Store screen, 8-request bundle | 163 | 73 | 1,823.23 ms | 507.77 ms | 73 | 8,000 ms |
 
-Query counts are the deterministic regression contract: an additional SQL round-trip fails CI. Latency is also checked, but with deliberately wide shared-runner headroom; the observed `M3_PERF` lines are the useful latency evidence.
+Query counts are the deterministic regression contract: an additional SQL round-trip fails CI. Latency is also checked with deliberately wide shared-runner headroom; individual observed latency values are evidence rather than a microbenchmark promise.
 
-## What the baseline says
+## Accepted BE-007 improvements
 
-The Program request is SQL-bounded at six SELECTs but is much slower than Grid. Code inspection shows the current matrix builder repeatedly scans the complete assignment collection while constructing each cell, so the next optimization pass should target in-memory indexing before adding SQL complexity.
+### Program matrix construction
 
-Grid is fast in elapsed time but spends 35 SELECTs on an admin request. The authorization helper `month_store_ids()` currently evaluates store visibility once for every day of the month; for an admin that repeats an identical tenant-wide store lookup. This is a strong candidate for a semantics-preserving admin fast path.
+The original Program builder repeatedly scanned the complete assignment collection for every store/day or person/day cell, and the people perspective also rescanned absences. The accepted builder creates assignment-by-store/date, assignment-by-person/date, and absence indexes once, then performs O(1) cell lookups.
 
-The Store screen is the largest current cost at 163 SELECTs and 1.82 s. It composes eight HTTP reads, including tenant-wide Attribution and Grid responses that the frontend subsequently filters to one store. Follow-up work should reduce duplicate authorization lookups and request/store payload fan-out before considering caching.
+The optimization preserves the existing response contract. A dedicated equivalence test compares the indexed builder to the legacy builder for both perspectives. `setdefault` preserves the legacy first-row behavior if inconsistent duplicate rows are present; conflict detection remains owned by the validation/exception paths.
+
+Observed Program latency fell from 776.92 ms to 82.23 ms on the fixed 80-store/160-person PostgreSQL fixture without increasing query count.
+
+### Admin month scope
+
+`month_store_ids()` previously evaluated `effective_store_ids()` once for every day of the month. For ADMIN, that executed the same tenant-wide store query 31 times although admin scope is date-independent. ADMIN now resolves tenant-wide scope once; MANAGER continues to evaluate the full effective-dated daily union unchanged.
+
+This reduced Grid from 35 to 5 SELECTs and the complete Store-screen bundle from 163 to 73 SELECTs. Store-screen observed latency fell from 1.82 s to about 0.51 s in the calibration run.
+
+## Remaining performance questions
+
+The Store screen still composes eight HTTP reads and remains the largest query bundle. Some endpoints return tenant/month-wide data that the frontend then filters to a store. Further payload or endpoint consolidation should only be implemented if new profiling shows sufficient benefit and scope semantics remain explicit.
+
+`BE-006` is evaluated separately because calendar save is a write-path correctness problem, not a read-path optimization. The current save creates a complete new revision snapshot for calendar/Pontaj and rebuilds attribution; incremental materialization must not silently weaken revision/CAS or historical snapshot invariants.
 
 ## Guardrails for optimization
 
