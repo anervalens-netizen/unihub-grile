@@ -40,6 +40,32 @@ def _enqueue_scoped(
     )
 
 
+def _add_manager(session, faker_tenant, *, user_id: str) -> dict[str, str]:
+    session.add(
+        User(
+            id=user_id,
+            tenant_id=faker_tenant["tenant_id"],
+            email=f"{user_id}@acme.example",
+            display_name="Manager",
+            role=RoleName.MANAGER.value,
+        )
+    )
+    session.flush()
+    session.add(
+        ManagerScope(
+            tenant_id=faker_tenant["tenant_id"],
+            user_id=user_id,
+            store_id=faker_tenant["store_id"],
+            effective_from=date(2026, 8, 1),
+            effective_to=date(2026, 8, 31),
+        )
+    )
+    return {
+        "X-Ugrile-Identity": user_id,
+        "X-Ugrile-Tenant": faker_tenant["tenant_id"],
+    }
+
+
 def test_legacy_job_list_is_tenant_scoped(engine, faker_tenant, faker_second_tenant):
     with database.session_scope() as session:
         enqueue(
@@ -120,31 +146,9 @@ def test_diagnostics_classify_active_retry_and_terminal_state(engine, faker_tena
 
 
 def test_manager_diagnostics_fail_closed_outside_effective_store_scope(engine, faker_tenant):
-    manager_headers = {
-        "X-Ugrile-Identity": "user_manager",
-        "X-Ugrile-Tenant": faker_tenant["tenant_id"],
-    }
     with database.session_scope() as session:
         month = _month(session, faker_tenant["tenant_id"])
-        session.add(
-            User(
-                id="user_manager",
-                tenant_id=faker_tenant["tenant_id"],
-                email="manager@acme.example",
-                display_name="Manager",
-                role=RoleName.MANAGER.value,
-            )
-        )
-        session.flush()
-        session.add(
-            ManagerScope(
-                tenant_id=faker_tenant["tenant_id"],
-                user_id="user_manager",
-                store_id=faker_tenant["store_id"],
-                effective_from=date(2026, 8, 1),
-                effective_to=date(2026, 8, 31),
-            )
-        )
+        manager_headers = _add_manager(session, faker_tenant, user_id="user_manager")
         visible = _enqueue_scoped(
             session,
             tenant_id=faker_tenant["tenant_id"],
@@ -176,6 +180,48 @@ def test_manager_diagnostics_fail_closed_outside_effective_store_scope(engine, f
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["counts"]["queued"] == 1
+    assert [row["id"] for row in body["jobs"]] == [visible_id]
+
+
+def test_manager_terminal_limit_is_applied_after_scope_filter(engine, faker_tenant):
+    """Newer foreign-scope history cannot crowd out a visible terminal job."""
+
+    with database.session_scope() as session:
+        month = _month(session, faker_tenant["tenant_id"])
+        manager_headers = _add_manager(session, faker_tenant, user_id="user_history_manager")
+        visible = _enqueue_scoped(
+            session,
+            tenant_id=faker_tenant["tenant_id"],
+            month_id=month.id,
+            store_id=faker_tenant["store_id"],
+            key="history-visible",
+        )
+        visible.status = "DONE"
+        visible.attempts = 1
+        session.flush()
+        visible_id = visible.id
+
+        for index in range(3):
+            hidden = _enqueue_scoped(
+                session,
+                tenant_id=faker_tenant["tenant_id"],
+                month_id=month.id,
+                store_id=faker_tenant["other_store_id"],
+                key=f"history-hidden-{index}",
+            )
+            hidden.status = "DONE"
+            hidden.attempts = 1
+        session.commit()
+
+    with TestClient(create_app()) as client:
+        response = client.get(
+            "/worker/jobs/diagnostics?terminal_limit=1",
+            headers=manager_headers,
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["counts"]["done"] == 1
     assert [row["id"] for row in body["jobs"]] == [visible_id]
 
 
