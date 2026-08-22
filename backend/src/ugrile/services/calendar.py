@@ -313,36 +313,42 @@ class CalendarService:
         revision_before = month.revision
         new_revision = revision_before + 1
         row_source = source[:32] or "SYSTEM"
+        assignment_values: list[dict[str, object]] = []
+        absence_values: list[dict[str, object]] = []
         for change in sorted(
             candidate.values(),
             key=lambda item: (item.business_date, item.person_id),
         ):
             if change.status == DayStatus.WORKING:
-                self.session.add(
-                    AssignmentRow(
-                        tenant_id=tenant_id,
-                        month_id=month.id,
-                        store_id=change.store_id or "",
-                        person_id=change.person_id,
-                        business_date=change.business_date,
-                        status=change.status.value,
-                        working_kind=(
+                assignment_values.append(
+                    {
+                        "tenant_id": tenant_id,
+                        "month_id": month.id,
+                        "store_id": change.store_id or "",
+                        "person_id": change.person_id,
+                        "business_date": change.business_date,
+                        "status": change.status.value,
+                        "working_kind": (
                             change.working_kind.value if change.working_kind else None
                         ),
-                        revision=new_revision,
-                        source=row_source,
-                    )
+                        "revision": new_revision,
+                        "source": row_source,
+                    }
                 )
             else:
-                self.session.add(
-                    PersonDayAbsence(
-                        tenant_id=tenant_id,
-                        month_id=month.id,
-                        person_id=change.person_id,
-                        business_date=change.business_date,
-                        status=change.status.value,
-                    )
+                absence_values.append(
+                    {
+                        "tenant_id": tenant_id,
+                        "month_id": month.id,
+                        "person_id": change.person_id,
+                        "business_date": change.business_date,
+                        "status": change.status.value,
+                    }
                 )
+        if assignment_values:
+            self.session.execute(insert(AssignmentRow), assignment_values)
+        if absence_values:
+            self.session.execute(insert(PersonDayAbsence), absence_values)
         month.revision = new_revision
         self.session.flush()
 
