@@ -1,28 +1,26 @@
 """E-pay fresh readback service (AC-13 S5a slice).
 
-The readback endpoint is admin-only and validates exactly four inputs
-per store: two ``UNDER_50`` / ``AT_OR_OVER_50`` quantities per working
-agent. Valid inputs are 0..10 integers; anything else (blank, text,
-fraction, negative, >10) is recorded as ``is_valid=False`` with the
-original raw_value preserved verbatim. Last-good retention is enforced
-by the grid engine: only ``is_valid=True`` rows feed
+The readback endpoint is admin-only and validates exactly two quantities per
+working agent: ``UNDER_50`` and ``AT_OR_OVER_50``. Valid inputs are 0..10
+integers; anything else is recorded as ``is_valid=False`` with the original
+raw value preserved. Last-good retention remains available to grid preview via
 :func:`ugrile.repositories.epay.latest_snapshot`.
 
 Freshness contract
 ------------------
 
-Each successful call records an ``observed_at`` per ``(tenant, store,
-person, category)`` and a deterministic source discriminator bound to the
-requested payroll month. The close checklist surfaces
-``EPAY_FRESH_READBACK_REQUIRED`` when there is no observation in the freshness
-window for any month-bound agent/category that participates in the calculation.
-A recent readback from another month can never satisfy this check.
+Each call records an ``observed_at`` per ``(tenant, store, person, category)``
+and a deterministic source discriminator bound to the requested payroll month.
+Final close is stricter than last-good preview semantics: for every expected
+pair the *latest readback attempt* inside the freshness window must be valid.
+A newer invalid attempt therefore cannot be hidden by an older valid value, and
+a readback from another month can never satisfy freshness.
 
 When a valid E-pay quantity actually changes, all current-revision grid rows
-for the month are invalidated. A subsequent grid computation can therefore
-replace the payroll snapshot without colliding with the same-revision unique
-key. Refreshing identical E-pay values for freshness does not invalidate the
-grid because the financial inputs are unchanged.
+for the month are invalidated. A subsequent grid computation can replace the
+payroll snapshot at the same revision. Refreshing identical values for
+freshness does not invalidate the grid because the financial inputs are
+unchanged.
 
 The month row is locked before readback state is inspected or observations are
 written. This is the same serialization boundary used by final close, so a
@@ -59,16 +57,7 @@ def _utcnow() -> datetime:
 
 
 def _parse_quantity(raw: Any) -> tuple[int | None, str | None, bool]:
-    """Parse a raw E-pay value into ``(value, normalized_raw, is_valid)``.
-
-    The contract:
-
-    * Accepts integers ``0..10`` inclusive — the only values that count
-      as ``is_valid=True``.
-    * Anything else (blank, text, fraction, negative, >10) becomes
-      ``is_valid=False``; the original raw text is preserved as
-      ``raw_value`` so the audit log can show exactly what was submitted.
-    """
+    """Parse a raw E-pay value into ``(value, normalized_raw, is_valid)``."""
 
     if raw is None:
         return None, None, False
@@ -172,12 +161,15 @@ def _working_persons_for_store_month(
     person_ids = sorted({row.person_id for row in rows})
     if person_ids:
         existing = {
-            p.id
-            for p in session.execute(
-                select(Person).where(Person.tenant_id == tenant_id, Person.id.in_(person_ids))
+            person.id
+            for person in session.execute(
+                select(Person).where(
+                    Person.tenant_id == tenant_id,
+                    Person.id.in_(person_ids),
+                )
             ).scalars()
         }
-        person_ids = [pid for pid in person_ids if pid in existing]
+        person_ids = [person_id for person_id in person_ids if person_id in existing]
     return person_ids
 
 
@@ -201,17 +193,22 @@ def record_readback(
     _require_store(session, tenant_id=tenant_id, store_id=store_id)
     month = _lock_writable_month(session, tenant_id=tenant_id, month_id=month_id)
     working_persons = _working_persons_for_store_month(
-        session, tenant_id=tenant_id, month_id=month_id, store_id=store_id
+        session,
+        tenant_id=tenant_id,
+        month_id=month_id,
+        store_id=store_id,
     )
     expected_pairs: set[tuple[str, str]] = {
-        (pid, cat.value) for pid in working_persons for cat in EpayCategory
+        (person_id, category.value)
+        for person_id in working_persons
+        for category in EpayCategory
     }
     if not observations:
         raise ValidationError(
             "observations must contain at least one entry",
             details={"code": "EPAY_READBACK_EMPTY"},
         )
-    if working_persons and len(observations) != len(expected_pairs):
+    if len(observations) != len(expected_pairs):
         raise ValidationError(
             "observations must contain exactly one entry per (person, category) for working agents",
             details={
@@ -259,7 +256,10 @@ def record_readback(
                 "observation.person_id is required",
                 details={"code": "EPAY_READBACK_INVALID"},
             )
-        if category not in {EpayCategory.UNDER_50.value, EpayCategory.AT_OR_OVER_50.value}:
+        if category not in {
+            EpayCategory.UNDER_50.value,
+            EpayCategory.AT_OR_OVER_50.value,
+        }:
             raise ValidationError(
                 "observation.category must be UNDER_50 or AT_OR_OVER_50",
                 details={
@@ -268,7 +268,8 @@ def record_readback(
                     "category": category,
                 },
             )
-        if working_persons and (person_id, str(category)) not in expected_pairs:
+        key = (person_id, str(category))
+        if key not in expected_pairs:
             raise ValidationError(
                 "person/category must belong to this store/month's working agents",
                 details={
@@ -279,7 +280,6 @@ def record_readback(
                     "month_id": month_id,
                 },
             )
-        key = (person_id, str(category))
         if key in seen:
             raise ValidationError(
                 "duplicate observation for person/category",
@@ -347,36 +347,43 @@ def freshness_for_month(
     month_id: str,
     fresh_window_hours: int = 24,
 ) -> EpayFreshnessReport:
-    """Return whether the exact month's store readback is fresh and complete."""
+    """Require the latest fresh readback attempt for every expected pair to be valid."""
 
     persons = _working_persons_for_store_month(
-        session, tenant_id=tenant_id, month_id=month_id, store_id=store_id
+        session,
+        tenant_id=tenant_id,
+        month_id=month_id,
+        store_id=store_id,
     )
     expected_count = len(persons) * len(EpayCategory)
+    threshold = _utcnow() - timedelta(hours=fresh_window_hours)
     if expected_count == 0:
         return EpayFreshnessReport(
             is_fresh=True,
             fresh_count=0,
             expected_count=0,
-            threshold=_utcnow() - timedelta(hours=fresh_window_hours),
+            threshold=threshold,
         )
-    threshold = _utcnow() - timedelta(hours=fresh_window_hours)
+
     rows = list(
         session.execute(
-            select(EpayObservation).where(
+            select(EpayObservation)
+            .where(
                 EpayObservation.tenant_id == tenant_id,
                 EpayObservation.store_id == store_id,
                 EpayObservation.person_id.in_(persons),
                 EpayObservation.source == month_source(month_id),
-                EpayObservation.is_valid.is_(True),
                 EpayObservation.observed_at >= threshold,
             )
+            .order_by(EpayObservation.observed_at.desc(), EpayObservation.id.desc())
         ).scalars()
     )
-    fresh_pairs = {(row.person_id, row.category) for row in rows}
-    fresh_count = len(fresh_pairs)
+    latest_by_pair: dict[tuple[str, str], EpayObservation] = {}
+    for row in rows:
+        latest_by_pair.setdefault((row.person_id, row.category), row)
+    fresh_count = sum(1 for row in latest_by_pair.values() if row.is_valid)
     return EpayFreshnessReport(
-        is_fresh=fresh_count >= expected_count,
+        is_fresh=fresh_count == expected_count,
         fresh_count=fresh_count,
         expected_count=expected_count,
         threshold=threshold,
