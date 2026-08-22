@@ -5,6 +5,7 @@ import { Exceptions } from "./pages/Exceptions";
 import { Close } from "./pages/Close";
 import { Magazin } from "./pages/Magazin";
 import { Agent } from "./pages/Agent";
+import { Jobs } from "./pages/Jobs";
 import { Layout } from "./components/Layout";
 import { Nav } from "./components/Nav";
 import {
@@ -103,6 +104,8 @@ function PageRouter({ api, route, months, monthsError }: PageRouterProps) {
       return <Exceptions api={api} months={months} monthsError={monthsError} />;
     case "close":
       return <Close api={api} months={months} monthsError={monthsError} />;
+    case "jobs":
+      return <Jobs api={api} />;
     case "store":
       return <Magazin api={api} storeId={route.segments[0] ?? null} months={months} monthsError={monthsError} />;
     case "agent":
@@ -121,6 +124,8 @@ function getPageMeta(route: Route): { title: string; subtitle: string } {
       return { title: "Excepții", subtitle: "Diferențe și situații care necesită intervenție." };
     case "close":
       return { title: "Management", subtitle: "Închidere, validare și audit lunar." };
+    case "jobs":
+      return { title: "Joburi", subtitle: "Coadă, retry-uri și rezultate asincrone." };
     case "store":
       return { title: "Magazin", subtitle: "Program, agenți, pontaj și grilă." };
     case "agent":
