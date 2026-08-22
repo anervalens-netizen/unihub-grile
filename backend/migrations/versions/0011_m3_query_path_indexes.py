@@ -94,20 +94,11 @@ def downgrade() -> None:
     op.drop_index(
         "ix_epay_observations_latest_valid",
         table_name="epay_observations",
-        postgresql_where=sa.text("is_valid IS true"),
     )
     op.drop_index(
         "ix_grid_calculations_current_read",
         table_name="grid_calculations",
     )
     op.drop_index("ix_outbox_tenant_status_id", table_name="outbox_jobs")
-    op.drop_index(
-        "ix_outbox_running_lease",
-        table_name="outbox_jobs",
-        postgresql_where=sa.text("status = 'RUNNING'"),
-    )
-    op.drop_index(
-        "ix_outbox_pending_due",
-        table_name="outbox_jobs",
-        postgresql_where=sa.text("status = 'PENDING'"),
-    )
+    op.drop_index("ix_outbox_running_lease", table_name="outbox_jobs")
+    op.drop_index("ix_outbox_pending_due", table_name="outbox_jobs")
