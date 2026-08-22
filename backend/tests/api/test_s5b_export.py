@@ -118,6 +118,7 @@ def test_export_store_enqueues_with_export_run_id_and_artifact_hint(engine, fake
         assert data["status"] == "ENQUEUED"
         assert data["job_id"] > 0
         assert data["artifact_uri_hint"].endswith(".xlsx")
+        assert data["month_revision"] == data["data_revision"] == 1
         # The same job_id must be readable as an ExportRun row in PENDING.
         pending = _poll_export(test_client, admin, month_id, data["job_id"])
         assert pending["status"] == "PENDING"
@@ -156,6 +157,7 @@ def test_export_store_polling_returns_done_with_artifact_and_checksum(engine, fa
             summary = json.loads(body["summary"])
             assert summary["filename"].endswith(".xlsx")
             assert "checksum_sha256" in summary
+            assert summary["summary"]["revision"] == data["data_revision"]
             assert hashlib.sha256(workbook_bytes).hexdigest() == summary["checksum_sha256"]
         finally:
             _cleanup_artifact(artifact_uri)
@@ -241,6 +243,7 @@ def test_export_bulk_polling_returns_done_with_zip_artifact(engine, faker_tenant
             assert zip_bytes[:2] == b"PK"
             summary = json.loads(body["summary"])
             assert "checksum_sha256" in summary
+            assert summary["summary"]["revision"] == data["data_revision"]
             assert hashlib.sha256(zip_bytes).hexdigest() == summary["checksum_sha256"]
         finally:
             _cleanup_artifact(artifact_uri)
@@ -272,6 +275,7 @@ def test_export_pontaj_only_polling_returns_done_with_xlsx(engine, faker_tenant)
                 workbook_bytes = fh.read()
             assert workbook_bytes[:2] == b"PK"
             summary = json.loads(body["summary"])
+            assert summary["summary"]["revision"] == data["data_revision"]
             assert hashlib.sha256(workbook_bytes).hexdigest() == summary["checksum_sha256"]
         finally:
             _cleanup_artifact(artifact_uri)
@@ -311,6 +315,8 @@ def test_export_job_polling_marks_failed_when_handler_raises(engine, faker_tenan
                 payload={
                     "store_id": faker_tenant["store_id"],
                     "month_id": "month_does_not_exist",
+                    "month_revision": 0,
+                    "data_revision": 0,
                     "export_run_id": bogus_run_id,
                 },
             )
@@ -322,7 +328,7 @@ def test_export_job_polling_marks_failed_when_handler_raises(engine, faker_tenan
         assert body["artifact_uri"] is None
         summary = json.loads(body["summary"])
         assert "errors" in summary
-        assert "month not found" in summary["errors"]
+        assert "month does not exist" in summary["errors"]
 
 
 def test_export_job_polling_404_for_unknown_id(engine, faker_tenant):
@@ -340,13 +346,8 @@ def test_export_job_polling_404_for_unknown_id(engine, faker_tenant):
         assert body["details"]["code"] == "EXPORT_JOB_NOT_FOUND"
 
 
-def test_export_default_idempotency_key_is_stable(engine, faker_tenant):
-    """The API fills in a default ``idempotency_key`` when the caller omits it.
-
-    The default is ``store::<store_id>::<month_id>`` so the same store
-    re-enqueue during a month cannot accidentally create two export
-    jobs. The polling contract still has to work end-to-end.
-    """
+def test_export_default_idempotency_key_is_revision_bound(engine, faker_tenant):
+    """Default idempotency identity includes both month and data revision."""
 
     admin = _build_admin(faker_tenant)
     with TestClient(create_app()) as test_client:
@@ -360,10 +361,12 @@ def test_export_default_idempotency_key_is_stable(engine, faker_tenant):
             path="/export/store",
             body={"store_id": faker_tenant["store_id"]},
         )
-        assert first["idempotency_key"] == f"store::{faker_tenant['store_id']}::{month_id}"
+        assert first["month_revision"] == first["data_revision"] == 1
+        assert first["idempotency_key"] == (
+            f"store::{faker_tenant['store_id']}::{month_id}::m1::d1"
+        )
         assert first["status"] == "ENQUEUED"
         assert first["job_id"] > 0
-        # The polling endpoint must work with the same id.
         body = _poll_export(test_client, admin, month_id, first["job_id"])
         assert body["job_id"] == first["job_id"]
         assert body["status"] in {"PENDING", "DONE", "FAILED"}
