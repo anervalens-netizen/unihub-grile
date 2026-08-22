@@ -5,7 +5,12 @@ from decimal import Decimal
 
 from ugrile.core import database
 from ugrile.domain.enums import MonthState
-from ugrile.repositories.models import ManagerScope, PontajProjection, StoreAssignment
+from ugrile.repositories.models import (
+    ManagerScope,
+    Person,
+    PontajProjection,
+    StoreAssignment,
+)
 from ugrile.repositories.months import MonthRepository
 
 MANAGER = {"X-Ugrile-Identity": "user_manager", "X-Ugrile-Tenant": "tenant_acme"}
@@ -24,8 +29,6 @@ def test_pontaj_totals_scopes_off_leave_by_effective_home_store(
         month = MonthRepository(session).get_or_create(faker_tenant["tenant_id"], 2026, 8)
         month.state = MonthState.OPEN
         month.revision = 7
-
-        # Manager sees only store s1 for August.
         session.add(
             ManagerScope(
                 tenant_id=faker_tenant["tenant_id"],
@@ -36,11 +39,7 @@ def test_pontaj_totals_scopes_off_leave_by_effective_home_store(
             )
         )
 
-        # Alice currently looks out-of-scope but historically belonged to s1.
-        alice = session.get(
-            __import__("ugrile.repositories.models", fromlist=["Person"]).Person,
-            faker_tenant["person_a_id"],
-        )
+        alice = session.get(Person, faker_tenant["person_a_id"])
         assert alice is not None
         alice.home_store_id = faker_tenant["other_store_id"]
         session.add(
@@ -53,11 +52,7 @@ def test_pontaj_totals_scopes_off_leave_by_effective_home_store(
             )
         )
 
-        # Carmen currently looks in-scope but historically belonged to s2.
-        carmen = session.get(
-            __import__("ugrile.repositories.models", fromlist=["Person"]).Person,
-            faker_tenant["person_c_id"],
-        )
+        carmen = session.get(Person, faker_tenant["person_c_id"])
         assert carmen is not None
         carmen.home_store_id = faker_tenant["store_id"]
         session.add(
