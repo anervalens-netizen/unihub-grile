@@ -2,10 +2,6 @@ name: Backend CI
 
 on:
   pull_request:
-    paths:
-      - "backend/**"
-      - "docs/SECURITY_ENDPOINT_MATRIX.md"
-      - ".github/workflows/backend-ci.yml"
   workflow_dispatch:
 
 permissions:
@@ -40,7 +36,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses:
+          actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
