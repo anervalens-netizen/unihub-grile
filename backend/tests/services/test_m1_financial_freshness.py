@@ -4,8 +4,11 @@ import json
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from ugrile.domain.enums import DayStatus, EpayCategory, MonthState, WorkingKind
-from ugrile.domain.rule_pack import RULE_PACK_VERSION
+from ugrile.domain.errors import ConflictError
+from ugrile.domain.rule_pack import RULE_PACK_VERSION, hash_inputs
 from ugrile.repositories.models import (
     GridCalculation,
     IncentiveInput,
@@ -219,6 +222,44 @@ def test_financial_guard_detects_target_and_incentive_changes(session, faker_ten
     assert "incentive changed" in mismatch
 
 
+def test_complete_grid_guard_rejects_omitted_worked_day(session, faker_tenant):
+    month, row = _seed_financial_grid(session, faker_tenant)
+    payload = json.loads(row.payload)
+    payload["inputs"]["calendar"] = []
+    row.inputs_hash = hash_inputs(payload["inputs"])
+    row.payload = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    session.commit()
+
+    mismatch = financial_input_mismatch(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        month=month,
+        person=_person_a(session, faker_tenant),
+        row=row,
+    )
+    assert mismatch is not None
+    assert "complete current canonical input hash differs" in mismatch
+
+
+def test_complete_grid_guard_rejects_corrupted_components(session, faker_tenant):
+    month, row = _seed_financial_grid(session, faker_tenant)
+    payload = json.loads(row.payload)
+    payload["components"]["total_salary"] = "999999"
+    row.outputs_hash = hash_inputs(payload["components"])
+    row.payload = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    session.commit()
+
+    mismatch = financial_input_mismatch(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        month=month,
+        person=_person_a(session, faker_tenant),
+        row=row,
+    )
+    assert mismatch is not None
+    assert "complete current canonical output hash differs" in mismatch
+
+
 def test_epay_value_change_invalidates_current_grid_rows(session, faker_tenant):
     tenant_id = faker_tenant["tenant_id"]
     store_id = faker_tenant["store_id"]
@@ -348,3 +389,31 @@ def test_identical_epay_refresh_keeps_current_grid_rows(session, faker_tenant):
         rule_pack_version=RULE_PACK_VERSION,
     ).count()
     assert remaining == 1
+
+
+def test_closed_month_rejects_epay_readback_before_mutation(session, faker_tenant):
+    tenant_id = faker_tenant["tenant_id"]
+    store_id = faker_tenant["store_id"]
+    person_id = faker_tenant["person_a_id"]
+    month = MonthRepository(session).get_or_create(tenant_id, 2026, 8)
+    month.state = MonthState.CLOSED
+    session.commit()
+
+    before = session.query(GridCalculation).count()
+    with pytest.raises(ConflictError) as excinfo:
+        record_readback(
+            session,
+            tenant_id=tenant_id,
+            month_id=month.id,
+            store_id=store_id,
+            actor_id="user_admin",
+            observations=[
+                {
+                    "person_id": person_id,
+                    "category": EpayCategory.UNDER_50.value,
+                    "value": 1,
+                }
+            ],
+        )
+    assert excinfo.value.details["code"] == "MONTH_CLOSED"
+    assert session.query(GridCalculation).count() == before
