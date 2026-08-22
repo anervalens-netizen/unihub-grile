@@ -123,6 +123,49 @@ def _manager_can_read_job(
     return store_ids.issubset(allowed)
 
 
+def _manager_terminal_rows(
+    session: Session,
+    principal: Principal,
+    *,
+    terminal_limit: int,
+    scope_cache: dict[str, set[str]],
+) -> list[OutboxJob]:
+    """Collect the newest visible terminal jobs using bounded keyset pages.
+
+    Applying the history limit before resource filtering can make a manager's
+    own recent terminal jobs disappear behind newer out-of-scope rows. Scan
+    newest-first in bounded pages and apply the requested limit *after* the
+    authorization decision instead.
+    """
+
+    visible: list[OutboxJob] = []
+    before_id: int | None = None
+    batch_size = max(100, terminal_limit)
+    while len(visible) < terminal_limit:
+        stmt = select(OutboxJob).where(
+            OutboxJob.tenant_id == principal.tenant_id,
+            OutboxJob.status.in_(("DONE", "FAILED")),
+        )
+        if before_id is not None:
+            stmt = stmt.where(OutboxJob.id < before_id)
+        batch = list(
+            session.execute(
+                stmt.order_by(OutboxJob.id.desc()).limit(batch_size)
+            ).scalars()
+        )
+        if not batch:
+            break
+        for row in batch:
+            if _manager_can_read_job(session, principal, row, scope_cache):
+                visible.append(row)
+                if len(visible) >= terminal_limit:
+                    break
+        if len(batch) < batch_size:
+            break
+        before_id = batch[-1].id
+    return visible
+
+
 def _queue_state(row: OutboxJob) -> QueueState:
     if row.status == "PENDING":
         return "RETRY" if row.attempts > 0 else "QUEUED"
@@ -189,9 +232,9 @@ def job_diagnostics(
     """Return complete active queue state plus bounded recent terminal history.
 
     All PENDING/RUNNING jobs for the tenant are considered so an old active job
-    cannot disappear behind a history limit. DONE/FAILED history is bounded.
-    Manager visibility is derived from persisted month/store resources and
-    fails closed for unscoped or malformed jobs.
+    cannot disappear behind a history limit. DONE/FAILED history is bounded
+    *after* resource authorization. Manager visibility is derived from persisted
+    month/store resources and fails closed for unscoped or malformed jobs.
     """
 
     authorize(principal, Capability.JOBS_READ)
@@ -205,30 +248,38 @@ def job_diagnostics(
             .order_by(OutboxJob.id.desc())
         ).scalars()
     )
-    terminal_rows = list(
-        session.execute(
-            select(OutboxJob)
-            .where(
-                OutboxJob.tenant_id == principal.tenant_id,
-                OutboxJob.status.in_(("DONE", "FAILED")),
-            )
-            .order_by(OutboxJob.id.desc())
-            .limit(terminal_limit)
-        ).scalars()
-    )
 
-    rows_by_id = {row.id: row for row in [*active_rows, *terminal_rows]}
-    persisted = [rows_by_id[key] for key in sorted(rows_by_id, reverse=True)]
-
-    if principal.role is not RoleName.ADMIN:
+    if principal.role is RoleName.ADMIN:
+        terminal_rows = list(
+            session.execute(
+                select(OutboxJob)
+                .where(
+                    OutboxJob.tenant_id == principal.tenant_id,
+                    OutboxJob.status.in_(("DONE", "FAILED")),
+                )
+                .order_by(OutboxJob.id.desc())
+                .limit(terminal_limit)
+            ).scalars()
+        )
+        persisted = [*active_rows, *terminal_rows]
+    else:
         scope_cache: dict[str, set[str]] = {}
-        persisted = [
+        visible_active = [
             row
-            for row in persisted
+            for row in active_rows
             if _manager_can_read_job(session, principal, row, scope_cache)
         ]
+        visible_terminal = _manager_terminal_rows(
+            session,
+            principal,
+            terminal_limit=terminal_limit,
+            scope_cache=scope_cache,
+        )
+        persisted = [*visible_active, *visible_terminal]
 
-    jobs = [_to_diagnostic(row) for row in persisted]
+    rows_by_id = {row.id: row for row in persisted}
+    ordered = [rows_by_id[key] for key in sorted(rows_by_id, reverse=True)]
+    jobs = [_to_diagnostic(row) for row in ordered]
     return JobDiagnosticsOut(
         counts=_counts(jobs),
         jobs=jobs,
