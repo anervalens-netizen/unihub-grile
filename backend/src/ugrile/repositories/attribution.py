@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.orm import Session
 
 from ..domain.attribution import (
@@ -86,19 +86,21 @@ def working_days_for_month(
         )
     )
     rows = list(session.execute(stmt).scalars())
-    from ..domain.enums import WorkingKind
-
     return [
         CalendarWorkingDay(
             person_id=row.person_id,
             store_id=row.store_id,
             business_date=row.business_date,
-            working_kind=WorkingKind(row.working_kind)
-            if row.working_kind
-            else WorkingKind.NORMAL,
+            working_kind=_working_kind(row.working_kind),
         )
         for row in rows
     ]
+
+
+def _working_kind(value: str | None):
+    from ..domain.enums import WorkingKind
+
+    return WorkingKind(value) if value else WorkingKind.NORMAL
 
 
 def attribute_for_month(
@@ -131,32 +133,33 @@ def persist_attribution(
     revision: int,
     attributed: list[AttributedSale],
 ) -> int:
-    """Insert one projection row per attributed sale, in the caller's tx.
+    """Bulk-insert one projection row per attributed sale in the caller's tx.
 
     Prior revisions are preserved by the unique constraint
-    ``uq_sales_person_day_projection``; the caller is expected to flush
-    inside the same transaction as the calendar CAS.
+    ``uq_sales_person_day_projection``. Bulk execution changes only persistence
+    mechanics; the complete revision snapshot and transaction boundary remain
+    identical to the row-by-row implementation.
     """
 
-    count = 0
-    for sale in attributed:
-        session.add(
-            SalesPersonDayProjection(
-                tenant_id=tenant_id,
-                month_id=month_id,
-                person_id=sale.person_id,
-                store_id=sale.store_id,
-                business_date=sale.business_date,
-                revision=revision,
-                amount=Decimal(sale.amount),
-                currency=sale.currency,
-                generation=sale.generation,
-                working_kind=sale.working_kind.value,
-            )
-        )
-        count += 1
+    values = [
+        {
+            "tenant_id": tenant_id,
+            "month_id": month_id,
+            "person_id": sale.person_id,
+            "store_id": sale.store_id,
+            "business_date": sale.business_date,
+            "revision": revision,
+            "amount": Decimal(sale.amount),
+            "currency": sale.currency,
+            "generation": sale.generation,
+            "working_kind": sale.working_kind.value,
+        }
+        for sale in attributed
+    ]
+    if values:
+        session.execute(insert(SalesPersonDayProjection), values)
     session.flush()
-    return count
+    return len(values)
 
 
 def list_attribution(
