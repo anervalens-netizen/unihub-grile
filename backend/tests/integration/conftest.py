@@ -15,8 +15,8 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
-import ugrile.repositories.models  # noqa: F401  (register models)
 import ugrile.repositories.index_contract  # noqa: F401  (register operational indexes)
+import ugrile.repositories.models  # register models
 from ugrile.repositories.base import Base
 
 DEFAULT_PG_URL = "postgresql+psycopg://grile:grile@127.0.0.1:55432/grile_test"
