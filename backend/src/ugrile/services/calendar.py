@@ -27,6 +27,7 @@ from ..repositories.models import Month, Person, PersonDayAbsence, PontajProject
 from ..repositories.models import SiteDayAssignment as AssignmentRow
 from .attribution import AttributionService
 from .audit import record_audit_event
+from .month_participants import month_participant_ids
 from .person_scope import effective_home_store_map
 
 
@@ -427,16 +428,12 @@ class CalendarService:
             date(month.year, month.month, day)
             for day in range(1, monthrange(month.year, month.month)[1] + 1)
         ]
-        people_all = sorted(
-            {
-                person.id
-                for person in self.session.execute(
-                    select(Person).where(
-                        Person.tenant_id == tenant_id,
-                        Person.is_active.is_(True),
-                    )
-                ).scalars()
-            }
+        participants = sorted(
+            month_participant_ids(
+                self.session,
+                tenant_id=tenant_id,
+                month=month,
+            )
         )
         stores_all = sorted(
             {
@@ -449,7 +446,7 @@ class CalendarService:
                 ).scalars()
             }
         )
-        person_cal = derive_person_calendar(domains, people_all, dates)
+        person_cal = derive_person_calendar(domains, participants, dates)
         return CalendarResult(
             month.id,
             new_revision,
@@ -468,25 +465,21 @@ class CalendarService:
         domains: list[SiteDayAssignment],
         hours: HoursConfig,
     ) -> None:
-        """Persist the complete active-person/day Pontaj lattice for a revision."""
+        """Persist the complete historical-participant/day Pontaj lattice."""
 
         all_days = [
             date(month.year, month.month, day)
             for day in range(1, monthrange(month.year, month.month)[1] + 1)
         ]
-        active_people = sorted(
-            {
-                person.id
-                for person in self.session.execute(
-                    select(Person).where(
-                        Person.tenant_id == tenant_id,
-                        Person.is_active.is_(True),
-                    )
-                ).scalars()
-            }
+        participants = sorted(
+            month_participant_ids(
+                self.session,
+                tenant_id=tenant_id,
+                month=month,
+            )
         )
         rows = derive_pontaj(
-            derive_person_calendar(domains, active_people, all_days),
+            derive_person_calendar(domains, participants, all_days),
             hours,
         )
         self.session.execute(
