@@ -17,6 +17,7 @@ from .api.s4 import router as s4_router
 from .api.s5a import router as s5a_router
 from .api.s5b import router as s5b_router
 from .api.schedule import router as schedule_router
+from .api.session import router as session_router
 from .api.worker_api import router as worker_router
 from .core.config import get_settings
 from .core.logging import configure_logging, get_logger
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
         }
 
     app.include_router(health_router)
+    app.include_router(session_router)
     app.include_router(catalog_router)
     app.include_router(assignments_router)
     # Fixture ingestion is a development/test tool and must not even be
