@@ -232,6 +232,8 @@ def post_program_cell(
             changes=changes,
             expected_revision=expected_revision,
             allowed_store_ids_by_date=allowed_by_date,
+            actor_id=principal.user_id,
+            source="API_PROGRAM_CELL",
         )
     except DomainError as exc:
         raise HTTPException(
