@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import json
 from datetime import date
 from decimal import Decimal
 
 from ugrile.connectors.fixtures import FIXTURE_GENERATION
 from ugrile.domain.enums import DayStatus, MonthState, WorkingKind
-from ugrile.domain.rule_pack import RULE_PACK_VERSION
-from ugrile.repositories.models import GridCalculation, SalesStoreDay, StoreTarget
+from ugrile.repositories.models import SalesStoreDay, StoreTarget
 from ugrile.repositories.months import MonthRepository
+from ugrile.repositories.salary import SalaryRepository
 from ugrile.services.calendar import CalendarChange, CalendarService
 from ugrile.services.epay import record_readback
+from ugrile.services.grid import GridService
 
 ADMIN = {"X-Ugrile-Identity": "user_admin", "X-Ugrile-Tenant": "tenant_acme"}
 MANAGER = {"X-Ugrile-Identity": "user_manager", "X-Ugrile-Tenant": "tenant_acme"}
@@ -20,41 +20,14 @@ MANAGER = {"X-Ugrile-Identity": "user_manager", "X-Ugrile-Tenant": "tenant_acme"
 AUGUST_2026_DAYS = [date(2026, 8, day) for day in range(1, 32)]
 
 
-def _seed_clean_grid(session, faker_tenant, month) -> None:
-    """Seed the exact current-revision grid facts required by final close.
+def _compute_clean_grid(session, faker_tenant, month) -> None:
+    """Compute the real canonical current-revision payroll snapshot."""
 
-    These API tests exercise close/reopen behavior, not GridService itself, so
-    the fixture uses minimal deterministic persisted snapshots with no grid
-    anomalies and zero month-bound E-pay inputs.
-    """
-
-    rows = (
-        (faker_tenant["person_a_id"], faker_tenant["store_id"]),
-        (faker_tenant["person_b_id"], faker_tenant["store_id"]),
-        (faker_tenant["person_c_id"], faker_tenant["other_store_id"]),
+    GridService(session).compute_and_persist(
+        tenant_id=faker_tenant["tenant_id"],
+        month=month,
+        sales_generation=FIXTURE_GENERATION,
     )
-    for index, (person_id, store_id) in enumerate(rows, start=1):
-        payload = json.dumps(
-            {
-                "inputs": {"epay": {"under_50": 0, "at_or_over_50": 0}},
-                "components": {},
-                "anomalies": [],
-            },
-            sort_keys=True,
-        )
-        session.add(
-            GridCalculation(
-                tenant_id=faker_tenant["tenant_id"],
-                month_id=month.id,
-                store_id=store_id,
-                person_id=person_id,
-                rule_pack_version=RULE_PACK_VERSION,
-                revision=month.revision,
-                inputs_hash=f"{index:x}" * 64,
-                outputs_hash=f"{index + 3:x}" * 64,
-                payload=payload,
-            )
-        )
     session.commit()
 
 
@@ -95,6 +68,7 @@ def _seed_clean_month(client, faker_tenant, session):
                 version=1,
                 amount=Decimal("250000"),
                 currency="RON",
+                sales_days=31,
             ),
             StoreTarget(
                 tenant_id=faker_tenant["tenant_id"],
@@ -105,9 +79,24 @@ def _seed_clean_month(client, faker_tenant, session):
                 version=1,
                 amount=Decimal("120000"),
                 currency="RON",
+                sales_days=31,
             ),
         ]
     )
+    for person_id in (
+        faker_tenant["person_a_id"],
+        faker_tenant["person_b_id"],
+        faker_tenant["person_c_id"],
+    ):
+        SalaryRepository(session).upsert_window(
+            tenant_id=faker_tenant["tenant_id"],
+            person_id=person_id,
+            effective_from=date(2026, 1, 1),
+            effective_to=None,
+            salary=Decimal("2600"),
+            tickets=Decimal("480"),
+            flip=Decimal("0"),
+        )
     session.commit()
     month = MonthRepository(session).get_or_create(faker_tenant["tenant_id"], 2026, 8)
     month.state = MonthState.OPEN
@@ -158,7 +147,7 @@ def _seed_clean_month(client, faker_tenant, session):
         assert result.invalid_count == 0
     session.commit()
     session.refresh(month)
-    _seed_clean_grid(session, faker_tenant, month)
+    _compute_clean_grid(session, faker_tenant, month)
     return month.id
 
 
@@ -284,7 +273,7 @@ def test_close_events_endpoint_returns_history(engine, faker_tenant, client):
     # deliberately required before a second close.
     with database.session_scope() as session:
         month = MonthRepository(session).get(month_id)
-        _seed_clean_grid(session, faker_tenant, month)
+        _compute_clean_grid(session, faker_tenant, month)
     second_close = client.post(f"/months/{month_id}/close", json={}, headers=ADMIN)
     assert second_close.status_code == 200, second_close.text
     events = client.get(f"/months/{month_id}/close-events", headers=ADMIN)
