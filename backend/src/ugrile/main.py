@@ -27,11 +27,14 @@ from .api.schedule import router as schedule_router
 from .api.session import router as session_router
 from .api.worker_api import router as worker_router
 from .core.config import get_settings
+from .core.correlation import bind_correlation_id, resolve_request_correlation_id
 from .core.logging import configure_logging, get_logger
 from .domain.errors import DomainError
 
 configure_logging()
 log = get_logger("ugrile.api")
+
+CORRELATION_HEADER = "X-Correlation-ID"
 
 
 def create_app() -> FastAPI:
@@ -45,6 +48,14 @@ def create_app() -> FastAPI:
             "audited close/reopen and explicit future Retail integration seams."
         ),
     )
+
+    @app.middleware("http")
+    async def _correlation_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+        correlation_id = resolve_request_correlation_id(request.headers.get(CORRELATION_HEADER))
+        with bind_correlation_id(correlation_id):
+            response = await call_next(request)
+            response.headers[CORRELATION_HEADER] = correlation_id
+            return response
 
     @app.exception_handler(DomainError)
     async def _domain_error_handler(_request: Request, exc: DomainError) -> JSONResponse:
