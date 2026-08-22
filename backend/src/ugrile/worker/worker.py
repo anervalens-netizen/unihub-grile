@@ -157,7 +157,7 @@ def _retryable_exception(exc: Exception) -> bool:
 
     if isinstance(exc, GoogleAdapterError):
         return True
-    return isinstance(exc, (ConnectionError, TimeoutError, OSError, OperationalError))
+    return isinstance(exc, ConnectionError | TimeoutError | OSError | OperationalError)
 
 
 def _error_text(exc: Exception) -> str:
@@ -278,10 +278,6 @@ def run_once(
             execution_session.flush()
             execution_row = row
     except Exception as transaction_exc:
-        # A DB/flush/commit failure may poison the handler transaction. Its
-        # local changes are rolled back by session_scope; settle the committed
-        # RUNNING lease separately. Prefer the original handler exception when
-        # one existed, because it contains the actual failure classification.
         settlement_error = handler_error or transaction_exc
         settled = _settle_in_clean_transaction(
             job_id=job_id,
