@@ -6,6 +6,7 @@ import {
   type ProgramGrid,
   type StoreSummary,
 } from "../api/client";
+import { hasCapability, type Capability } from "../capabilities";
 import { MonthSelector } from "../components/MonthSelector";
 import { ProgramMatrix } from "../components/ProgramMatrix";
 
@@ -13,6 +14,7 @@ export interface ProgramProps {
   api: ApiClient;
   months: MonthSummary[];
   monthsError: string | null;
+  capabilities: ReadonlySet<Capability>;
 }
 
 type Perspective = "stores" | "people";
@@ -21,7 +23,7 @@ function isApiError(error: unknown): error is { status: number } {
   return typeof error === "object" && error !== null && "status" in error && typeof (error as { status?: unknown }).status === "number";
 }
 
-export function Program({ api, months, monthsError }: ProgramProps) {
+export function Program({ api, months, monthsError, capabilities }: ProgramProps) {
   const [monthId, setMonthId] = useState<string | null>(months[0]?.id ?? null);
   const [perspective, setPerspective] = useState<Perspective>("stores");
   const [grid, setGrid] = useState<ProgramGrid | null>(null);
@@ -33,6 +35,7 @@ export function Program({ api, months, monthsError }: ProgramProps) {
   const [editValue, setEditValue] = useState({ personId: "", storeId: "", status: "WORKING", workingKind: "NORMAL" });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const canEditSchedule = hasCapability(capabilities, "schedule.write");
 
   useEffect(() => {
     setMonthId((current) => current ?? months[0]?.id ?? null);
@@ -108,6 +111,7 @@ export function Program({ api, months, monthsError }: ProgramProps) {
   }, [monthId, grid]);
 
   function beginEdit(rowId: string, cell: ProgramGrid["rows"][number]["cells"][number]) {
+    if (!canEditSchedule) return;
     setSaveError(null);
     setEditing({ rowId, businessDate: cell.business_date });
     setEditValue({
@@ -119,7 +123,7 @@ export function Program({ api, months, monthsError }: ProgramProps) {
   }
 
   function saveCell() {
-    if (!monthId || !grid || !editing) return;
+    if (!canEditSchedule || !monthId || !grid || !editing) return;
     setSaving(true);
     setSaveError(null);
     api.post(`/months/${monthId}/program/cell?expected_revision=${grid.revision}`, {
@@ -176,20 +180,21 @@ export function Program({ api, months, monthsError }: ProgramProps) {
           </fieldset>
         </div>
       </header>
+      {!canEditSchedule && <p className="muted">Programul este disponibil doar pentru vizualizare în sesiunea curentă.</p>}
       {error && <p className="error" role="alert">{error}</p>}
       {saveError && <p className="error" role="alert">Salvarea nu a reușit: {saveError}</p>}
       {grid && (
         <ProgramMatrix
           grid={grid}
           viewportHeight={viewportHeight}
-          onCellClick={beginEdit}
+          onCellClick={canEditSchedule ? beginEdit : undefined}
           editing={editing}
           editValue={editValue}
           people={people.map((person) => ({ id: person.id, label: person.display_name, homeStoreId: person.home_store_id }))}
           stores={stores.map((store) => ({ id: store.id, label: store.name || store.internal_code }))}
-          onEditChange={setEditValue}
-          onSave={saveCell}
-          onCancelEdit={() => setEditing(null)}
+          onEditChange={canEditSchedule ? setEditValue : undefined}
+          onSave={canEditSchedule ? saveCell : undefined}
+          onCancelEdit={canEditSchedule ? () => setEditing(null) : undefined}
           saving={saving}
         />
       )}
