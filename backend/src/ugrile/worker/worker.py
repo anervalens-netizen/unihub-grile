@@ -34,6 +34,11 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
+from ..core.correlation import (
+    accepted_correlation_id,
+    bind_correlation_id,
+    current_correlation_id,
+)
 from ..core.database import session_scope
 from ..core.logging import get_logger
 from ..domain.enums import JobKind
@@ -248,6 +253,7 @@ def run_once(
     handler_error: Exception | None = None
     execution_row: OutboxJob | None = None
     result: JobResult | None = None
+    job_correlation_id: str | None = None
     try:
         with session_scope() as execution_session:
             row = execution_session.execute(
@@ -265,27 +271,30 @@ def run_once(
                 )
                 return row, None
 
-            try:
-                handler = get_handler(row.kind)
-                payload = _parse_payload(row.payload)
-                result = handler(execution_session, row.tenant_id, payload)
-            except Exception as exc:
-                handler_error = exc
-                _settle_failure(row, exc, now=_utcnow())
-            else:
-                row.status = result.status
-                row.last_error = None
-                row.locked_at = None
-                row.locked_by = None
-            execution_session.flush()
-            execution_row = row
+            payload = _parse_payload(row.payload)
+            job_correlation_id = accepted_correlation_id(payload.get("correlation_id"))
+            with bind_correlation_id(job_correlation_id):
+                try:
+                    handler = get_handler(row.kind)
+                    result = handler(execution_session, row.tenant_id, payload)
+                except Exception as exc:
+                    handler_error = exc
+                    _settle_failure(row, exc, now=_utcnow())
+                else:
+                    row.status = result.status
+                    row.last_error = None
+                    row.locked_at = None
+                    row.locked_by = None
+                execution_session.flush()
+                execution_row = row
     except Exception as transaction_exc:
         settlement_error = handler_error or transaction_exc
-        settled = _settle_in_clean_transaction(
-            job_id=job_id,
-            locked_by=locked_by,
-            exc=settlement_error,
-        )
+        with bind_correlation_id(job_correlation_id):
+            settled = _settle_in_clean_transaction(
+                job_id=job_id,
+                locked_by=locked_by,
+                exc=settlement_error,
+            )
         return settled or claimed, None
 
     if handler_error is not None:
@@ -344,15 +353,24 @@ def enqueue(
     payload: dict[str, Any] | None = None,
     run_after: datetime | None = None,
 ) -> OutboxJob:
-    """Insert a job row. Caller is responsible for committing."""
+    """Insert a job row. Caller is responsible for committing.
+
+    The current API/worker correlation id is copied into the durable payload.
+    It is diagnostic metadata only and never participates in the scoped
+    idempotency key.
+    """
 
     if kind not in JobKind.__members__.values() and kind not in [k.value for k in JobKind]:
         kind = JobKind(kind).value
+    job_payload = dict(payload or {})
+    correlation_id = current_correlation_id()
+    if correlation_id is not None:
+        job_payload["correlation_id"] = correlation_id
     row = OutboxJob(
         tenant_id=tenant_id,
         kind=kind,
         idempotency_key=idempotency_key,
-        payload=_stringify_payload(payload or {}),
+        payload=_stringify_payload(job_payload),
         status="PENDING",
         run_after=run_after or _utcnow(),
     )

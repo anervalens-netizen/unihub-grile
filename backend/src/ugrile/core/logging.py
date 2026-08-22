@@ -1,7 +1,8 @@
 """Structured logging helpers built on structlog.
 
-Plain JSON output keeps the foundation simple; richer pipelines (request IDs,
-correlation IDs) belong to a later stage.
+Plain JSON output keeps the runtime simple. Request/job correlation is bound
+through ``structlog.contextvars`` so every log emitted inside an API request or
+durable worker dispatch carries the same ``correlation_id`` automatically.
 """
 
 from __future__ import annotations
