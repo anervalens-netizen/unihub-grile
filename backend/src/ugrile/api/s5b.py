@@ -1,41 +1,13 @@
-"""S5b enqueue + canary endpoints (AC-12, AC-14, AC-16).
+"""Async export and canary endpoints.
 
-Routes:
-
-* ``POST /months/{id}/export/store`` — admin-only. Body
-  ``{"store_id": "...", "idempotency_key": "..."}``. Enqueues an
-  ``EXPORT_XLSX_STORE`` durable worker job whose handler renders the
-  per-magazin workbook, writes the artifact to a non-tracked path, and
-  persists an ``ExportRun`` row with checksum + artifact_uri. The
-  request returns the job id + status only; the bytes are produced
-  asynchronously by the worker.
-
-* ``POST /months/{id}/export/bulk`` — admin-only. Body
-  ``{"store_ids": [...]?, "idempotency_key": "..."}``. Enqueues an
-  ``EXPORT_XLSX_BULK`` job whose handler iterates per-store and packs
-  the ZIP + manifest.json. Returns the job id only.
-
-* ``POST /months/{id}/export/pontaj-only`` — admin-only. Body
-  ``{"store_ids": [...]?, "idempotency_key": "..."}``. Enqueues an
-  ``EXPORT_PONTAJ_ONLY`` job whose handler renders the Pontaj
-  workbook for the requested stores.
-
-* ``GET /months/{id}/export/jobs/{job_id}`` — admin or TL. Returns the
-  current ``ExportRun`` summary + artifact_uri + status. Lets the
-  client poll until the job is DONE.
-
-* ``GET /months/{id}/canary/readback`` — admin or TL. Reads the latest
-  DONE structural projection per store and returns per-store
-  CanaryResult with missing/unexpected keys.
-
-AC-16 contract: the API never renders the XLSX in the request
-thread. All exports flow through the durable worker with SKIP LOCKED
-+ idempotency_key, exposing progress state through the existing
-``GET /worker/jobs/{id}`` endpoint.
+Export/canary reads are authorized from persisted/requested store resources,
+not merely from role + tenant. New export runs persist their month and store set
+in the summary so later polling/download authorization can be replayed safely.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from dataclasses import asdict
@@ -48,10 +20,17 @@ from sqlalchemy.orm import Session
 
 from ..api.deps import current_principal, db_session
 from ..domain.enums import JobKind, RoleName
-from ..domain.errors import DomainError, NotFoundError
+from ..domain.errors import DomainError, NotFoundError, ScopeError
 from ..repositories.models import ExportRun
 from ..repositories.months import MonthRepository
-from ..services.auth import Principal, assert_admin, assert_same_tenant
+from ..services.auth import Principal, assert_same_tenant
+from ..services.authorization import (
+    Capability,
+    authorize,
+    authorize_store_for_month,
+    authorize_store_set_for_month,
+    month_store_ids,
+)
 from ..services.canary import list_active_store_ids, read_store_canary
 from ..services.xlsx_export import create_pending_export_run
 from ..worker.worker import enqueue
@@ -60,11 +39,6 @@ router = APIRouter(prefix="/months", tags=["export"])
 
 
 def _artifact_uri_hint(filename: str) -> str:
-    """Compute the durable artifact path the worker will write to.
-
-    The worker uses the same helper so API and worker converge on the
-    same path; the directory is created lazily by the worker.
-    """
     base = os.environ.get("UGR_S5_EXPORT_DIR") or tempfile.gettempdir()
     return os.path.join(base, "ugrile-s5-exports", filename)
 
@@ -79,15 +53,6 @@ def _enqueue_export(
     payload: dict[str, Any],
     artifact_uri_hint: str | None,
 ) -> dict[str, Any]:
-    """Enqueue an export job and return the synchronous ticket.
-
-    Contract (AC-16): the ``job_id`` returned here is the
-    ``ExportRun.id`` of a pre-created PENDING row. The durable worker
-    updates that same row to ``DONE`` (or ``FAILED``) on completion, and
-    the polling endpoint ``GET /months/{id}/export/jobs/{job_id}`` reads
-    it by the same id. The internal ``OutboxJob`` row is implementation
-    detail and not exposed to the client.
-    """
     if not isinstance(idempotency_key, str) or not idempotency_key:
         raise DomainError(
             "idempotency_key is required",
@@ -97,7 +62,11 @@ def _enqueue_export(
         session,
         tenant_id=tenant_id,
         kind=kind.value,
-        summary={"idempotency_key": idempotency_key, "payload": payload},
+        summary={
+            "idempotency_key": idempotency_key,
+            "month_id": month_id,
+            "payload": payload,
+        },
         artifact_uri_hint=artifact_uri_hint,
     )
     enqueue(
@@ -124,6 +93,75 @@ def _enqueue_export(
     }
 
 
+def _summary_dict(run: ExportRun) -> dict[str, Any]:
+    raw = run.summary
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return dict(decoded) if isinstance(decoded, dict) else {}
+    return {}
+
+
+def _run_store_ids(run: ExportRun, *, month_id: str) -> set[str] | None:
+    """Return persisted resource scope or None when it cannot be proven.
+
+    ``None`` is fail-closed for manager reads. Admins may still inspect legacy
+    runs created before resource metadata became mandatory.
+    """
+
+    summary = _summary_dict(run)
+    if summary.get("month_id") != month_id:
+        return None
+    payload = summary.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    store_id = payload.get("store_id")
+    if isinstance(store_id, str) and store_id:
+        return {store_id}
+    store_ids = payload.get("store_ids")
+    if isinstance(store_ids, list) and store_ids:
+        return {str(value) for value in store_ids}
+    # Empty/missing store_ids means tenant-wide bulk export; only an admin can
+    # prove authorization for that resource set without a stored explicit set.
+    return None
+
+
+def _authorize_export_run(
+    session: Session,
+    principal: Principal,
+    *,
+    month_id: str,
+    run: ExportRun,
+) -> None:
+    authorize(principal, Capability.EXPORT_READ)
+    if run.tenant_id != principal.tenant_id:
+        raise NotFoundError(
+            "export job not found",
+            details={"code": "EXPORT_JOB_NOT_FOUND", "job_id": run.id},
+        )
+    month = MonthRepository(session).get(month_id)
+    assert_same_tenant(principal, month.tenant_id)
+    if principal.role is RoleName.ADMIN:
+        return
+    store_ids = _run_store_ids(run, month_id=month_id)
+    if not store_ids:
+        raise ScopeError(
+            "export resource scope cannot be proven for this principal",
+            details={"job_id": run.id, "month_id": month_id},
+        )
+    authorize_store_set_for_month(
+        session,
+        principal,
+        Capability.EXPORT_READ,
+        month=month,
+        store_ids=store_ids,
+    )
+
+
 @router.post("/{month_id}/export/store")
 def enqueue_export_store(
     month_id: str,
@@ -131,12 +169,19 @@ def enqueue_export_store(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
-    assert_admin(principal)
+    authorize(principal, Capability.EXPORT_CREATE)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     store_id = body.get("store_id")
     if not isinstance(store_id, str) or not store_id:
         raise DomainError("store_id is required", details={"body_keys": list(body.keys())})
+    authorize_store_for_month(
+        session,
+        principal,
+        Capability.EXPORT_CREATE,
+        month=month,
+        store_id=store_id,
+    )
     idempotency_key = body.get("idempotency_key") or f"store::{store_id}::{month_id}"
     artifact_uri_hint = _artifact_uri_hint(
         f"ugrile_{month.year}-{month.month:02d}_{store_id[:8]}_grila_pontaj.xlsx"
@@ -159,23 +204,33 @@ def enqueue_export_bulk(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
-    assert_admin(principal)
+    authorize(principal, Capability.EXPORT_CREATE)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     store_ids = body.get("store_ids")
     if store_ids is not None and not isinstance(store_ids, list):
-        raise DomainError("store_ids must be a list when provided", details={"type": type(store_ids).__name__})
+        raise DomainError(
+            "store_ids must be a list when provided",
+            details={"type": type(store_ids).__name__},
+        )
+    normalized = {str(s) for s in store_ids} if store_ids else set()
+    if normalized:
+        authorize_store_set_for_month(
+            session,
+            principal,
+            Capability.EXPORT_CREATE,
+            month=month,
+            store_ids=normalized,
+        )
     idempotency_key = body.get("idempotency_key") or f"bulk::{month_id}"
-    artifact_uri_hint = _artifact_uri_hint(
-        f"ugrile_{month.year}-{month.month:02d}_bulk.zip"
-    )
+    artifact_uri_hint = _artifact_uri_hint(f"ugrile_{month.year}-{month.month:02d}_bulk.zip")
     return _enqueue_export(
         session,
         tenant_id=principal.tenant_id,
         month_id=month_id,
         kind=JobKind.EXPORT_XLSX_BULK,
         idempotency_key=idempotency_key,
-        payload={"store_ids": [str(s) for s in store_ids] if store_ids else None},
+        payload={"store_ids": sorted(normalized) if normalized else None},
         artifact_uri_hint=artifact_uri_hint,
     )
 
@@ -187,12 +242,24 @@ def enqueue_export_pontaj_only(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
-    assert_admin(principal)
+    authorize(principal, Capability.EXPORT_CREATE)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     store_ids = body.get("store_ids")
     if store_ids is not None and not isinstance(store_ids, list):
-        raise DomainError("store_ids must be a list when provided", details={"type": type(store_ids).__name__})
+        raise DomainError(
+            "store_ids must be a list when provided",
+            details={"type": type(store_ids).__name__},
+        )
+    normalized = {str(s) for s in store_ids} if store_ids else set()
+    if normalized:
+        authorize_store_set_for_month(
+            session,
+            principal,
+            Capability.EXPORT_CREATE,
+            month=month,
+            store_ids=normalized,
+        )
     idempotency_key = body.get("idempotency_key") or f"pontaj::{month_id}"
     artifact_uri_hint = _artifact_uri_hint(
         f"ugrile_{month.year}-{month.month:02d}_pontaj.xlsx"
@@ -203,7 +270,7 @@ def enqueue_export_pontaj_only(
         month_id=month_id,
         kind=JobKind.EXPORT_PONTAJ_ONLY,
         idempotency_key=idempotency_key,
-        payload={"store_ids": [str(s) for s in store_ids] if store_ids else None},
+        payload={"store_ids": sorted(normalized) if normalized else None},
         artifact_uri_hint=artifact_uri_hint,
     )
 
@@ -215,14 +282,13 @@ def export_job_status(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
-    if principal.role not in {RoleName.ADMIN, RoleName.MANAGER}:
-        raise DomainError("forbidden", details={"role": principal.role.value})
     run = session.get(ExportRun, job_id)
-    if run is None or run.tenant_id != principal.tenant_id:
+    if run is None:
         raise NotFoundError(
             "export job not found",
             details={"code": "EXPORT_JOB_NOT_FOUND", "job_id": job_id},
         )
+    _authorize_export_run(session, principal, month_id=month_id, run=run)
     return {
         "job_id": run.id,
         "kind": run.kind,
@@ -239,20 +305,13 @@ def download_export(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> FileResponse:
-    """Download the persisted artifact for a completed export run.
-
-    The client supplies only the stable ``ExportRun.id``. The filesystem
-    path is always taken from the tenant-scoped row, never from a request
-    parameter, and only a terminal DONE run can be served.
-    """
-    if principal.role not in {RoleName.ADMIN, RoleName.MANAGER}:
-        raise DomainError("forbidden", details={"role": principal.role.value})
     run = session.get(ExportRun, job_id)
-    if run is None or run.tenant_id != principal.tenant_id:
+    if run is None:
         raise NotFoundError(
             "export job not found",
             details={"code": "EXPORT_JOB_NOT_FOUND", "job_id": job_id},
         )
+    _authorize_export_run(session, principal, month_id=month_id, run=run)
     if run.status != "DONE" or not run.artifact_uri:
         raise NotFoundError(
             "export artifact not found",
@@ -278,21 +337,35 @@ def canary_readback(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
-    if principal.role not in {RoleName.ADMIN, RoleName.MANAGER}:
-        raise DomainError("forbidden", details={"role": principal.role.value})
+    authorize(principal, Capability.SHEET_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
-    target_store_ids: list[str]
+    active_store_ids = set(list_active_store_ids(session, tenant_id=principal.tenant_id))
+    visible_store_ids = month_store_ids(session, principal, month) & active_store_ids
     if store_id is not None:
+        authorize_store_for_month(
+            session,
+            principal,
+            Capability.SHEET_READ,
+            month=month,
+            store_id=store_id,
+        )
         target_store_ids = [store_id]
     else:
-        target_store_ids = list_active_store_ids(session, tenant_id=principal.tenant_id)
+        target_store_ids = sorted(visible_store_ids)
     results = [
-        asdict(read_store_canary(session, tenant_id=principal.tenant_id, store_id=s, month_id=month_id))
+        asdict(
+            read_store_canary(
+                session,
+                tenant_id=principal.tenant_id,
+                store_id=s,
+                month_id=month_id,
+            )
+        )
         for s in target_store_ids
     ]
-    for r in results:
-        r["ok"] = not r["missing_keys"] and not r["unexpected_keys"]
+    for result in results:
+        result["ok"] = not result["missing_keys"] and not result["unexpected_keys"]
     return {"month_id": month_id, "results": results}
 
 
