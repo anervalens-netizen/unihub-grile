@@ -38,7 +38,10 @@ from ..services.authorization import (
     month_store_ids,
 )
 from ..services.grid import GridService
-from ..services.month_write_gate import lock_month_for_financial_write
+from ..services.month_write_gate import (
+    lock_month_for_financial_write,
+    lock_months_for_salary_write,
+)
 
 router = APIRouter(prefix="/months", tags=["grid"])
 
@@ -136,13 +139,20 @@ def upsert_salary(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> SalaryMasterOut:
-    """Write payroll master data only before financial close."""
+    """Write payroll master data without changing any closed payroll period.
+
+    Salary windows are effective-dated rather than month-owned. The write gate
+    therefore checks every existing closed tenant month overlapped by the
+    requested effective window, not only the month used to reach this endpoint.
+    """
 
     authorize(principal, Capability.PAYROLL_MASTER_WRITE)
-    lock_month_for_financial_write(
+    lock_months_for_salary_write(
         session,
         tenant_id=principal.tenant_id,
-        month_id=month_id,
+        selected_month_id=month_id,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
     )
     person = session.get(Person, payload.person_id)
     if person is None or person.tenant_id != principal.tenant_id:
