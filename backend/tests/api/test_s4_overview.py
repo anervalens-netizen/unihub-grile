@@ -6,7 +6,7 @@ The overview endpoint must:
   the query-count assertion in ``test_s4_query_count.py``);
 * expose typed KPIs the manager UI can render without re-fetching;
 * surface needs-attention entries sorted by severity;
-* honour the manager scope (TL out-of-scope stores excluded).
+* honour manager scope for both details and aggregate KPI values.
 
 A typed ``STORE_DAY_UNCOVERED`` blocker is forced by leaving the fixture
 month partly empty; the test asserts the overview reflects the exact
@@ -15,6 +15,8 @@ blocker count.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -22,7 +24,7 @@ from tests.conftest_helpers import fixture_for_tenant
 from ugrile.connectors.ingest import FixtureConnector
 from ugrile.core import database
 from ugrile.domain.enums import JobKind, MonthState, RoleName
-from ugrile.repositories.models import ManagerScope, User
+from ugrile.repositories.models import EpayObservation, ManagerScope, Store, User
 from ugrile.repositories.months import MonthRepository
 from ugrile.worker.worker import enqueue
 
@@ -81,7 +83,7 @@ def test_overview_reports_blockers_sorted_by_severity(client, fixture_month):
 
 
 def test_overview_sheet_sync_counts_jobs(client, fixture_month, faker_tenant):
-    """Enqueue two export jobs and assert the KPI surfaces them."""
+    """Enqueue two export jobs and assert the admin KPI surfaces them."""
 
     with database.session_scope() as session:
         for kind in [JobKind.EXPORT_XLSX_STORE, JobKind.GOOGLE_PROJECTION_STORE]:
@@ -100,7 +102,7 @@ def test_overview_sheet_sync_counts_jobs(client, fixture_month, faker_tenant):
 
 
 def test_overview_respects_manager_scope(engine, client, fixture_month, faker_tenant):
-    """A TL scoped to a subset of stores must not see the other stores."""
+    """Aggregate KPIs and blocker rows must not leak out-of-scope resources."""
 
     with database.session_scope() as session:
         session.add(
@@ -112,11 +114,12 @@ def test_overview_respects_manager_scope(engine, client, fixture_month, faker_te
                 role=RoleName.MANAGER.value,
             )
         )
-        stores = list(session.query(__import__("ugrile.repositories.models", fromlist=["Store"]).Store).filter_by(tenant_id=faker_tenant["tenant_id"]))
-        # Scope the TL to exactly one store for the whole month.
-        first_store = stores[0]
-        from datetime import date
-
+        stores = list(
+            session.query(Store)
+            .filter_by(tenant_id=faker_tenant["tenant_id"])
+            .order_by(Store.id)
+        )
+        first_store, out_of_scope_store = stores[0], stores[1]
         session.add(
             ManagerScope(
                 tenant_id=faker_tenant["tenant_id"],
@@ -126,15 +129,61 @@ def test_overview_respects_manager_scope(engine, client, fixture_month, faker_te
                 effective_to=date(2026, 8, 31),
             )
         )
+        # Seed one invalid E-pay row outside the TL scope. It must not affect
+        # the manager KPI, even though the admin overview remains tenant-wide.
+        session.add(
+            EpayObservation(
+                tenant_id=faker_tenant["tenant_id"],
+                store_id=out_of_scope_store.id,
+                person_id=faker_tenant["person_a_id"],
+                category="UNDER_50",
+                value=None,
+                raw_value="bad",
+                is_valid=False,
+                source="TEST_SCOPE",
+                observed_at=datetime(2026, 8, 15, 12, 0, tzinfo=UTC),
+            )
+        )
+        # One visible and one invisible async job prove aggregate job counters
+        # are authorized from persisted month/store metadata.
+        enqueue(
+            session,
+            tenant_id=faker_tenant["tenant_id"],
+            kind=JobKind.GOOGLE_PROJECTION_STORE.value,
+            idempotency_key="scope-visible-job",
+            payload={"month_id": fixture_month, "store_id": first_store.id},
+        )
+        enqueue(
+            session,
+            tenant_id=faker_tenant["tenant_id"],
+            kind=JobKind.GOOGLE_PROJECTION_STORE.value,
+            idempotency_key="scope-hidden-job",
+            payload={"month_id": fixture_month, "store_id": out_of_scope_store.id},
+        )
         session.commit()
-    headers = {"X-Ugrile-Identity": "user_tl", "X-Ugrile-Tenant": faker_tenant["tenant_id"]}
+        first_store_id = first_store.id
+        hidden_store_id = out_of_scope_store.id
+
+    headers = {
+        "X-Ugrile-Identity": "user_tl",
+        "X-Ugrile-Tenant": faker_tenant["tenant_id"],
+    }
     response = client.get(f"/months/{fixture_month}/overview", headers=headers)
     assert response.status_code == 200, response.text
     body = response.json()
-    # KPI still reports the tenant-wide store count because managers see
-    # the lattice but their stores_covered is computed against the scope.
-    assert body["kpis"]["stores_total"] == 4
-    assert body["kpis"]["stores_covered"] == 0
+    kpis = body["kpis"]
+    assert kpis["stores_total"] == 1
+    assert kpis["stores_covered"] == 0
+    assert kpis["days_uncovered"] == 31
+    assert kpis["epay_invalid"] == 0
+    assert kpis["sheet_sync_total"] == 1
+    assert kpis["sheet_sync_stale"] == 1
+    assert all(item["store_id"] != hidden_store_id for item in body["needs_attention"])
+    assert any(item["store_id"] == first_store_id for item in body["needs_attention"])
+
+    exceptions = client.get(f"/months/{fixture_month}/exceptions", headers=headers)
+    assert exceptions.status_code == 200, exceptions.text
+    assert all(item["store_id"] != hidden_store_id for item in exceptions.json())
 
 
 def test_overview_unknown_month_returns_404(client):
