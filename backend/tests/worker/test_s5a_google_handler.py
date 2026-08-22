@@ -47,6 +47,7 @@ def _projection_payload(month: Month, faker_tenant) -> dict[str, object]:
         "store_id": faker_tenant["store_id"],
         "year": month.year,
         "month": month.month,
+        "month_revision": month.revision,
         "revision": month.revision,
     }
 
@@ -234,7 +235,7 @@ def test_google_projection_handler_rejects_cross_tenant_payload(session, faker_t
 
 
 def test_google_projection_handler_requires_payload(session, faker_tenant):
-    """A missing ``store_id`` / ``month_id`` is terminal validation."""
+    """A missing store/month identity is terminal validation."""
 
     enqueue(
         session,
