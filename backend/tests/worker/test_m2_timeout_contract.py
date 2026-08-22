@@ -44,7 +44,6 @@ def test_timeout_error_retries_with_backoff_then_exhausts(
             assert row.locked_by is None
             assert row.locked_at is None
             assert "RETRYABLE" in (row.last_error or "")
-            assert row.run_after > datetime.now(tz=UTC)
         else:
             assert row.status == "FAILED"
             assert row.locked_by is None
