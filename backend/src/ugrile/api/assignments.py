@@ -123,6 +123,8 @@ def upsert_assignment(
                     payload.business_date,
                 )
             },
+            actor_id=principal.user_id,
+            source="API_ASSIGNMENT",
         )
     except CoverageInvariantError as exc:
         raise HTTPException(
@@ -232,6 +234,8 @@ def apply_calendar(
         changes=changes,
         expected_revision=payload.expected_revision,
         allowed_store_ids_by_date=_allowed_by_date(session, principal, month),
+        actor_id=principal.user_id,
+        source="API_CALENDAR",
     )
     return CalendarProjectionOut(
         month_id=result.month_id,

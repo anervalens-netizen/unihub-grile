@@ -6,6 +6,7 @@ from calendar import monthrange
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
+from uuid import uuid4
 
 from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
@@ -25,6 +26,7 @@ from ..domain.projections import (
 from ..repositories.models import Month, Person, PersonDayAbsence, PontajProjection, Store
 from ..repositories.models import SiteDayAssignment as AssignmentRow
 from .attribution import AttributionService
+from .audit import record_audit_event
 from .person_scope import effective_home_store_map
 
 
@@ -57,6 +59,18 @@ class CalendarService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    @staticmethod
+    def _audit_value(change: CalendarChange | None) -> dict[str, object] | None:
+        if change is None:
+            return None
+        return {
+            "person_id": change.person_id,
+            "business_date": change.business_date.isoformat(),
+            "store_id": change.store_id,
+            "status": change.status.value,
+            "working_kind": change.working_kind.value if change.working_kind else None,
+        }
+
     def preview(
         self,
         *,
@@ -67,8 +81,15 @@ class CalendarService:
         allowed_store_ids: set[str] | None = None,
         allowed_store_ids_by_date: Mapping[date, set[str]] | None = None,
         hours: HoursConfig = HoursConfig(),
+        actor_id: str | None = None,
+        source: str = "SYSTEM",
+        correlation_id: str | None = None,
     ) -> CalendarResult:
-        """Run the exact apply validation in a rolled-back savepoint."""
+        """Run exact apply validation in a rolled-back savepoint.
+
+        The real apply path also creates its audit row, but the savepoint is
+        deliberately rolled back so preview never leaves mutation evidence.
+        """
 
         try:
             with self.session.begin_nested():
@@ -80,6 +101,9 @@ class CalendarService:
                     allowed_store_ids=allowed_store_ids,
                     allowed_store_ids_by_date=allowed_store_ids_by_date,
                     hours=hours,
+                    actor_id=actor_id,
+                    source=source,
+                    correlation_id=correlation_id,
                 )
                 raise _PreviewRollback(result)
         except _PreviewRollback as rollback:
@@ -95,6 +119,9 @@ class CalendarService:
         allowed_store_ids: set[str] | None = None,
         allowed_store_ids_by_date: Mapping[date, set[str]] | None = None,
         hours: HoursConfig = HoursConfig(),
+        actor_id: str | None = None,
+        source: str = "SYSTEM",
+        correlation_id: str | None = None,
     ) -> CalendarResult:
         month = self.session.execute(
             select(Month).where(Month.id == month.id).with_for_update()
@@ -116,32 +143,39 @@ class CalendarService:
                 },
             )
         if any(
-            c.business_date.year != month.year or c.business_date.month != month.month
-            for c in changes
+            change.business_date.year != month.year
+            or change.business_date.month != month.month
+            for change in changes
         ):
             raise ValidationError(
                 "calendar change is outside the requested month",
                 details={"month_id": month.id},
             )
-        keys = [(c.person_id, c.business_date) for c in changes]
+        keys = [(change.person_id, change.business_date) for change in changes]
         if len(keys) != len(set(keys)):
             raise ValidationError(
                 "calendar contains duplicate person/day changes",
                 details={"duplicates": sorted({key for key in keys if keys.count(key) > 1})},
             )
 
-        person_ids = {c.person_id for c in changes}
-        store_ids = {c.store_id for c in changes if c.store_id}
+        person_ids = {change.person_id for change in changes}
+        store_ids = {change.store_id for change in changes if change.store_id}
         people = {
-            p.id: p
-            for p in self.session.execute(
-                select(Person).where(Person.tenant_id == tenant_id, Person.id.in_(person_ids))
+            person.id: person
+            for person in self.session.execute(
+                select(Person).where(
+                    Person.tenant_id == tenant_id,
+                    Person.id.in_(person_ids),
+                )
             ).scalars()
         }
         stores = {
-            s.id: s
-            for s in self.session.execute(
-                select(Store).where(Store.tenant_id == tenant_id, Store.id.in_(store_ids))
+            store.id: store
+            for store in self.session.execute(
+                select(Store).where(
+                    Store.tenant_id == tenant_id,
+                    Store.id.in_(store_ids),
+                )
             ).scalars()
         }
         if len(people) != len(person_ids) or len(stores) != len(store_ids):
@@ -244,6 +278,7 @@ class CalendarService:
                 for row in existing_absences
             }
         )
+        before_by_key = {key: candidate.get(key) for key in keys}
         for change in changes:
             candidate[(change.person_id, change.business_date)] = change
 
@@ -274,7 +309,9 @@ class CalendarService:
             )
         )
 
-        new_revision = month.revision + 1
+        revision_before = month.revision
+        new_revision = revision_before + 1
+        row_source = source[:32] or "SYSTEM"
         for change in sorted(
             candidate.values(),
             key=lambda item: (item.business_date, item.person_id),
@@ -292,7 +329,7 @@ class CalendarService:
                             change.working_kind.value if change.working_kind else None
                         ),
                         revision=new_revision,
-                        source="CALENDAR",
+                        source=row_source,
                     )
                 )
             else:
@@ -354,6 +391,36 @@ class CalendarService:
             month=month,
             tenant_id=tenant_id,
             revision=new_revision,
+        )
+
+        audit_correlation_id = correlation_id or uuid4().hex
+        record_audit_event(
+            self.session,
+            tenant_id=tenant_id,
+            actor_id=actor_id,
+            action="CALENDAR_APPLY",
+            entity="month",
+            entity_id=month.id,
+            payload={
+                "month_id": month.id,
+                "revision_before": revision_before,
+                "revision_after": new_revision,
+                "source": source,
+                "correlation_id": audit_correlation_id,
+                "changes": [
+                    {
+                        "person_id": change.person_id,
+                        "business_date": change.business_date.isoformat(),
+                        "before": self._audit_value(
+                            before_by_key.get((change.person_id, change.business_date))
+                        ),
+                        "after": self._audit_value(
+                            candidate[(change.person_id, change.business_date)]
+                        ),
+                    }
+                    for change in changes
+                ],
+            },
         )
 
         dates = [
