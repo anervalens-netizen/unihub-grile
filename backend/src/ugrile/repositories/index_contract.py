@@ -15,7 +15,6 @@ from sqlalchemy import Index, text
 
 from .models import EpayObservation, GridCalculation, OutboxJob, SalesStoreDay, SheetProjectionRun
 
-
 INDEX_CONTRACT = (
     # worker.claim_next(): due PENDING work ordered by run_after then id.
     Index(
