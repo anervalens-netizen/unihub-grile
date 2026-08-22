@@ -8,6 +8,10 @@ Export enqueue is idempotent on ``(tenant_id, kind, idempotency_key)``. An exact
 replay returns the original ExportRun instead of creating a second job; reusing
 the same key for a different logical request fails closed. Artifact targets are
 operation-scoped so distinct exports cannot overwrite each other's history.
+
+Every export request also pins both the administrative month revision and the
+calendar-derived data revision. The worker revalidates both under a row lock
+before rendering, so a queued job can never silently render a newer snapshot.
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ from ..services.authorization import (
     month_store_ids,
 )
 from ..services.canary import list_active_store_ids, read_store_canary
+from ..services.snapshot_revision import calendar_data_revision
 from ..services.xlsx_export import create_pending_export_run
 from ..worker.worker import enqueue
 
@@ -160,6 +165,8 @@ def _export_response(
     replayed: bool,
 ) -> dict[str, Any]:
     summary = _summary_dict(run)
+    request_payload = summary.get("payload")
+    request_payload = request_payload if isinstance(request_payload, dict) else {}
     hint = summary.get("artifact_uri_hint")
     artifact_uri_hint = str(hint) if isinstance(hint, str) and hint else run.artifact_uri
     status = "ENQUEUED" if run.status == "PENDING" else run.status
@@ -171,6 +178,8 @@ def _export_response(
         "status": status,
         "artifact_uri_hint": artifact_uri_hint,
         "replayed": replayed,
+        "month_revision": request_payload.get("month_revision"),
+        "data_revision": request_payload.get("data_revision"),
     }
 
 
@@ -318,6 +327,16 @@ def _authorize_export_run(
     )
 
 
+def _snapshot_revisions(session: Session, *, tenant_id: str, month_id: str, month_revision: int) -> tuple[int, int]:
+    data_revision = calendar_data_revision(
+        session,
+        tenant_id=tenant_id,
+        month_id=month_id,
+        fallback_revision=month_revision,
+    )
+    return int(month_revision), data_revision
+
+
 @router.post("/{month_id}/export/store")
 def enqueue_export_store(
     month_id: str,
@@ -338,7 +357,15 @@ def enqueue_export_store(
         month=month,
         store_id=store_id,
     )
-    idempotency_key = body.get("idempotency_key") or f"store::{store_id}::{month_id}"
+    month_revision, data_revision = _snapshot_revisions(
+        session,
+        tenant_id=principal.tenant_id,
+        month_id=month.id,
+        month_revision=month.revision,
+    )
+    idempotency_key = body.get("idempotency_key") or (
+        f"store::{store_id}::{month_id}::m{month_revision}::d{data_revision}"
+    )
     if not isinstance(idempotency_key, str) or not idempotency_key:
         raise DomainError("idempotency_key is required", details={"code": "EXPORT_KEY_REQUIRED"})
     artifact_uri_hint = _artifact_uri_hint(
@@ -353,7 +380,11 @@ def enqueue_export_store(
         month_id=month_id,
         kind=JobKind.EXPORT_XLSX_STORE,
         idempotency_key=idempotency_key,
-        payload={"store_id": store_id},
+        payload={
+            "store_id": store_id,
+            "month_revision": month_revision,
+            "data_revision": data_revision,
+        },
         artifact_uri_hint=artifact_uri_hint,
     )
 
@@ -383,7 +414,15 @@ def enqueue_export_bulk(
             month=month,
             store_ids=normalized,
         )
-    idempotency_key = body.get("idempotency_key") or f"bulk::{month_id}"
+    month_revision, data_revision = _snapshot_revisions(
+        session,
+        tenant_id=principal.tenant_id,
+        month_id=month.id,
+        month_revision=month.revision,
+    )
+    idempotency_key = body.get("idempotency_key") or (
+        f"bulk::{month_id}::m{month_revision}::d{data_revision}"
+    )
     if not isinstance(idempotency_key, str) or not idempotency_key:
         raise DomainError("idempotency_key is required", details={"code": "EXPORT_KEY_REQUIRED"})
     artifact_uri_hint = _artifact_uri_hint(
@@ -398,7 +437,11 @@ def enqueue_export_bulk(
         month_id=month_id,
         kind=JobKind.EXPORT_XLSX_BULK,
         idempotency_key=idempotency_key,
-        payload={"store_ids": sorted(normalized) if normalized else None},
+        payload={
+            "store_ids": sorted(normalized) if normalized else None,
+            "month_revision": month_revision,
+            "data_revision": data_revision,
+        },
         artifact_uri_hint=artifact_uri_hint,
     )
 
@@ -428,7 +471,15 @@ def enqueue_export_pontaj_only(
             month=month,
             store_ids=normalized,
         )
-    idempotency_key = body.get("idempotency_key") or f"pontaj::{month_id}"
+    month_revision, data_revision = _snapshot_revisions(
+        session,
+        tenant_id=principal.tenant_id,
+        month_id=month.id,
+        month_revision=month.revision,
+    )
+    idempotency_key = body.get("idempotency_key") or (
+        f"pontaj::{month_id}::m{month_revision}::d{data_revision}"
+    )
     if not isinstance(idempotency_key, str) or not idempotency_key:
         raise DomainError("idempotency_key is required", details={"code": "EXPORT_KEY_REQUIRED"})
     artifact_uri_hint = _artifact_uri_hint(
@@ -443,7 +494,11 @@ def enqueue_export_pontaj_only(
         month_id=month_id,
         kind=JobKind.EXPORT_PONTAJ_ONLY,
         idempotency_key=idempotency_key,
-        payload={"store_ids": sorted(normalized) if normalized else None},
+        payload={
+            "store_ids": sorted(normalized) if normalized else None,
+            "month_revision": month_revision,
+            "data_revision": data_revision,
+        },
         artifact_uri_hint=artifact_uri_hint,
     )
 
