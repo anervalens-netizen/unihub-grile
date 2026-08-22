@@ -16,8 +16,9 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from ..repositories.models import Month
-from .overview import ProgramCell, ProgramGrid, ProgramRow, ProgramService
+from .overview import ProgramCell, ProgramGrid, ProgramRow
 from .person_scope import effective_home_store_map
+from .program_fast import IndexedProgramService
 
 
 def _locked_store_cell(cell: ProgramCell, *, store_id: str) -> ProgramCell:
@@ -53,7 +54,7 @@ class ScopedProgramService:
 
     def __init__(self, session: Session) -> None:
         self.session = session
-        self._base = ProgramService(session)
+        self._base = IndexedProgramService(session)
 
     def month_grid(
         self,
