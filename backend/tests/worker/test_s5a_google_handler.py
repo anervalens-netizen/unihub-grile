@@ -184,8 +184,19 @@ def test_google_retry_never_destroys_last_good_projection(monkeypatch, session, 
     )
     assert after is not None
     assert after.generation == before.generation
-    assert dict(after.grila) == before_grila
-    assert dict(after.pontaj) == before_pontaj
+
+    # ``read_store_projection`` rebuilds structural payloads from the current
+    # authoritative local rows and therefore stamps a new generated_at on every
+    # read. Last-good means generation + business payload survive a failed
+    # provider attempt; the read-time timestamp is intentionally volatile.
+    after_grila = dict(after.grila)
+    after_pontaj = dict(after.pontaj)
+    before_grila.pop("generated_at", None)
+    before_pontaj.pop("generated_at", None)
+    after_grila.pop("generated_at", None)
+    after_pontaj.pop("generated_at", None)
+    assert after_grila == before_grila
+    assert after_pontaj == before_pontaj
 
 
 def test_google_projection_handler_rejects_cross_tenant_payload(session, faker_tenant):
