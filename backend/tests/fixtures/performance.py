@@ -64,6 +64,9 @@ def seed_performance_dataset(session: Session) -> PerformanceDataset:
     admin_user_id = "user_perf_admin"
     month_id = "month_perf_2026-08"
 
+    # Flush parent rows explicitly. These models intentionally do not expose
+    # ORM relationships, so SQLAlchemy cannot infer every FK dependency from
+    # the object graph alone during one large unit-of-work flush.
     session.add(
         Tenant(
             id=tenant_id,
@@ -72,6 +75,8 @@ def seed_performance_dataset(session: Session) -> PerformanceDataset:
             is_active=True,
         )
     )
+    session.flush()
+
     session.add(
         User(
             id=admin_user_id,
@@ -91,6 +96,7 @@ def seed_performance_dataset(session: Session) -> PerformanceDataset:
         revision=1,
     )
     session.add(month)
+    session.flush()
 
     stores: list[Store] = []
     people: list[Person] = []
