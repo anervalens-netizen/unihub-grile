@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from ugrile.domain.close_policy import BlockerDisposition, policy_for_rule_pack
 from ugrile.domain.enums import CloseBlockerCode, RoleName
+from ugrile.domain.errors import ScopeError
 from ugrile.domain.grid import GridAnomalyCode
 from ugrile.domain.rule_pack import get_default_rule_pack
-from ugrile.domain.errors import ScopeError
 from ugrile.services.auth import Principal
 from ugrile.services.authorization import Capability, authorize, capabilities_for
 
