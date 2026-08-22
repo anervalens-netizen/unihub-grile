@@ -1,13 +1,4 @@
-"""S2 XLSX schedule template, preview, atomic apply and Pontaj endpoints.
-
-Every generated workbook is bound to a server-issued, single-use import
-contract (``schedule_import_contracts``). Preview validates the same contract
-without consuming it; apply locks the contract row, validates it against
-fresh server-side catalog/scope reads, applies the calendar and consumes the
-contract — all in one request transaction. A failed apply rolls the whole
-transaction back, so the contract stays usable and no partial calendar write
-survives.
-"""
+"""Contract-bound XLSX schedule template, preview, apply and Pontaj endpoints."""
 
 from __future__ import annotations
 
@@ -38,18 +29,13 @@ from ..repositories.models import (
     ScheduleImportContract,
     Store,
 )
-from ..repositories.models import (
-    SiteDayAssignment as AssignmentRow,
-)
+from ..repositories.models import SiteDayAssignment as AssignmentRow
 from ..repositories.months import MonthRepository
 from ..repositories.pontaj import PontajRepository
-from ..services.auth import (
-    Principal,
-    assert_manager_or_admin,
-    assert_same_tenant,
-    effective_store_ids,
-)
+from ..services.auth import Principal, assert_same_tenant, effective_store_ids
+from ..services.authorization import Capability, authorize
 from ..services.calendar import CalendarChange, CalendarService
+from ..services.person_scope import effective_home_store_map
 from ..services.schedule_contract import consume_contract, issue_contract, validate_contract
 from ..services.schedule_xlsx import ParsedSchedule, build_template, parse_schedule
 
@@ -64,19 +50,39 @@ def _month_dates(month: Month) -> list[date]:
     ]
 
 
-def _allowed_by_date(session: Session, principal: Principal, month: Month) -> dict[date, set[str]]:
-    return {day: effective_store_ids(session, principal, day) for day in _month_dates(month)}
+def _allowed_by_date(
+    session: Session,
+    principal: Principal,
+    month: Month,
+) -> dict[date, set[str]]:
+    return {
+        business_date: effective_store_ids(session, principal, business_date)
+        for business_date in _month_dates(month)
+    }
 
 
 def _catalog_for_scope(
-    session: Session, principal: Principal, month: Month
+    session: Session,
+    principal: Principal,
+    month: Month,
 ) -> tuple[dict[str, str], list[dict[str, str]], dict[date, set[str]]]:
+    """Build the legacy single-home-store XLSX catalog for current active people.
+
+    Direct UI/calendar writes already use effective-dated home-store history.
+    The XLSX row format still carries one display/default home-store code, so a
+    later dedicated contract revision will encode mid-month transfers without
+    weakening server-side apply validation.
+    """
+
     allowed_by_date = _allowed_by_date(session, principal, month)
     allowed_store_ids = set().union(*allowed_by_date.values()) if allowed_by_date else set()
     stores = list(
         session.execute(
             select(Store)
-            .where(Store.tenant_id == principal.tenant_id, Store.id.in_(allowed_store_ids))
+            .where(
+                Store.tenant_id == principal.tenant_id,
+                Store.id.in_(allowed_store_ids),
+            )
             .order_by(Store.internal_code)
         ).scalars()
     )
@@ -87,6 +93,7 @@ def _catalog_for_scope(
             select(Person)
             .where(
                 Person.tenant_id == principal.tenant_id,
+                Person.is_active.is_(True),
                 Person.home_store_id.in_(set(store_by_id)),
             )
             .order_by(Person.internal_code)
@@ -112,14 +119,6 @@ def _calendar_for_scope(
     allowed_by_date: dict[date, set[str]],
 ) -> list[CalendarChange]:
     person_ids = {row["person_id"] for row in people}
-    home_stores = {
-        person_id: home_store_id
-        for person_id, home_store_id in session.execute(
-            select(Person.id, Person.home_store_id).where(
-                Person.tenant_id == tenant_id, Person.id.in_(person_ids)
-            )
-        )
-    }
     assignments = list(
         session.execute(
             select(AssignmentRow).where(
@@ -138,6 +137,13 @@ def _calendar_for_scope(
             )
         ).scalars()
     )
+    all_rows = [*assignments, *absences]
+    effective_home = effective_home_store_map(
+        session,
+        tenant_id=tenant_id,
+        person_ids=person_ids,
+        business_dates={row.business_date for row in all_rows},
+    )
     changes = [
         CalendarChange(
             person_id=row.person_id,
@@ -149,7 +155,8 @@ def _calendar_for_scope(
         for row in assignments
         if row.business_date in allowed_by_date
         and row.store_id in allowed_by_date[row.business_date]
-        and home_stores.get(row.person_id) in allowed_by_date[row.business_date]
+        and effective_home.get((row.person_id, row.business_date))
+        in allowed_by_date[row.business_date]
     ]
     changes.extend(
         CalendarChange(
@@ -160,7 +167,8 @@ def _calendar_for_scope(
         )
         for row in absences
         if row.business_date in allowed_by_date
-        and home_stores.get(row.person_id) in allowed_by_date[row.business_date]
+        and effective_home.get((row.person_id, row.business_date))
+        in allowed_by_date[row.business_date]
     )
     return changes
 
@@ -171,7 +179,7 @@ def schedule_template(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> StreamingResponse:
-    assert_manager_or_admin(principal)
+    authorize(principal, Capability.SCHEDULE_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     stores, people, allowed_by_date = _catalog_for_scope(session, principal, month)
@@ -199,14 +207,22 @@ def schedule_template(
         contract_token=token,
         people=people,
         stores=stores,
-        calendar=_calendar_for_scope(session, principal.tenant_id, month, people, allowed_by_date),
+        calendar=_calendar_for_scope(
+            session,
+            principal.tenant_id,
+            month,
+            people,
+            allowed_by_date,
+        ),
         allowed_store_ids_by_date=allowed_by_date,
     )
     return StreamingResponse(
         BytesIO(data),
         media_type=XLSX_MEDIA_TYPE,
         headers={
-            "Content-Disposition": f'attachment; filename="schedule-{month.year}-{month.month:02d}.xlsx"'
+            "Content-Disposition": (
+                f'attachment; filename="schedule-{month.year}-{month.month:02d}.xlsx"'
+            )
         },
     )
 
@@ -233,12 +249,6 @@ def _validate_contract_for_upload(
     allowed_by_date: dict[date, set[str]],
     lock: bool,
 ) -> ScheduleImportContract:
-    """Validate the uploaded Manifest contract from fresh server-side reads.
-
-    Raises the underlying :class:`DomainError`; callers decide whether to
-    surface it as a preview error or an HTTP rejection.
-    """
-
     return validate_contract(
         session,
         token=parsed.contract_token,
@@ -262,11 +272,10 @@ async def schedule_preview(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> SchedulePreviewOut:
-    assert_manager_or_admin(principal)
+    authorize(principal, Capability.SCHEDULE_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     stores, people, allowed_by_date = _catalog_for_scope(session, principal, month)
-    known_people = {row["person_id"] for row in people}
     parsed = parse_schedule(
         await _read_upload(file),
         expected_tenant_id=principal.tenant_id,
@@ -274,7 +283,7 @@ async def schedule_preview(
         year=month.year,
         month=month.month,
         stores=stores,
-        known_person_ids=known_people,
+        known_person_ids={row["person_id"] for row in people},
     )
     errors = list(parsed.errors)
     warnings = list(parsed.warnings)
@@ -291,11 +300,7 @@ async def schedule_preview(
         )
     except DomainError as exc:
         errors.append(
-            {
-                "code": exc.code,
-                "message": exc.message,
-                "details": exc.details,
-            }
+            {"code": exc.code, "message": exc.message, "details": exc.details}
         )
     if not errors:
         try:
@@ -308,11 +313,7 @@ async def schedule_preview(
             )
         except DomainError as exc:
             errors.append(
-                {
-                    "code": exc.code,
-                    "message": exc.message,
-                    "details": exc.details,
-                }
+                {"code": exc.code, "message": exc.message, "details": exc.details}
             )
         else:
             warnings.extend(
@@ -339,7 +340,7 @@ async def schedule_apply(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> CalendarProjectionOut:
-    assert_manager_or_admin(principal)
+    authorize(principal, Capability.SCHEDULE_WRITE)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     stores, people, allowed_by_date = _catalog_for_scope(session, principal, month)
@@ -354,11 +355,9 @@ async def schedule_apply(
     )
     if parsed.errors:
         raise ValidationError(
-            "schedule contains blocking errors", details={"errors": parsed.errors}
+            "schedule contains blocking errors",
+            details={"errors": parsed.errors},
         )
-    # Lock the contract row first: two concurrent applies of the same
-    # workbook cannot both pass validation, and a failure below rolls back
-    # every change including the consumption marker.
     contract = _validate_contract_for_upload(
         session,
         parsed=parsed,
@@ -393,42 +392,47 @@ def get_pontaj(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> PontajMonthOut:
-    """Complete persistent Pontaj for the month's current/latest revision.
+    """Read latest persistent Pontaj filtered by effective-dated person scope."""
 
-    Rows are filtered by the caller's effective manager date scope: a row is
-    visible only when the person's home store is inside the scope on that
-    business date. Totals are per visible person.
-    """
-
+    authorize(principal, Capability.SCHEDULE_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     allowed_by_date = _allowed_by_date(session, principal, month)
     repo = PontajRepository(session)
     revision = repo.latest_revision(principal.tenant_id, month.id)
     if revision is None:
-        return PontajMonthOut(month_id=month.id, revision=month.revision, rows=[], totals=[])
+        return PontajMonthOut(
+            month_id=month.id,
+            revision=month.revision,
+            rows=[],
+            totals=[],
+        )
     rows = repo.list_for_revision(principal.tenant_id, month.id, revision)
-    person_ids = {row.person_id for row in rows}
-    home_stores = {
-        person.id: person.home_store_id
-        for person in session.execute(
-            select(Person).where(Person.tenant_id == principal.tenant_id, Person.id.in_(person_ids))
-        ).scalars()
-    }
+    effective_home = effective_home_store_map(
+        session,
+        tenant_id=principal.tenant_id,
+        person_ids={row.person_id for row in rows},
+        business_dates={row.business_date for row in rows},
+    )
     visible = [
         row
         for row in rows
-        if home_stores.get(row.person_id) in allowed_by_date.get(row.business_date, set())
+        if effective_home.get((row.person_id, row.business_date))
+        in allowed_by_date.get(row.business_date, set())
     ]
     counts: dict[str, dict[str, int]] = {}
     total_hours: dict[str, Decimal] = {}
     for row in visible:
         bucket = counts.setdefault(
-            row.person_id, {"working_days": 0, "leave_days": 0, "off_days": 0}
+            row.person_id,
+            {"working_days": 0, "leave_days": 0, "off_days": 0},
         )
         if row.status == DayStatus.WORKING.value:
             bucket["working_days"] += 1
-            total_hours[row.person_id] = total_hours.get(row.person_id, Decimal(0)) + row.hours
+            total_hours[row.person_id] = total_hours.get(
+                row.person_id,
+                Decimal(0),
+            ) + row.hours
         elif row.status == DayStatus.LEAVE.value:
             bucket["leave_days"] += 1
         else:
