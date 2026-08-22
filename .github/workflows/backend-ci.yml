@@ -54,6 +54,9 @@ jobs:
       - name: Fresh migration bootstrap
         run: alembic upgrade head
 
+      - name: Alembic metadata drift
+        run: alembic check
+
       - name: M3 performance contract
         run: pytest tests/integration/test_m3_performance.py tests/integration/test_m3_calendar_save_evaluation.py -q -s
 
