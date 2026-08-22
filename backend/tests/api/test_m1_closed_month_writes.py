@@ -38,6 +38,40 @@ def test_closed_month_rejects_grid_recompute(engine, faker_tenant, client):
     assert response.json()["details"]["code"] == "MONTH_CLOSED"
 
 
+def test_closed_month_rejects_holiday_calendar_write(engine, faker_tenant, client):
+    month_id = _closed_month_id(faker_tenant)
+
+    response = client.post(
+        f"/months/{month_id}/holidays",
+        headers=ADMIN,
+        json={
+            "version": "rom-legal-2026",
+            "business_date": "2026-08-15",
+            "label": "Adormirea Maicii Domnului",
+            "is_active": True,
+        },
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["details"]["code"] == "MONTH_CLOSED"
+
+
+def test_closed_month_rejects_holiday_override_write(engine, faker_tenant, client):
+    month_id = _closed_month_id(faker_tenant)
+
+    response = client.post(
+        f"/months/{month_id}/holidays/override",
+        headers=ADMIN,
+        json={
+            "version": "rom-legal-2026",
+            "business_date": "2026-08-15",
+            "is_active": True,
+            "reason": "confirmat de admin",
+        },
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["details"]["code"] == "MONTH_CLOSED"
+
+
 def test_closed_month_rejects_payroll_master_write(engine, faker_tenant, client):
     month_id = _closed_month_id(faker_tenant)
 
