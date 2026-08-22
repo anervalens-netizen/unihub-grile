@@ -488,9 +488,19 @@ class CalendarService:
             }
             for row in rows
         ]
-        # Ten bound columns per row. 3,000 rows stays below PostgreSQL's
-        # parameter ceiling while allowing the 80/160-person realistic fixtures
-        # to materialize in one or two statements instead of ten-plus chunks.
+        if not values:
+            return
+
+        dialect_name = self.session.get_bind().dialect.name
+        if dialect_name == "sqlite":
+            # SQLite's in-process executemany path is substantially faster than
+            # compiling one very large multi-value statement for this lattice.
+            self.session.execute(insert(PontajProjection), values)
+            return
+
+        # PostgreSQL/production: ten bound columns per row. 3,000 rows stays
+        # below the parameter ceiling while the realistic 4,960-row lattice is
+        # persisted in two statements instead of thousands of driver executions.
         chunk_size = 3000
         for start in range(0, len(values), chunk_size):
             self.session.execute(
