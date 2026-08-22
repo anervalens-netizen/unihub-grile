@@ -22,8 +22,8 @@ from ..api.schemas import (
     SalaryMasterOut,
     SalaryUpsertIn,
 )
-from ..domain.enums import MonthState, WorkingKind
-from ..domain.errors import ConflictError, NotFoundError
+from ..domain.enums import WorkingKind
+from ..domain.errors import NotFoundError
 from ..domain.rule_pack import RULE_PACK_VERSION
 from ..repositories.holidays import HolidayMarker, HolidayRepository
 from ..repositories.models import GridCalculation, Month, Person
@@ -38,6 +38,10 @@ from ..services.authorization import (
     month_store_ids,
 )
 from ..services.grid import GridService
+from ..services.month_write_gate import (
+    lock_month_for_financial_write,
+    lock_months_for_salary_write,
+)
 
 router = APIRouter(prefix="/months", tags=["grid"])
 
@@ -54,10 +58,18 @@ def compute_grid(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> GridComputeOut:
-    """Recompute the authoritative current-revision payroll grid."""
+    """Recompute payroll only while the month is open/reopened.
+
+    The month row lock serializes this authoritative financial write with
+    close/reopen so a grid recomputation cannot land after a successful close.
+    """
 
     authorize(principal, Capability.GRID_COMPUTE)
-    month = _month_or_404(session, month_id, principal)
+    month = lock_month_for_financial_write(
+        session,
+        tenant_id=principal.tenant_id,
+        month_id=month_id,
+    )
     _, rows = GridService(session).compute_and_persist(
         tenant_id=principal.tenant_id,
         month=month,
@@ -127,15 +139,21 @@ def upsert_salary(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> SalaryMasterOut:
-    """Write payroll master data; closed periods require reopen first."""
+    """Write payroll master data without changing any closed payroll period.
+
+    Salary windows are effective-dated rather than month-owned. The write gate
+    therefore checks every existing closed tenant month overlapped by the
+    requested effective window, not only the month used to reach this endpoint.
+    """
 
     authorize(principal, Capability.PAYROLL_MASTER_WRITE)
-    month = _month_or_404(session, month_id, principal)
-    if month.state == MonthState.CLOSED.value:
-        raise ConflictError(
-            "month is closed",
-            details={"code": "MONTH_CLOSED", "month_id": month.id},
-        )
+    lock_months_for_salary_write(
+        session,
+        tenant_id=principal.tenant_id,
+        selected_month_id=month_id,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+    )
     person = session.get(Person, payload.person_id)
     if person is None or person.tenant_id != principal.tenant_id:
         raise NotFoundError("person not found", details={"person_id": payload.person_id})
