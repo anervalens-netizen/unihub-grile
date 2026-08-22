@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 
@@ -12,10 +13,10 @@ from ugrile.services.financial_inputs import financial_input_mismatch
 from ugrile.services.grid import GridService
 
 
-def test_financial_guard_rejects_new_generation_even_when_values_match(
+def test_generation_drift_blocks_then_recomputes_without_calendar_edit(
     session, faker_tenant
 ):
-    """Generation drift is stale financial state even when values are identical."""
+    """A new sales generation is stale state until exact-generation recompute."""
 
     tenant_id = faker_tenant["tenant_id"]
     store_id = faker_tenant["store_id"]
@@ -81,8 +82,9 @@ def test_financial_guard_rejects_new_generation_even_when_values_match(
         sales_generation="GEN_001",
     )
     session.commit()
-    row = next(item for item in rows if item.person_id == person_id)
+    old_row = next(item for item in rows if item.person_id == person_id)
 
+    # New authoritative generation, deliberately with identical financial values.
     session.add(
         SalesStoreDay(
             tenant_id=tenant_id,
@@ -103,9 +105,35 @@ def test_financial_guard_rejects_new_generation_even_when_values_match(
         tenant_id=tenant_id,
         month=month,
         person=person,
-        row=row,
+        row=old_row,
     )
     assert mismatch is not None
     assert "sales changed" in mismatch
     assert "generation changed" in mismatch
     assert "grid=GEN_001, current=GEN_002" in mismatch
+
+    # Recompute at the same calendar revision using the new physical generation.
+    # No calendar edit/re-attribution is required to recover from connector drift.
+    original_revision = month.revision
+    _, refreshed_rows = GridService(session).compute_and_persist(
+        tenant_id=tenant_id,
+        month=month,
+        sales_generation="GEN_002",
+    )
+    session.commit()
+    session.refresh(month)
+    assert month.revision == original_revision
+    refreshed = next(item for item in refreshed_rows if item.person_id == person_id)
+    payload = json.loads(refreshed.payload)
+    assert payload["inputs"]["sales_generation"] == "GEN_002"
+    assert Decimal(payload["inputs"]["calendar"][0]["sales_amount"]) == Decimal("100.00")
+    assert (
+        financial_input_mismatch(
+            session,
+            tenant_id=tenant_id,
+            month=month,
+            person=person,
+            row=refreshed,
+        )
+        is None
+    )
