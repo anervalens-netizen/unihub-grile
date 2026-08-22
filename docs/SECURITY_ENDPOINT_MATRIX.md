@@ -1,6 +1,6 @@
 # Security endpoint matrix
 
-Status: canonical authorization inventory for issue #4 `SEC-001`.
+Status: canonical authorization inventory for issue #4 `SEC-001`; M1 route-family re-attestation completed through PR #26.
 
 Every authenticated UniHub Grile API route must have an explicit capability and resource scope. Absence from this matrix is a defect, not implicit permission.
 
@@ -55,7 +55,7 @@ Admins are tenant-wide unless a more restrictive product rule applies. Managers 
 | export/bulk, pontaj-only | `export.create` | explicit store set; when omitted resolve to caller-visible set, never implicit tenant-wide for manager | admin currently |
 | export status/download | `export.read` | persisted export run + embedded requested store set | manager may read only if entire run is in current/effective allowed scope; admin tenant-wide |
 | canary/readback | `sheet.read` | explicit store or caller-visible store set | manager scoped; admin tenant-wide |
-| `/ingest/fixture` | `admin.fixture` | development fixture tenant | dev/test/ci only; route absent in prod |
+| `/ingest/fixture` | `admin.fixture` | development fixture tenant + locked financial periods touched by payload | dev/test/ci only; route absent in prod; CLOSED touched period rejects ingest |
 | `/worker/jobs*` | `jobs.read` | tenant and job resource scope | authenticated admin/manager as defined by job payload/owner policy |
 | health/readiness/version | public probe | no business data | no identity dependency |
 
@@ -72,14 +72,18 @@ Admins are tenant-wide unless a more restrictive product rule applies. Managers 
 9. Development principal headers are an explicit provider and are rejected by production configuration.
 10. Fixture routes are not mounted in production.
 11. Cross-tenant identifiers return deny/not-found without exposing foreign data.
-12. Closed-month state remains an independent business write gate after authorization succeeds.
+12. Closed-month state remains an independent business write gate after authorization succeeds. Connector ingest locks the same Month rows before authoritative financial input writes so it serializes with close/reopen.
 13. New routes must update this matrix and authorization tests in the same PR.
 
-## Remaining M1 audit targets
+## M1 re-attestation result
 
-- legacy assignments/schedule route families still need complete migration from role helpers to the central capability boundary;
-- every historical person/date read must use effective-dated store semantics rather than mutable current catalog state;
-- frontend capability rendering remains a usability task and does not replace backend enforcement;
-- calendar audit completeness and all closed-month authoritative write paths remain separate financial-correctness gates.
+- assignments, calendar, Program and XLSX schedule writes use the central capability boundary and effective-dated person/store scope;
+- Program/Overview/Exceptions/attribution manager reads were re-attested and corrected to derive detail, aggregates and anomaly metadata from the same visible resource set;
+- historical Program/Pontaj/XLSX paths prefer effective-dated home-store history and fail closed on dated-history gaps or ambiguous monthly ownership instead of trusting mutable current catalog state;
+- close checklist and close/reopen audit history are administrative surfaces guarded by `month.close.read`, not regionally scoped manager diagnostics;
+- calendar/program business mutations converge on `CalendarService.apply` and its transactional append-only audit event; CLOSED calendar, grid, holiday, salary, E-pay and connector-financial writes fail closed;
+- real PostgreSQL tests cover concurrent close and concurrent reopen serialization on the Month row plus digest-verifiable lifecycle history;
+- frontend capability rendering remains `SEC-010` / `FE-011`; it is a usability requirement and does not replace backend enforcement;
+- API error-envelope normalization remains `BE-008`; envelope inconsistency does not weaken capability, scope, or CLOSED-state enforcement.
 
 This inventory is normative from the M1 program onward and replaces stage-era assumptions about deferred auth wiring.
