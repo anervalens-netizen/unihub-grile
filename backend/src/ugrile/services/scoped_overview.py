@@ -31,6 +31,8 @@ from ugrile.repositories.models import (
     Store,
 )
 from ugrile.services.overview import (
+    _NEEDS_ATTENTION_TITLES,
+    _SEVERITY,
     ExceptionEntry,
     ExceptionService,
     OverviewKpis,
@@ -38,8 +40,6 @@ from ugrile.services.overview import (
     OverviewNeedsAttention,
     OverviewReport,
     OverviewService,
-    _NEEDS_ATTENTION_TITLES,
-    _SEVERITY,
     _action_hint,
     _overview_validation,
 )
