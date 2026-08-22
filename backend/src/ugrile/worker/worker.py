@@ -15,8 +15,10 @@ Queue guarantees implemented here:
 * explicitly retryable provider/infrastructure failures use bounded
   deterministic exponential backoff;
 * business/domain validation failures are terminal and are never retried;
-* a handler transaction rolls back before failure settlement, so a database
-  error cannot leave half-committed local state merely to update job status.
+* handler-authored failure diagnostics (for example last-good Google state or
+  an ExportRun FAILED marker) commit together with job settlement when the
+  transaction is healthy; a poisoned DB transaction falls back to a clean
+  settlement transaction.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
@@ -150,22 +153,18 @@ def claim_next(
 def _retryable_exception(exc: Exception) -> bool:
     """Classify failures that are safe to retry under the job idempotency contract."""
 
-    # GoogleAdapterError is provider/transient by contract. Keep the import
-    # local so the generic worker does not initialize the connector eagerly.
     from ..connectors.google import GoogleAdapterError
 
     if isinstance(exc, GoogleAdapterError):
         return True
-    # Network/timeout and filesystem availability failures are operational
-    # failures, not business validation. They are retried only within the
-    # bounded per-kind policy.
-    return isinstance(exc, (ConnectionError, TimeoutError, OSError))
+    return isinstance(exc, (ConnectionError, TimeoutError, OSError, OperationalError))
 
 
 def _error_text(exc: Exception) -> str:
     if isinstance(exc, DomainError):
         return f"{exc.code}: {exc.message}"
-    return f"{exc.__class__.__name__}: {exc!s}" or repr(exc)
+    text = str(exc)
+    return f"{exc.__class__.__name__}: {text if text else repr(exc)}"
 
 
 def _settle_failure(row: OutboxJob, exc: Exception, *, now: datetime) -> None:
@@ -193,9 +192,7 @@ def _settle_failure(row: OutboxJob, exc: Exception, *, now: datetime) -> None:
     else:
         row.status = "FAILED"
         reason = "RETRY_EXHAUSTED" if retryable else "TERMINAL"
-        row.last_error = (
-            f"{reason} attempt={row.attempts}/{policy.max_attempts}: {error}"
-        )
+        row.last_error = f"{reason} attempt={row.attempts}/{policy.max_attempts}: {error}"
         log.warning(
             "job_failed",
             kind=row.kind,
@@ -208,16 +205,36 @@ def _settle_failure(row: OutboxJob, exc: Exception, *, now: datetime) -> None:
     row.locked_by = None
 
 
+def _settle_in_clean_transaction(
+    *,
+    job_id: int,
+    locked_by: str,
+    exc: Exception,
+) -> OutboxJob | None:
+    """Fallback settlement after the handler transaction itself became unusable."""
+
+    with session_scope() as settlement_session:
+        row = settlement_session.execute(
+            select(OutboxJob).where(OutboxJob.id == job_id).with_for_update()
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        if row.status == "RUNNING" and row.locked_by == locked_by:
+            _settle_failure(row, exc, now=_utcnow())
+            settlement_session.flush()
+        settled = row
+    return settled
+
+
 def run_once(
     *, locked_by: str = WORKER_LOCKED_BY
 ) -> tuple[OutboxJob | None, JobResult | None]:
     """Claim, commit the lease, then execute exactly one due job.
 
-    The claim transaction is intentionally separate from the handler
-    transaction. If the process dies after claim commit, the row stays RUNNING
-    and is recoverable after the lease timeout. During live execution the second
-    transaction holds the row lock, so stale recovery in another worker skips
-    the actively running row even if wall-clock runtime exceeds the lease.
+    Claim and execution use separate transactions. A normal handler failure is
+    settled inside the execution transaction so handler-authored diagnostic
+    rows survive. If that transaction cannot flush/commit, it is rolled back and
+    only the outbox state is settled in a fresh transaction.
     """
 
     with session_scope() as claim_session:
@@ -226,18 +243,17 @@ def run_once(
             return None, None
         job_id = claimed.id
 
+    handler_error: Exception | None = None
+    execution_row: OutboxJob | None = None
+    result: JobResult | None = None
     try:
         with session_scope() as execution_session:
             row = execution_session.execute(
-                select(OutboxJob)
-                .where(OutboxJob.id == job_id)
-                .with_for_update()
+                select(OutboxJob).where(OutboxJob.id == job_id).with_for_update()
             ).scalar_one_or_none()
             if row is None:
                 return None, None
             if row.status != "RUNNING" or row.locked_by != locked_by:
-                # A claim should be owned until this transaction locks it. Fail
-                # closed rather than executing a job whose lease is no longer ours.
                 log.warning(
                     "job_lease_lost_before_execution",
                     job_id=job_id,
@@ -247,33 +263,36 @@ def run_once(
                 )
                 return row, None
 
-            handler = get_handler(row.kind)
-            payload = _parse_payload(row.payload)
-            result = handler(execution_session, row.tenant_id, payload)
-            row.status = result.status
-            row.last_error = None
-            row.locked_at = None
-            row.locked_by = None
-            execution_session.flush()
-            completed_row = row
-        return completed_row, result
-    except Exception as exc:
-        # The handler transaction above has rolled back before this settlement
-        # transaction starts. This is critical when the original failure left
-        # the SQLAlchemy transaction unusable.
-        with session_scope() as settlement_session:
-            row = settlement_session.execute(
-                select(OutboxJob)
-                .where(OutboxJob.id == job_id)
-                .with_for_update()
-            ).scalar_one_or_none()
-            if row is None:
-                return claimed, None
-            if row.status == "RUNNING" and row.locked_by == locked_by:
+            try:
+                handler = get_handler(row.kind)
+                payload = _parse_payload(row.payload)
+                result = handler(execution_session, row.tenant_id, payload)
+            except Exception as exc:
+                handler_error = exc
                 _settle_failure(row, exc, now=_utcnow())
-                settlement_session.flush()
-            settled_row = row
-        return settled_row, None
+            else:
+                row.status = result.status
+                row.last_error = None
+                row.locked_at = None
+                row.locked_by = None
+            execution_session.flush()
+            execution_row = row
+    except Exception as transaction_exc:
+        # A DB/flush/commit failure may poison the handler transaction. Its
+        # local changes are rolled back by session_scope; settle the committed
+        # RUNNING lease separately. Prefer the original handler exception when
+        # one existed, because it contains the actual failure classification.
+        settlement_error = handler_error or transaction_exc
+        settled = _settle_in_clean_transaction(
+            job_id=job_id,
+            locked_by=locked_by,
+            exc=settlement_error,
+        )
+        return settled or claimed, None
+
+    if handler_error is not None:
+        return execution_row or claimed, None
+    return execution_row or claimed, result
 
 
 def run_once_safe() -> tuple[OutboxJob | None, JobResult | None]:
@@ -303,9 +322,7 @@ def run_forever(*, stop_after_empty_polls: int | None = None) -> RunSummary:
         row, result = run_once_safe()
         if row is None:
             summary.empty_polls += 1
-            if stop_after_empty_polls is not None and (
-                summary.empty_polls >= stop_after_empty_polls
-            ):
+            if stop_after_empty_polls is not None and summary.empty_polls >= stop_after_empty_polls:
                 break
             time.sleep(settings.worker_poll_seconds)
             continue
@@ -332,7 +349,6 @@ def enqueue(
     """Insert a job row. Caller is responsible for committing."""
 
     if kind not in JobKind.__members__.values() and kind not in [k.value for k in JobKind]:
-        # Allow passing enum members or their values.
         kind = JobKind(kind).value
     row = OutboxJob(
         tenant_id=tenant_id,
