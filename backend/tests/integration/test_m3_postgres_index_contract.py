@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 from sqlalchemy import Engine, inspect
 
@@ -57,7 +59,10 @@ def _where(index: dict[str, object]) -> str:
     dialect_options = index.get("dialect_options")
     if not isinstance(dialect_options, dict):
         return ""
-    return str(dialect_options.get("postgresql_where", "")).lower()
+    raw = str(dialect_options.get("postgresql_where", "")).lower()
+    without_casts = raw.replace("::text", "")
+    without_grouping = without_casts.replace("(", "").replace(")", "")
+    return re.sub(r"\s+", " ", without_grouping).strip()
 
 
 def test_query_path_indexes_materialize_with_exact_column_order(pg_engine: Engine) -> None:
