@@ -11,6 +11,7 @@ import {
   type SheetProjection,
   type StoreSummary,
 } from "../api/client";
+import { hasCapability, type Capability } from "../capabilities";
 import { MonthSelector } from "../components/MonthSelector";
 import { ProgramMatrix } from "../components/ProgramMatrix";
 import { navigate } from "../router";
@@ -20,6 +21,7 @@ export interface MagazinProps {
   storeId: string | null;
   months: MonthSummary[];
   monthsError: string | null;
+  capabilities: ReadonlySet<Capability>;
 }
 
 type StoreTab = "control" | "calendar" | "payroll";
@@ -28,7 +30,7 @@ function isApiError(error: unknown): error is { status: number } {
   return typeof error === "object" && error !== null && "status" in error && typeof (error as { status?: unknown }).status === "number";
 }
 
-export function Magazin({ api, storeId, months, monthsError }: MagazinProps) {
+export function Magazin({ api, storeId, months, monthsError, capabilities }: MagazinProps) {
   const [monthId, setMonthId] = useState<string | null>(months[0]?.id ?? null);
   const [grid, setGrid] = useState<ProgramGrid | null>(null);
   const [totals, setTotals] = useState<PontajTotalsResponse | null>(null);
@@ -46,6 +48,10 @@ export function Magazin({ api, storeId, months, monthsError }: MagazinProps) {
   const [editValue, setEditValue] = useState({ personId: "", storeId: "", status: "WORKING", workingKind: "NORMAL" });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const canEditSchedule = hasCapability(capabilities, "schedule.write");
+  const canSyncSheet = hasCapability(capabilities, "sheet.sync");
+  const canCreateExport = hasCapability(capabilities, "export.create");
+  const hasStoreAction = canEditSchedule || canSyncSheet || canCreateExport;
 
   useEffect(() => {
     setMonthId((current) => current ?? months[0]?.id ?? null);
@@ -102,8 +108,8 @@ export function Magazin({ api, storeId, months, monthsError }: MagazinProps) {
   const storeWorkingDays = totals ? Object.entries(totals.totals).filter(([personId]) => peopleIds.has(personId)).reduce((sum, [, bucket]) => sum + bucket.working_days, 0) : 0;
   const matrixPeople = useMemo(() => buildMatrixPeople(grid, people), [grid, people]);
 
-  function enqueue(path: string, body: Record<string, string>) {
-    if (!monthId) return;
+  function enqueue(requiredCapability: Capability, path: string, body: Record<string, string>) {
+    if (!monthId || !hasCapability(capabilities, requiredCapability)) return;
     setActionMessage(null);
     api.post<Record<string, unknown>>(`/months/${monthId}${path}`, body)
       .then((result) => setActionMessage(`Job ${String(result.job_id ?? result.status ?? "trimis")} a fost pus în coadă.`))
@@ -111,7 +117,7 @@ export function Magazin({ api, storeId, months, monthsError }: MagazinProps) {
   }
 
   function beginEdit(rowId: string, cell: ProgramGrid["rows"][number]["cells"][number]) {
-    if (!storeId) return;
+    if (!storeId || !canEditSchedule) return;
     setSaveError(null);
     setEditing({ rowId, businessDate: cell.business_date });
     setEditValue({
@@ -123,7 +129,7 @@ export function Magazin({ api, storeId, months, monthsError }: MagazinProps) {
   }
 
   function saveCell() {
-    if (!monthId || !storeId || !grid || !editing || !editValue.personId) return;
+    if (!canEditSchedule || !monthId || !storeId || !grid || !editing || !editValue.personId) return;
     setSaving(true);
     setSaveError(null);
     api.post(`/months/${monthId}/program/cell?expected_revision=${grid.revision}`, {
@@ -214,15 +220,22 @@ export function Magazin({ api, storeId, months, monthsError }: MagazinProps) {
 
           <section className="panel store-actions-panel">
             <div className="panel-heading"><div><span className="eyebrow">ACȚIUNI</span><h3>Operațiuni magazin</h3></div></div>
-            <button type="button" className="operation-card" onClick={() => setActiveTab("calendar")}>
-              <span className="operation-icon">▦</span><span><strong>Editează calendarul</strong><small>Program, suplimentare, mutări</small></span><span>→</span>
-            </button>
-            <button type="button" className="operation-card" onClick={() => enqueue("/sheet-projection/enqueue", { store_id: storeId })}>
-              <span className="operation-icon">↻</span><span><strong>Sincronizează Sheet</strong><small>{projection?.last_success_generation ? `Ultima generație ${projection.last_success_generation}` : "Fără sincronizare reușită"}</small></span><span>→</span>
-            </button>
-            <button type="button" className="operation-card" onClick={() => enqueue("/export/store", { store_id: storeId })}>
-              <span className="operation-icon">⇩</span><span><strong>Exportă XLSX</strong><small>Grilă și pontaj magazin</small></span><span>→</span>
-            </button>
+            {canEditSchedule && (
+              <button type="button" className="operation-card" onClick={() => setActiveTab("calendar")}>
+                <span className="operation-icon">▦</span><span><strong>Editează calendarul</strong><small>Program, suplimentare, mutări</small></span><span>→</span>
+              </button>
+            )}
+            {canSyncSheet && (
+              <button type="button" className="operation-card" onClick={() => enqueue("sheet.sync", "/sheet-projection/enqueue", { store_id: storeId })}>
+                <span className="operation-icon">↻</span><span><strong>Sincronizează Sheet</strong><small>{projection?.last_success_generation ? `Ultima generație ${projection.last_success_generation}` : "Fără sincronizare reușită"}</small></span><span>→</span>
+              </button>
+            )}
+            {canCreateExport && (
+              <button type="button" className="operation-card" onClick={() => enqueue("export.create", "/export/store", { store_id: storeId })}>
+                <span className="operation-icon">⇩</span><span><strong>Exportă XLSX</strong><small>Grilă și pontaj magazin</small></span><span>→</span>
+              </button>
+            )}
+            {!hasStoreAction && <p className="muted">Nu există operațiuni de modificare disponibile pentru sesiunea curentă.</p>}
           </section>
 
           <section className="panel sync-panel">
@@ -239,20 +252,20 @@ export function Magazin({ api, storeId, months, monthsError }: MagazinProps) {
         <section className="panel calendar-panel">
           <div className="panel-heading">
             <div><span className="eyebrow">PROGRAM LUNAR</span><h3>Calendar magazin</h3></div>
-            <span className="context-pill">click pe o zi pentru editare</span>
+            <span className="context-pill">{canEditSchedule ? "click pe o zi pentru editare" : "doar citire"}</span>
           </div>
           {grid ? (
             <ProgramMatrix
               grid={grid}
               viewportHeight={520}
-              onCellClick={beginEdit}
+              onCellClick={canEditSchedule ? beginEdit : undefined}
               editing={editing}
               editValue={editValue}
               people={matrixPeople}
               stores={allStores.map((item) => ({ id: item.id, label: item.name || item.internal_code }))}
-              onEditChange={setEditValue}
-              onSave={saveCell}
-              onCancelEdit={() => setEditing(null)}
+              onEditChange={canEditSchedule ? setEditValue : undefined}
+              onSave={canEditSchedule ? saveCell : undefined}
+              onCancelEdit={canEditSchedule ? () => setEditing(null) : undefined}
               saving={saving}
             />
           ) : <div className="loading-panel">Încarc calendarul…</div>}

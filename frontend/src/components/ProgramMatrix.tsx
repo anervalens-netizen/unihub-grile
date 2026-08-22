@@ -38,6 +38,7 @@ export function ProgramMatrix({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [range, setRange] = useState<RowRange>({ start: 0, end: 0 });
+  const interactive = Boolean(onCellClick);
 
   useEffect(() => {
     const total = grid.rows.length;
@@ -142,12 +143,13 @@ export function ProgramMatrix({
               gridColumns={gridColumns}
               onCellClick={onCellClick}
               editing={editing}
+              interactive={interactive}
             />
           ))}
           <div style={{ height: totalHeight - offsetTop - slice.length * rowHeight }} aria-hidden="true" />
         </div>
       </div>
-      <p className="matrix-footnote">{total} rânduri · {grid.dates.length} zile · editorul se deschide deasupra matricei pentru a păstra calendarul lizibil.</p>
+      <p className="matrix-footnote">{total} rânduri · {grid.dates.length} zile · {interactive ? "editorul se deschide deasupra matricei pentru a păstra calendarul lizibil." : "vizualizare fără drept de editare."}</p>
     </div>
   );
 }
@@ -158,9 +160,10 @@ interface ProgramMatrixRowProps {
   gridColumns: string;
   onCellClick?: (rowId: string, cell: ProgramCell) => void;
   editing?: { rowId: string; businessDate: string } | null;
+  interactive: boolean;
 }
 
-function ProgramMatrixRow({ row, rowHeight, gridColumns, onCellClick, editing }: ProgramMatrixRowProps) {
+function ProgramMatrixRow({ row, rowHeight, gridColumns, onCellClick, editing, interactive }: ProgramMatrixRowProps) {
   return (
     <div className="program-matrix-row" style={{ height: rowHeight, gridTemplateColumns: gridColumns }} role="row">
       <span className="program-matrix-cell program-matrix-cell-row-label" role="rowheader">{row.label}</span>
@@ -171,9 +174,9 @@ function ProgramMatrixRow({ row, rowHeight, gridColumns, onCellClick, editing }:
             key={cell.business_date}
             type="button"
             className={`program-matrix-cell matrix-day badge-${cell.badge ?? "UNCOVERED"} ${cell.locked ? "locked" : ""} ${selected ? "selected" : ""}`}
-            disabled={cell.locked}
+            disabled={cell.locked || !interactive}
             aria-label={`${row.label} pe ${cell.business_date}: ${cell.badge ?? "fără acoperire"}`}
-            title={`${row.label} pe ${cell.business_date}: ${cell.display_name ?? "fără agent"} (${cell.badge ?? "UNCOVERED"})${cell.locked ? " · BLOCAT" : ""}`}
+            title={`${row.label} pe ${cell.business_date}: ${cell.display_name ?? "fără agent"} (${cell.badge ?? "UNCOVERED"})${cell.locked ? " · BLOCAT" : !interactive ? " · DOAR CITIRE" : ""}`}
             onClick={() => onCellClick?.(row.row_id, cell)}
           >
             {cell.badge === "NORMAL" || cell.badge === "EXTRA_HOME" || cell.badge === "EXTRA_OTHER" ? shortName(cell.display_name) : shortBadge(cell.badge)}

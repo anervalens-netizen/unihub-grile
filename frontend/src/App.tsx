@@ -166,7 +166,7 @@ function PageRouter({
 
   switch (route.name) {
     case "program":
-      return <Program api={api} months={months} monthsError={monthsError} />;
+      return <Program api={api} months={months} monthsError={monthsError} capabilities={capabilities} />;
     case "exceptions":
       return <Exceptions api={api} months={months} monthsError={monthsError} />;
     case "close":
@@ -174,7 +174,7 @@ function PageRouter({
     case "jobs":
       return <Jobs api={api} />;
     case "store":
-      return <Magazin api={api} storeId={route.segments[0] ?? null} months={months} monthsError={monthsError} />;
+      return <Magazin api={api} storeId={route.segments[0] ?? null} months={months} monthsError={monthsError} capabilities={capabilities} />;
     case "agent":
       return <Agent api={api} personId={route.segments[0] ?? null} months={months} monthsError={monthsError} />;
     case "overview":

@@ -1,11 +1,7 @@
 name: Backend CI
 
 on:
-  pull_request:
-    paths:
-      - "backend/**"
-      - "docs/SECURITY_ENDPOINT_MATRIX.md"
-      - ".github/workflows/backend-ci.yml"
+  pull_request: {}
   workflow_dispatch:
 
 permissions:
