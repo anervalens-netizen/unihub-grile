@@ -137,12 +137,13 @@ def _calendar_for_scope(
             )
         ).scalars()
     )
-    all_rows = [*assignments, *absences]
+    business_dates = {row.business_date for row in assignments}
+    business_dates.update(row.business_date for row in absences)
     effective_home = effective_home_store_map(
         session,
         tenant_id=tenant_id,
         person_ids=person_ids,
-        business_dates={row.business_date for row in all_rows},
+        business_dates=business_dates,
     )
     changes = [
         CalendarChange(
