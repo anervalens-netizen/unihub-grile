@@ -387,12 +387,25 @@ class CalendarService:
             )
             for row in absence_rows
         ]
+
+        dates = [
+            date(month.year, month.month, day)
+            for day in range(1, monthrange(month.year, month.month)[1] + 1)
+        ]
+        participants = sorted(
+            month_participant_ids(
+                self.session,
+                tenant_id=tenant_id,
+                month=month,
+            )
+        )
+        person_cal = derive_person_calendar(domains, participants, dates)
+        pontaj = derive_pontaj(person_cal, hours)
         self._materialize_pontaj(
             tenant_id=tenant_id,
             month=month,
             revision=new_revision,
-            domains=domains,
-            hours=hours,
+            rows=pontaj,
         )
         AttributionService(self.session).rebuild_for_month(
             month=month,
@@ -430,17 +443,6 @@ class CalendarService:
             },
         )
 
-        dates = [
-            date(month.year, month.month, day)
-            for day in range(1, monthrange(month.year, month.month)[1] + 1)
-        ]
-        participants = sorted(
-            month_participant_ids(
-                self.session,
-                tenant_id=tenant_id,
-                month=month,
-            )
-        )
         stores_all = sorted(
             {
                 store.id
@@ -452,14 +454,13 @@ class CalendarService:
                 ).scalars()
             }
         )
-        person_cal = derive_person_calendar(domains, participants, dates)
         return CalendarResult(
             month.id,
             new_revision,
             rows,
             person_cal,
             derive_store_coverage(domains, stores_all, dates),
-            derive_pontaj(person_cal, hours),
+            pontaj,
         )
 
     def _materialize_pontaj(
@@ -468,31 +469,10 @@ class CalendarService:
         tenant_id: str,
         month: Month,
         revision: int,
-        domains: list[SiteDayAssignment],
-        hours: HoursConfig,
+        rows: list[PontajDay],
     ) -> None:
-        """Persist the complete historical-participant/day Pontaj lattice.
+        """Persist one complete immutable Pontaj revision efficiently."""
 
-        The revision remains a complete immutable snapshot. Rows are compiled
-        into bounded multi-value INSERT statements so heterogeneous working/off
-        rows do not degrade into thousands of per-row ORM executions.
-        """
-
-        all_days = [
-            date(month.year, month.month, day)
-            for day in range(1, monthrange(month.year, month.month)[1] + 1)
-        ]
-        participants = sorted(
-            month_participant_ids(
-                self.session,
-                tenant_id=tenant_id,
-                month=month,
-            )
-        )
-        rows = derive_pontaj(
-            derive_person_calendar(domains, participants, all_days),
-            hours,
-        )
         values = [
             {
                 "tenant_id": tenant_id,
@@ -508,7 +488,10 @@ class CalendarService:
             }
             for row in rows
         ]
-        chunk_size = 500
+        # Ten bound columns per row. 3,000 rows stays below PostgreSQL's
+        # parameter ceiling while allowing the 80/160-person realistic fixtures
+        # to materialize in one or two statements instead of ten-plus chunks.
+        chunk_size = 3000
         for start in range(0, len(values), chunk_size):
             self.session.execute(
                 insert(PontajProjection).values(values[start : start + chunk_size])
