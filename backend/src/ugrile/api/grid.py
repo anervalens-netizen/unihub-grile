@@ -1,24 +1,12 @@
-"""Grid + salary + attribution endpoints (S3).
-
-The grid router exposes:
-
-* ``POST /months/{id}/grid/compute`` — recompute the grid snapshot for the
-  month. Admin-only because grid outputs feed close/audit and a TL should
-  never silently overwrite a snapshot.
-* ``GET /months/{id}/grid`` — read the latest grid snapshot rows.
-* ``POST /months/{id}/salary`` — upsert an HR/payroll window (admin-only).
-* ``GET /months/{id}/salary`` — read the salary windows for the tenant.
-* ``GET /months/{id}/attribution`` — read the attributed projection rows.
-"""
+"""Grid, payroll-master, attribution and holiday endpoints."""
 
 from __future__ import annotations
 
-from calendar import monthrange
 from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..api.deps import current_principal, db_session
@@ -34,18 +22,21 @@ from ..api.schemas import (
     SalaryMasterOut,
     SalaryUpsertIn,
 )
-from ..domain.enums import WorkingKind
+from ..domain.enums import MonthState, WorkingKind
+from ..domain.errors import ConflictError, NotFoundError
 from ..domain.rule_pack import RULE_PACK_VERSION
 from ..repositories.holidays import HolidayMarker, HolidayRepository
-from ..repositories.models import (
-    GridCalculation,
-    Month,
-    Person,
-)
+from ..repositories.models import GridCalculation, Month, Person
 from ..repositories.months import MonthRepository
 from ..repositories.salary import SalaryRepository
 from ..services.attribution import AttributionService
-from ..services.auth import Principal, assert_admin, assert_same_tenant, effective_store_ids
+from ..services.auth import Principal, assert_same_tenant
+from ..services.authorization import (
+    Capability,
+    authorize,
+    authorize_store_for_month,
+    month_store_ids,
+)
 from ..services.grid import GridService
 
 router = APIRouter(prefix="/months", tags=["grid"])
@@ -63,18 +54,19 @@ def compute_grid(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> GridComputeOut:
-    assert_admin(principal)
+    """Recompute the authoritative current-revision payroll grid."""
+
+    authorize(principal, Capability.GRID_COMPUTE)
     month = _month_or_404(session, month_id, principal)
-    snapshots, rows = GridService(session).compute_and_persist(
-        tenant_id=principal.tenant_id, month=month
+    _, rows = GridService(session).compute_and_persist(
+        tenant_id=principal.tenant_id,
+        month=month,
     )
     return GridComputeOut(
         month_id=month.id,
         revision=month.revision,
         rule_pack_version=RULE_PACK_VERSION,
-        snapshots=[
-            GridCalculationOut.model_validate(row) for row in rows
-        ],
+        snapshots=[GridCalculationOut.model_validate(row) for row in rows],
     )
 
 
@@ -85,36 +77,46 @@ def get_grid(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> list[GridCalculationOut]:
+    """Read the latest available current-rule-pack grid snapshot in caller scope."""
+
+    authorize(principal, Capability.GRID_READ)
     month = _month_or_404(session, month_id, principal)
-    month_dates = [
-        date(month.year, month.month, day)
-        for day in range(1, monthrange(month.year, month.month)[1] + 1)
-    ]
-    allowed_by_date = {
-        business_date: effective_store_ids(session, principal, business_date)
-        for business_date in month_dates
-    }
-    allowed_stores = set().union(*allowed_by_date.values()) if allowed_by_date else set()
+    allowed_stores = month_store_ids(session, principal, month)
     if store_id is not None:
-        allowed_stores &= {store_id}
+        authorize_store_for_month(
+            session,
+            principal,
+            Capability.GRID_READ,
+            month=month,
+            store_id=store_id,
+        )
+        allowed_stores = {store_id}
+    if not allowed_stores:
+        return []
+
+    latest_revision = session.execute(
+        select(func.max(GridCalculation.revision)).where(
+            GridCalculation.tenant_id == principal.tenant_id,
+            GridCalculation.month_id == month.id,
+            GridCalculation.rule_pack_version == RULE_PACK_VERSION,
+        )
+    ).scalar_one()
+    if latest_revision is None:
+        return []
+
     rows = list(
         session.execute(
-            select(GridCalculation).where(
+            select(GridCalculation)
+            .where(
                 GridCalculation.tenant_id == principal.tenant_id,
                 GridCalculation.month_id == month.id,
+                GridCalculation.revision == latest_revision,
+                GridCalculation.rule_pack_version == RULE_PACK_VERSION,
                 GridCalculation.store_id.in_(allowed_stores),
-            ).order_by(GridCalculation.person_id)
+            )
+            .order_by(GridCalculation.person_id)
         ).scalars()
     )
-    # A calculation is month-scoped but may contain rows whose attribution dates
-    # cross a date-effective manager boundary. Keep a row only when its store is
-    # authorized on at least one day represented by the calculation payload.
-    if principal.role.value != "ADMIN":
-        rows = [
-            row
-            for row in rows
-            if row.store_id in allowed_stores
-        ]
     return [GridCalculationOut.model_validate(row) for row in rows]
 
 
@@ -125,15 +127,17 @@ def upsert_salary(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> SalaryMasterOut:
-    """Admin-only HR/payroll salary window upsert (S3 slice)."""
+    """Write payroll master data; closed periods require reopen first."""
 
-    assert_admin(principal)
+    authorize(principal, Capability.PAYROLL_MASTER_WRITE)
     month = _month_or_404(session, month_id, principal)
-    _ = month  # month id used only for scope; the salary row is tenant-wide
+    if month.state == MonthState.CLOSED.value:
+        raise ConflictError(
+            "month is closed",
+            details={"code": "MONTH_CLOSED", "month_id": month.id},
+        )
     person = session.get(Person, payload.person_id)
     if person is None or person.tenant_id != principal.tenant_id:
-        from ..domain.errors import NotFoundError
-
         raise NotFoundError("person not found", details={"person_id": payload.person_id})
     row = SalaryRepository(session).upsert_window(
         tenant_id=principal.tenant_id,
@@ -155,8 +159,10 @@ def list_salary(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> list[SalaryMasterOut]:
-    month = _month_or_404(session, month_id, principal)
-    _ = month
+    """Read payroll master data; current policy is administrator-only."""
+
+    authorize(principal, Capability.PAYROLL_MASTER_READ)
+    _month_or_404(session, month_id, principal)
     rows = SalaryRepository(session).list_for_tenant(principal.tenant_id)
     return [SalaryMasterOut.model_validate(row) for row in rows]
 
@@ -168,19 +174,33 @@ def get_attribution(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> AttributionMonthOut:
+    """Return attribution rows, totals and anomalies only inside caller scope."""
+
+    authorize(principal, Capability.GRID_READ)
     month = _month_or_404(session, month_id, principal)
-    summary = AttributionService(session).summary_for_revision(
+    allowed = month_store_ids(session, principal, month)
+    if store_id is not None:
+        authorize_store_for_month(
+            session,
+            principal,
+            Capability.GRID_READ,
+            month=month,
+            store_id=store_id,
+        )
+        allowed = {store_id}
+
+    attribution_service = AttributionService(session)
+    latest_rows = attribution_service.latest_attribution(
         tenant_id=principal.tenant_id,
         month=month,
-        revision=month.revision,
     )
-    allowed_by_date = {
-        date(month.year, month.month, day): effective_store_ids(
-            session, principal, date(month.year, month.month, day)
-        )
-        for day in range(1, monthrange(month.year, month.month)[1] + 1)
-    }
-    allowed = set().union(*allowed_by_date.values()) if allowed_by_date else set()
+    attribution_revision = latest_rows[0].revision if latest_rows else month.revision
+    summary = attribution_service.summary_for_revision(
+        tenant_id=principal.tenant_id,
+        month=month,
+        revision=attribution_revision,
+    )
+    visible_source_rows = [row for row in summary.attributed if row.store_id in allowed]
     rows = [
         AttributionRowOut(
             person_id=row.person_id,
@@ -192,16 +212,27 @@ def get_attribution(
             working_kind=WorkingKind(row.working_kind),
             revision=row.revision,
         )
-        for row in summary.attributed
-        if row.store_id in allowed and (store_id is None or row.store_id == store_id)
+        for row in visible_source_rows
     ]
+    visible_total = sum((row.amount for row in visible_source_rows), Decimal("0"))
+
+    anomalies: list[dict[str, object]] = []
+    for anomaly in summary.anomalies:
+        anomaly_store = anomaly.get("store_id")
+        if anomaly_store is None:
+            if principal.role.value == "ADMIN" and store_id is None:
+                anomalies.append(dict(anomaly))
+            continue
+        if str(anomaly_store) in allowed:
+            anomalies.append(dict(anomaly))
+
     return AttributionMonthOut(
         month_id=month.id,
         revision=summary.revision,
-        total_rows=summary.total_rows,
-        company_total=summary.company_total,
+        total_rows=len(rows),
+        company_total=visible_total,
         rows=rows,
-        anomalies=list(summary.anomalies),
+        anomalies=anomalies,
     )
 
 
@@ -222,12 +253,9 @@ def get_holidays(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> HolidayMonthOut:
-    """Read the versioned holiday markers (plus admin overrides) for the month.
+    """Read informational versioned holiday markers for the month."""
 
-    Read-only for any same-tenant principal; the markers are informational
-    and never affect schedule, Pontaj, target or pay.
-    """
-
+    authorize(principal, Capability.HOLIDAY_READ)
     month = _month_or_404(session, month_id, principal)
     markers = HolidayRepository(session).markers_for_month(
         tenant_id=principal.tenant_id,
@@ -249,10 +277,10 @@ def _holiday_marker_for(
     version: str,
     business_date: date,
 ) -> HolidayMarkerOut:
-    """Return the full marker for one (version, date) after an admin write."""
-
     markers = HolidayRepository(session).markers_for_month(
-        tenant_id=tenant_id, year=year, month=month
+        tenant_id=tenant_id,
+        year=year,
+        month=month,
     )
     for marker in markers:
         if marker.version == version and marker.business_date == business_date:
@@ -267,9 +295,7 @@ def upsert_holiday_calendar(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> HolidayMarkerOut:
-    """Admin-only upsert of a versioned Romanian legal holiday date."""
-
-    assert_admin(principal)
+    authorize(principal, Capability.HOLIDAY_WRITE)
     month = _month_or_404(session, month_id, principal)
     HolidayRepository(session).upsert_calendar(
         tenant_id=principal.tenant_id,
@@ -296,9 +322,7 @@ def upsert_holiday_override(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> HolidayMarkerOut:
-    """Admin-only override of a holiday marker (audited with reason + actor)."""
-
-    assert_admin(principal)
+    authorize(principal, Capability.HOLIDAY_WRITE)
     month = _month_or_404(session, month_id, principal)
     HolidayRepository(session).upsert_override(
         tenant_id=principal.tenant_id,

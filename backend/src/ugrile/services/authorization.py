@@ -24,6 +24,11 @@ class Capability(StrEnum):
     SCHEDULE_READ = "schedule.read"
     SCHEDULE_WRITE = "schedule.write"
     GRID_READ = "grid.read"
+    GRID_COMPUTE = "grid.compute"
+    PAYROLL_MASTER_READ = "payroll.master.read"
+    PAYROLL_MASTER_WRITE = "payroll.master.write"
+    HOLIDAY_READ = "holiday.read"
+    HOLIDAY_WRITE = "holiday.write"
     EPAY_READ = "epay.read"
     EPAY_WRITE = "epay.write"
     SHEET_READ = "sheet.read"
@@ -45,6 +50,7 @@ _ROLE_CAPABILITIES: dict[RoleName, frozenset[Capability]] = {
             Capability.SCHEDULE_READ,
             Capability.SCHEDULE_WRITE,
             Capability.GRID_READ,
+            Capability.HOLIDAY_READ,
             Capability.EPAY_READ,
             Capability.SHEET_READ,
             Capability.EXPORT_READ,
@@ -55,6 +61,7 @@ _ROLE_CAPABILITIES: dict[RoleName, frozenset[Capability]] = {
     RoleName.READONLY: frozenset(
         {
             Capability.CATALOG_READ,
+            Capability.HOLIDAY_READ,
             Capability.MONTH_READ,
         }
     ),
