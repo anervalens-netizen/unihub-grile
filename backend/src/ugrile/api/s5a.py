@@ -1,27 +1,7 @@
-"""S5a API endpoints — E-pay fresh readback + Google projection structural view.
+"""E-pay readback and Sheet projection endpoints.
 
-The router is admin-only for the readback (the only bounded edit per
-AC-13) and the Google projection view; the projection enqueue path
-delegates to the worker so the API never executes the adapter.
-
-Endpoints:
-
-* ``POST /months/{id}/epay/readback`` — record one fresh E-pay readback
-  for a store. Valid 0..10 integers per category persist as
-  ``is_valid=True``; everything else (blank, text, fraction, negative,
-  >10) is audited as ``is_valid=False`` with the original raw_value
-  preserved.
-* ``GET /months/{id}/epay/freshness`` — read the freshness report for
-  a store. ``is_fresh=False`` when there is at least one working agent
-  whose pair lacks a recent valid observation.
-* ``GET /months/{id}/sheet-projection`` — return the last-good
-  projection for a store, with the structural ``grila``/``pontaj``
-  payloads the S5a fake adapter persists.
-* ``POST /months/{id}/sheet-projection/enqueue`` — enqueue a
-  ``GOOGLE_PROJECTION_STORE`` job for the worker. Admin-only.
-
-The endpoints never touch a Google Sheet; the fake adapter is the sole
-projection writer during S5a.
+All store-facing operations pass through the central capability/resource-scope
+boundary. Tenant equality alone is not sufficient authorization.
 """
 
 from __future__ import annotations
@@ -40,29 +20,19 @@ from ..api.schemas import (
     SheetProjectionOut,
     SheetProjectionPayloadOut,
 )
-from ..connectors.google import (
-    GoogleAdapterError,
-    read_store_projection,
-)
-from ..connectors.google import (
-    last_error as google_last_error,
-)
-from ..connectors.google import (
-    last_run_at as google_last_run_at,
-)
+from ..connectors.google import GoogleAdapterError, read_store_projection
+from ..connectors.google import last_error as google_last_error
+from ..connectors.google import last_run_at as google_last_run_at
 from ..domain.enums import JobKind
 from ..domain.errors import DomainError
 from ..repositories.models import Month, SheetProjectionRun
 from ..repositories.months import MonthRepository
-from ..services.auth import (
-    Principal,
-    assert_admin,
-    assert_same_tenant,
-)
+from ..services.auth import Principal, assert_same_tenant
+from ..services.authorization import Capability, authorize_store_for_month
 from ..services.epay import freshness_for_month, record_readback
 from ..worker.worker import enqueue
 
-router = APIRouter(prefix="/months", tags=["s5a-epay-sheets"])
+router = APIRouter(prefix="/months", tags=["epay-sheets"])
 
 
 def _month_for(session: Session, month_id: str, principal: Principal) -> Month:
@@ -78,16 +48,14 @@ def post_epay_readback(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> EpayReadbackOut:
-    """Admin-only E-pay readback for one store/month.
-
-    The caller submits one entry per agent/category (max two categories,
-    one per working agent); the service persists all rows in a single
-    transaction and returns the validated item list so the manager UI
-    can render a precise audit summary.
-    """
-
-    assert_admin(principal)
     month = _month_for(session, month_id, principal)
+    authorize_store_for_month(
+        session,
+        principal,
+        Capability.EPAY_WRITE,
+        month=month,
+        store_id=payload.store_id,
+    )
     try:
         result = record_readback(
             session,
@@ -129,9 +97,14 @@ def get_epay_freshness(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> EpayFreshnessOut:
-    """Read the freshness report for the (store, month) pair."""
-
     month = _month_for(session, month_id, principal)
+    authorize_store_for_month(
+        session,
+        principal,
+        Capability.EPAY_READ,
+        month=month,
+        store_id=store_id,
+    )
     report = freshness_for_month(
         session,
         tenant_id=principal.tenant_id,
@@ -154,9 +127,14 @@ def get_sheet_projection(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> SheetProjectionOut:
-    """Read the last-good projection persisted by the fake adapter."""
-
-    _month_for(session, month_id, principal)
+    month = _month_for(session, month_id, principal)
+    authorize_store_for_month(
+        session,
+        principal,
+        Capability.SHEET_READ,
+        month=month,
+        store_id=store_id,
+    )
     try:
         projection = read_store_projection(
             session,
@@ -209,10 +187,14 @@ def post_sheet_projection_enqueue(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> JobOut:
-    """Enqueue a ``GOOGLE_PROJECTION_STORE`` job for the worker."""
-
-    assert_admin(principal)
     month = _month_for(session, month_id, principal)
+    authorize_store_for_month(
+        session,
+        principal,
+        Capability.SHEET_SYNC,
+        month=month,
+        store_id=payload.store_id,
+    )
     idempotency_key = payload.idempotency_key or (
         f"{JobKind.GOOGLE_PROJECTION_STORE.value}:{month.id}:{payload.store_id}"
     )

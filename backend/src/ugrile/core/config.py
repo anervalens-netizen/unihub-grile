@@ -1,8 +1,7 @@
 """Runtime configuration loaded from environment with safe defaults.
 
-Settings are kept tiny and explicit so S1 has no implicit environment coupling.
-Tests inject settings via the ``get_settings`` cache or the ``DATABASE_URL``
-environment variable.
+Standalone development remains deterministic, while production-capable settings
+must make identity and fixture boundaries explicit.
 """
 
 from __future__ import annotations
@@ -35,6 +34,11 @@ class Settings(BaseSettings):
     )
     database_echo: bool = False
 
+    # Identity seam. Only the explicit development-header provider exists in
+    # the standalone application today. ``external`` reserves the contract for
+    # the future Retail identity adapter; until implemented it fails closed.
+    identity_provider: Literal["dev_headers", "external"] = "dev_headers"
+
     # Worker / job queue settings.
     worker_enabled: bool = True
     worker_poll_seconds: float = Field(
@@ -43,7 +47,8 @@ class Settings(BaseSettings):
         description="Outbox poll interval for the durable worker loop.",
     )
 
-    # Connector / fixture ingestion. No live retail import is enabled at this stage.
+    # Connector / fixture ingestion. Retail remains read-only during the
+    # standalone plugin-candidate program.
     connector_default: str = "fixture-v1"
 
 

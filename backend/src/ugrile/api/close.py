@@ -1,18 +1,7 @@
-"""Month close / reopen API (AC-15 S3 slice).
+"""Month close / reopen API.
 
-Two admin-only endpoints:
-
-* ``POST /months/{id}/close`` — runs the S3 blocker detection and
-  transitions the month to ``CLOSED`` on success; appends an audit row.
-* ``POST /months/{id}/reopen`` — bumps the revision and transitions to
-  ``REOPENED``; requires a non-empty reason; appends an audit row.
-
-The append-only chain is read through
-``GET /months/{id}/close-events``.
-
-Non-admin callers receive ``403 FORBIDDEN`` from the auth helpers; an
-invalid close returns ``422 VALIDATION_ERROR`` with the precise blocker
-list so the manager UI can render every blocking condition.
+Authorization is capability-based; transactional locking, validation and audit
+remain service-owned. Final close uses the versioned financial close policy.
 """
 
 from __future__ import annotations
@@ -32,7 +21,9 @@ from ..domain.enums import MonthState
 from ..repositories.close import MonthCloseEventRepository
 from ..repositories.months import MonthRepository
 from ..services.auth import Principal, assert_same_tenant
-from ..services.close import CloseRequest, CloseService, ReopenRequest
+from ..services.authorization import Capability, authorize
+from ..services.close import CloseRequest, ReopenRequest
+from ..services.policy_close import PolicyCloseService
 
 router = APIRouter(prefix="/months", tags=["close"])
 
@@ -44,16 +35,15 @@ def close_month(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> CloseOutcomeOut:
+    authorize(principal, Capability.MONTH_CLOSE)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
-    # The expected-revision check is delegated to CloseService, which
-    # validates it against the locked month row (no unlocked pre-read).
     request = CloseRequest(
         actor_id=principal.user_id,
         role_value=principal.role.value,
         expected_revision=payload.expected_revision,
     )
-    outcome = CloseService(session).close_month(
+    outcome = PolicyCloseService(session).close_month(
         tenant_id=principal.tenant_id,
         month_id=month_id,
         request=request,
@@ -84,6 +74,7 @@ def reopen_month(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> CloseOutcomeOut:
+    authorize(principal, Capability.MONTH_REOPEN)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     request = ReopenRequest(
@@ -91,7 +82,7 @@ def reopen_month(
         role_value=principal.role.value,
         reason=payload.reason,
     )
-    outcome = CloseService(session).reopen_month(
+    outcome = PolicyCloseService(session).reopen_month(
         tenant_id=principal.tenant_id,
         month_id=month_id,
         request=request,
@@ -111,6 +102,7 @@ def list_close_events(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> list[CloseEventOut]:
+    authorize(principal, Capability.MONTH_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     events = MonthCloseEventRepository(session).list_for_month(
