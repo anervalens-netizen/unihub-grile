@@ -7,7 +7,7 @@ retryable jobs. Business/payload errors remain terminal.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -177,6 +177,30 @@ def test_google_retry_never_destroys_last_good_projection(monkeypatch, session, 
     assert retry_row is not None and retry_row.status == "PENDING"
     assert retry_result is None
 
+    # Force the scheduled retry due so consecutive provider failures are also
+    # proven to retain the original successful generation and exact payload.
+    queued = session.get(OutboxJob, retry_row.id)
+    assert queued is not None
+    queued.run_after = datetime.now(tz=UTC) - timedelta(seconds=1)
+    session.commit()
+    retry_row_2, retry_result_2 = run_once(locked_by=WORKER_LOCKED_BY)
+    assert retry_row_2 is not None and retry_row_2.status == "PENDING"
+    assert retry_row_2.attempts == 2
+    assert retry_result_2 is None
+
+    latest_failed = (
+        session.query(SheetProjectionRun)
+        .filter_by(
+            tenant_id=faker_tenant["tenant_id"],
+            store_id=faker_tenant["store_id"],
+            status="FAILED",
+        )
+        .order_by(SheetProjectionRun.id.desc())
+        .first()
+    )
+    assert latest_failed is not None
+    assert latest_failed.last_success_generation == before.generation
+
     after = read_store_projection(
         session,
         tenant_id=faker_tenant["tenant_id"],
@@ -184,19 +208,8 @@ def test_google_retry_never_destroys_last_good_projection(monkeypatch, session, 
     )
     assert after is not None
     assert after.generation == before.generation
-
-    # ``read_store_projection`` rebuilds structural payloads from the current
-    # authoritative local rows and therefore stamps a new generated_at on every
-    # read. Last-good means generation + business payload survive a failed
-    # provider attempt; the read-time timestamp is intentionally volatile.
-    after_grila = dict(after.grila)
-    after_pontaj = dict(after.pontaj)
-    before_grila.pop("generated_at", None)
-    before_pontaj.pop("generated_at", None)
-    after_grila.pop("generated_at", None)
-    after_pontaj.pop("generated_at", None)
-    assert after_grila == before_grila
-    assert after_pontaj == before_pontaj
+    assert dict(after.grila) == before_grila
+    assert dict(after.pontaj) == before_pontaj
 
 
 def test_google_projection_handler_rejects_cross_tenant_payload(session, faker_tenant):
