@@ -1,10 +1,9 @@
-"""BE-006 evaluation of the normal one-cell calendar save path.
+"""BE-006 contract for the normal one-cell calendar save path.
 
-This is deliberately an evaluation contract before any incremental-write
-redesign. It measures the real HTTP path on the same 80-store/160-person
-PostgreSQL fixture and proves that the current implementation creates a new
-complete Pontaj revision while retaining historical rows, rebuilding
-attribution, and appending transactional audit evidence.
+The test measures the real HTTP path on the same 80-store/160-person
+PostgreSQL fixture and proves that the optimized implementation keeps a new
+complete Pontaj revision, retains historical rows, rebuilds attribution, and
+appends transactional audit evidence without SQL round-trip fan-out.
 """
 
 from __future__ import annotations
@@ -33,12 +32,13 @@ from ugrile.repositories.models import (
 
 pytestmark = [pytest.mark.postgres, pytest.mark.performance]
 
-# Evaluation ceilings, intentionally conservative until the first PostgreSQL
-# sample is inspected. They prevent accidental runaway behavior while avoiding
-# a premature structural optimization target.
-SAVE_SELECT_CEILING = 100
-SAVE_STATEMENT_CEILING = 200
-SAVE_LATENCY_CEILING_MS = 10_000.0
+# PostgreSQL 17 calibration, Backend CI run 32589115250 / head 911ae5b:
+# one-cell save = 20 SELECTs, 29 total SQL statements. Those deterministic
+# counts are the regression contract. Latency keeps shared-runner headroom;
+# observed latency was 3423.80 ms and is evidence, not a microbenchmark promise.
+SAVE_SELECT_CEILING = 20
+SAVE_STATEMENT_CEILING = 29
+SAVE_LATENCY_CEILING_MS = 8_000.0
 
 
 @contextmanager
