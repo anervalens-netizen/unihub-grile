@@ -49,7 +49,9 @@ def latest_snapshot(
 
     Only ``is_valid=True`` rows with the exact requested month discriminator
     count. Invalid or legacy unbound observations stay in the audit trail but
-    can never leak into another month's payroll calculation.
+    can never leak into another month's payroll calculation. ``id`` breaks
+    timestamp ties so last-good selection is deterministic even when a provider
+    records multiple attempts at the same timestamp precision.
     """
 
     stmt = (
@@ -61,7 +63,7 @@ def latest_snapshot(
             EpayObservation.source == month_source(month_id),
             EpayObservation.is_valid.is_(True),
         )
-        .order_by(EpayObservation.observed_at.desc())
+        .order_by(EpayObservation.observed_at.desc(), EpayObservation.id.desc())
     )
     rows = list(session.execute(stmt).scalars())
     under_50 = 0
