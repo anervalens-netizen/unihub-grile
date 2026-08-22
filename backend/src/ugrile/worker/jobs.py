@@ -223,10 +223,8 @@ def _write_bytes(uri: str, payload: bytes) -> None:
             os.fsync(fh.fileno())
         os.replace(temporary, uri)
     except BaseException:
-        try:
+        if os.path.exists(temporary):
             os.unlink(temporary)
-        except FileNotFoundError:
-            pass
         raise
 
 
