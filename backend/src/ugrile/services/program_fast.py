@@ -83,7 +83,7 @@ class IndexedProgramService:
                 or any(store.id in manager_scope_store_ids[d] for d in dates)
             ]
             for store in sorted(visible_stores, key=lambda item: item.internal_code):
-                cells: list[ProgramCell] = []
+                store_cells: list[ProgramCell] = []
                 for business_date in dates:
                     locked = (
                         manager_scope_store_ids is not None
@@ -92,7 +92,7 @@ class IndexedProgramService:
                     match = assignment_by_store_date.get((store.id, business_date))
                     if match is not None:
                         person = person_by_id.get(match.person_id)
-                        cells.append(
+                        store_cells.append(
                             ProgramCell(
                                 business_date=business_date,
                                 person_id=match.person_id,
@@ -108,7 +108,7 @@ class IndexedProgramService:
                     else:
                         # Store coverage is uncovered whether the non-working
                         # reason is an absence or no person-day row at all.
-                        cells.append(
+                        store_cells.append(
                             ProgramCell(
                                 business_date=business_date,
                                 person_id=None,
@@ -126,7 +126,7 @@ class IndexedProgramService:
                         row_id=store.id,
                         label=f"{store.internal_code} · {store.name}",
                         home_store_id=store.id,
-                        cells=tuple(cells),
+                        cells=tuple(store_cells),
                     )
                 )
         else:
@@ -137,7 +137,7 @@ class IndexedProgramService:
                 or any(person.home_store_id in manager_scope_store_ids[d] for d in dates)
             ]
             for person in sorted(visible_people, key=lambda item: item.internal_code):
-                cells: list[ProgramCell] = []
+                person_cells: list[ProgramCell] = []
                 for business_date in dates:
                     locked = (
                         manager_scope_store_ids is not None
@@ -150,7 +150,7 @@ class IndexedProgramService:
                         store_label = (
                             store_obj.internal_code if store_obj is not None else match.store_id
                         )
-                        cells.append(
+                        person_cells.append(
                             ProgramCell(
                                 business_date=business_date,
                                 person_id=match.person_id,
@@ -164,7 +164,7 @@ class IndexedProgramService:
                             )
                         )
                     elif (person.id, business_date) in absence_person_dates:
-                        cells.append(
+                        person_cells.append(
                             ProgramCell(
                                 business_date=business_date,
                                 person_id=person.id,
@@ -178,7 +178,7 @@ class IndexedProgramService:
                             )
                         )
                     else:
-                        cells.append(
+                        person_cells.append(
                             ProgramCell(
                                 business_date=business_date,
                                 person_id=person.id,
@@ -196,7 +196,7 @@ class IndexedProgramService:
                         row_id=person.id,
                         label=f"{person.internal_code} · {person.display_name}",
                         home_store_id=person.home_store_id,
-                        cells=tuple(cells),
+                        cells=tuple(person_cells),
                     )
                 )
 
