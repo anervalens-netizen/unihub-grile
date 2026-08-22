@@ -25,6 +25,7 @@ from ..domain.projections import (
 from ..repositories.models import Month, Person, PersonDayAbsence, PontajProjection, Store
 from ..repositories.models import SiteDayAssignment as AssignmentRow
 from .attribution import AttributionService
+from .person_scope import effective_home_store_map
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,12 +68,7 @@ class CalendarService:
         allowed_store_ids_by_date: Mapping[date, set[str]] | None = None,
         hours: HoursConfig = HoursConfig(),
     ) -> CalendarResult:
-        """Run the exact apply validation in a rolled-back savepoint.
-
-        This keeps XLSX preview and apply on one validation path, including
-        coverage, working-kind, scope and tenant checks, without persisting any
-        calendar row or revision.
-        """
+        """Run the exact apply validation in a rolled-back savepoint."""
 
         try:
             with self.session.begin_nested():
@@ -100,8 +96,6 @@ class CalendarService:
         allowed_store_ids_by_date: Mapping[date, set[str]] | None = None,
         hours: HoursConfig = HoursConfig(),
     ) -> CalendarResult:
-        # Lock the month row so two managers cannot both pass the same CAS
-        # revision and overwrite one another's calendar transaction.
         month = self.session.execute(
             select(Month).where(Month.id == month.id).with_for_update()
         ).scalar_one()
@@ -109,7 +103,8 @@ class CalendarService:
             raise ScopeError("month belongs to another tenant")
         if month.state == MonthState.CLOSED.value:
             raise ConflictError(
-                "month is closed", details={"code": "MONTH_CLOSED", "month_id": month.id}
+                "month is closed",
+                details={"code": "MONTH_CLOSED", "month_id": month.id},
             )
         if month.revision != expected_revision:
             raise StaleRevisionError(
@@ -134,6 +129,7 @@ class CalendarService:
                 "calendar contains duplicate person/day changes",
                 details={"duplicates": sorted({key for key in keys if keys.count(key) > 1})},
             )
+
         person_ids = {c.person_id for c in changes}
         store_ids = {c.store_id for c in changes if c.store_id}
         people = {
@@ -150,13 +146,31 @@ class CalendarService:
         }
         if len(people) != len(person_ids) or len(stores) != len(store_ids):
             raise ValidationError("unknown person or store technical id")
+
+        effective_home = effective_home_store_map(
+            self.session,
+            tenant_id=tenant_id,
+            person_ids=person_ids,
+            business_dates={change.business_date for change in changes},
+        )
+        missing_home = sorted(
+            (change.person_id, change.business_date.isoformat())
+            for change in changes
+            if (change.person_id, change.business_date) not in effective_home
+        )
+        if missing_home:
+            raise ValidationError(
+                "effective home store is unknown for one or more calendar changes",
+                details={"person_dates": missing_home},
+            )
+
         for change in changes:
             allowed: set[str] | None
             if allowed_store_ids_by_date is not None:
                 allowed = allowed_store_ids_by_date.get(change.business_date, set())
             else:
                 allowed = allowed_store_ids
-            person_home_store_id = people[change.person_id].home_store_id
+            person_home_store_id = effective_home[(change.person_id, change.business_date)]
             if allowed is not None and person_home_store_id not in allowed:
                 raise ScopeError(
                     "calendar person is outside manager scope",
@@ -179,16 +193,19 @@ class CalendarService:
                         "business_date": change.business_date.isoformat(),
                     },
                 )
-        for c in changes:
-            if c.status == DayStatus.WORKING:
-                if c.store_id is None or c.working_kind is None:
+
+        for change in changes:
+            if change.status == DayStatus.WORKING:
+                if change.store_id is None or change.working_kind is None:
                     raise ValidationError("working change requires store and working_kind")
                 validate_working_kind(
-                    person_home_store_id=people[c.person_id].home_store_id,
-                    site_store_id=c.store_id,
-                    working_kind=c.working_kind,
+                    person_home_store_id=effective_home[
+                        (change.person_id, change.business_date)
+                    ],
+                    site_store_id=change.store_id,
+                    working_kind=change.working_kind,
                 )
-        # Build the candidate whole month before touching rows, so invalid/conflicting files roll back fully.
+
         existing = list(
             self.session.execute(
                 select(AssignmentRow).where(
@@ -206,31 +223,40 @@ class CalendarService:
             ).scalars()
         )
         candidate = {
-            (r.person_id, r.business_date): CalendarChange(
-                r.person_id,
-                r.business_date,
-                r.store_id,
-                DayStatus(r.status),
-                WorkingKind(r.working_kind) if r.working_kind else None,
+            (row.person_id, row.business_date): CalendarChange(
+                row.person_id,
+                row.business_date,
+                row.store_id,
+                DayStatus(row.status),
+                WorkingKind(row.working_kind) if row.working_kind else None,
             )
-            for r in existing
+            for row in existing
         }
         candidate.update(
             {
-                (r.person_id, r.business_date): CalendarChange(
-                    r.person_id, r.business_date, None, DayStatus(r.status), None
+                (row.person_id, row.business_date): CalendarChange(
+                    row.person_id,
+                    row.business_date,
+                    None,
+                    DayStatus(row.status),
+                    None,
                 )
-                for r in existing_absences
+                for row in existing_absences
             }
         )
-        for c in changes:
-            candidate[(c.person_id, c.business_date)] = c
+        for change in changes:
+            candidate[(change.person_id, change.business_date)] = change
+
         working = [
             SiteDayAssignment(
-                c.store_id or "", c.person_id, c.business_date, c.status, c.working_kind
+                change.store_id or "",
+                change.person_id,
+                change.business_date,
+                change.status,
+                change.working_kind,
             )
-            for c in candidate.values()
-            if c.status == DayStatus.WORKING
+            for change in candidate.values()
+            if change.status == DayStatus.WORKING
         ]
         from ..domain.calendar import assert_coverage
 
@@ -247,18 +273,24 @@ class CalendarService:
                 PersonDayAbsence.month_id == month.id,
             )
         )
+
         new_revision = month.revision + 1
-        for c in sorted(candidate.values(), key=lambda x: (x.business_date, x.person_id)):
-            if c.status == DayStatus.WORKING:
+        for change in sorted(
+            candidate.values(),
+            key=lambda item: (item.business_date, item.person_id),
+        ):
+            if change.status == DayStatus.WORKING:
                 self.session.add(
                     AssignmentRow(
                         tenant_id=tenant_id,
                         month_id=month.id,
-                        store_id=c.store_id or "",
-                        person_id=c.person_id,
-                        business_date=c.business_date,
-                        status=c.status.value,
-                        working_kind=c.working_kind.value if c.working_kind else None,
+                        store_id=change.store_id or "",
+                        person_id=change.person_id,
+                        business_date=change.business_date,
+                        status=change.status.value,
+                        working_kind=(
+                            change.working_kind.value if change.working_kind else None
+                        ),
                         revision=new_revision,
                         source="CALENDAR",
                     )
@@ -268,13 +300,14 @@ class CalendarService:
                     PersonDayAbsence(
                         tenant_id=tenant_id,
                         month_id=month.id,
-                        person_id=c.person_id,
-                        business_date=c.business_date,
-                        status=c.status.value,
+                        person_id=change.person_id,
+                        business_date=change.business_date,
+                        status=change.status.value,
                     )
                 )
         month.revision = new_revision
         self.session.flush()
+
         rows = list(
             self.session.execute(
                 select(AssignmentRow).where(
@@ -293,16 +326,22 @@ class CalendarService:
         )
         domains = [
             SiteDayAssignment(
-                r.store_id,
-                r.person_id,
-                r.business_date,
-                DayStatus(r.status),
-                WorkingKind(r.working_kind) if r.working_kind else None,
+                row.store_id,
+                row.person_id,
+                row.business_date,
+                DayStatus(row.status),
+                WorkingKind(row.working_kind) if row.working_kind else None,
             )
-            for r in rows
+            for row in rows
         ] + [
-            SiteDayAssignment("", r.person_id, r.business_date, DayStatus(r.status), None)
-            for r in absence_rows
+            SiteDayAssignment(
+                "",
+                row.person_id,
+                row.business_date,
+                DayStatus(row.status),
+                None,
+            )
+            for row in absence_rows
         ]
         self._materialize_pontaj(
             tenant_id=tenant_id,
@@ -311,29 +350,35 @@ class CalendarService:
             domains=domains,
             hours=hours,
         )
-        # S3: rebuild the sales attribution projection in the same
-        # transaction so a rolled-back calendar never leaves an attributed
-        # row behind.
         AttributionService(self.session).rebuild_for_month(
-            month=month, tenant_id=tenant_id, revision=new_revision
+            month=month,
+            tenant_id=tenant_id,
+            revision=new_revision,
         )
+
         dates = [
             date(month.year, month.month, day)
             for day in range(1, monthrange(month.year, month.month)[1] + 1)
         ]
         people_all = sorted(
             {
-                p.id
-                for p in self.session.execute(
-                    select(Person).where(Person.tenant_id == tenant_id, Person.is_active.is_(True))
+                person.id
+                for person in self.session.execute(
+                    select(Person).where(
+                        Person.tenant_id == tenant_id,
+                        Person.is_active.is_(True),
+                    )
                 ).scalars()
             }
         )
         stores_all = sorted(
             {
-                s.id
-                for s in self.session.execute(
-                    select(Store).where(Store.tenant_id == tenant_id, Store.is_active.is_(True))
+                store.id
+                for store in self.session.execute(
+                    select(Store).where(
+                        Store.tenant_id == tenant_id,
+                        Store.is_active.is_(True),
+                    )
                 ).scalars()
             }
         )
@@ -356,13 +401,7 @@ class CalendarService:
         domains: list[SiteDayAssignment],
         hours: HoursConfig,
     ) -> None:
-        """Persist the full active-person x every-day-of-month Pontaj lattice.
-
-        Runs inside the caller's transaction right after the calendar CAS, so a
-        failed or rolled-back apply never leaves a projection behind. Rows are
-        immutable per ``(tenant, month, person, business_date, revision)``:
-        later revisions insert new rows and never touch earlier ones.
-        """
+        """Persist the complete active-person/day Pontaj lattice for a revision."""
 
         all_days = [
             date(month.year, month.month, day)
@@ -370,19 +409,18 @@ class CalendarService:
         ]
         active_people = sorted(
             {
-                p.id
-                for p in self.session.execute(
-                    select(Person).where(Person.tenant_id == tenant_id, Person.is_active.is_(True))
+                person.id
+                for person in self.session.execute(
+                    select(Person).where(
+                        Person.tenant_id == tenant_id,
+                        Person.is_active.is_(True),
+                    )
                 ).scalars()
             }
         )
-        # The lattice is intentionally complete (active people x every day),
-        # so a normal ORM ``add`` loop turns every calendar cell save into
-        # thousands of unit-of-work objects.  Use SQLAlchemy's executemany
-        # path while keeping the same transaction and immutable revision
-        # contract.
         rows = derive_pontaj(
-            derive_person_calendar(domains, active_people, all_days), hours
+            derive_person_calendar(domains, active_people, all_days),
+            hours,
         )
         self.session.execute(
             insert(PontajProjection),
