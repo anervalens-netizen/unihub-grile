@@ -364,7 +364,8 @@ def _lock_revision_bound_month(
 def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
     """Render one store export only from the revision attested at enqueue."""
 
-    from ..services.xlsx_export import finalize_export_run, render_store_export
+    from ..services.revisioned_xlsx_export import render_store_export_at_revision
+    from ..services.xlsx_export import finalize_export_run
 
     store_id = payload.get("store_id")
     if not isinstance(store_id, str) or not store_id:
@@ -377,7 +378,7 @@ def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, 
             payload=payload,
             data_revision_key="data_revision",
         )
-        envelope = render_store_export(
+        envelope = render_store_export_at_revision(
             session,
             tenant_id=tenant_id,
             month=month,
@@ -420,7 +421,8 @@ def _job_export_xlsx_store(session: Session, tenant_id: str, payload: dict[str, 
 def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
     """Render a bulk export only from the revision attested at enqueue."""
 
-    from ..services.xlsx_export import finalize_export_run, render_bulk_export
+    from ..services.revisioned_xlsx_export import render_bulk_export_at_revision
+    from ..services.xlsx_export import finalize_export_run
 
     export_run_id = _resolve_export_run_id(payload, kind=JobKind.EXPORT_XLSX_BULK)
     try:
@@ -431,7 +433,7 @@ def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, A
             data_revision_key="data_revision",
         )
         store_ids = payload.get("store_ids")
-        envelope = render_bulk_export(
+        envelope = render_bulk_export_at_revision(
             session,
             tenant_id=tenant_id,
             month=month,
@@ -474,7 +476,8 @@ def _job_export_xlsx_bulk(session: Session, tenant_id: str, payload: dict[str, A
 def _job_export_pontaj_only(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
     """Render Pontaj only from the revision attested at enqueue."""
 
-    from ..services.xlsx_export import finalize_export_run, render_pontaj_only_export
+    from ..services.revisioned_xlsx_export import render_pontaj_only_export_at_revision
+    from ..services.xlsx_export import finalize_export_run
 
     export_run_id = _resolve_export_run_id(payload, kind=JobKind.EXPORT_PONTAJ_ONLY)
     try:
@@ -485,7 +488,7 @@ def _job_export_pontaj_only(session: Session, tenant_id: str, payload: dict[str,
             data_revision_key="data_revision",
         )
         store_ids = payload.get("store_ids")
-        envelope = render_pontaj_only_export(
+        envelope = render_pontaj_only_export_at_revision(
             session,
             tenant_id=tenant_id,
             month=month,
