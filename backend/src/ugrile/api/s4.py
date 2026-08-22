@@ -36,7 +36,7 @@ from ..api.schemas import (
 )
 from ..domain.enums import DayStatus, MonthState, WorkingKind
 from ..domain.errors import DomainError, ScopeError
-from ..repositories.models import Month, Person, PontajProjection
+from ..repositories.models import Month, Person, PontajProjection, Store
 from ..repositories.months import MonthRepository
 from ..services.auth import Principal, assert_same_tenant, effective_store_ids
 from ..services.authorization import Capability, authorize
@@ -53,11 +53,19 @@ router = APIRouter(prefix="/months", tags=["manager-ui"])
 
 def _allowed_by_date(session: Session, principal: Principal, month: Month) -> dict[date, set[str]]:
     days = monthrange(month.year, month.month)[1]
-    return {
-        date(month.year, month.month, 1 + offset): effective_store_ids(
-            session, principal, date(month.year, month.month, 1 + offset)
+    dates = [date(month.year, month.month, 1 + offset) for offset in range(days)]
+    if principal.role.value == "ADMIN":
+        # Admin scope is tenant-wide and date-invariant. Resolve it once instead
+        # of repeating the identical store lookup for every day of the month.
+        allowed = set(
+            session.execute(
+                select(Store.id).where(Store.tenant_id == principal.tenant_id)
+            ).scalars()
         )
-        for offset in range(days)
+        return {business_date: allowed.copy() for business_date in dates}
+    return {
+        business_date: effective_store_ids(session, principal, business_date)
+        for business_date in dates
     }
 
 
