@@ -299,7 +299,11 @@ def upsert_holiday_calendar(
     principal: Principal = Depends(current_principal),
 ) -> HolidayMarkerOut:
     authorize(principal, Capability.HOLIDAY_WRITE)
-    month = _month_or_404(session, month_id, principal)
+    month = lock_month_for_financial_write(
+        session,
+        tenant_id=principal.tenant_id,
+        month_id=month_id,
+    )
     HolidayRepository(session).upsert_calendar(
         tenant_id=principal.tenant_id,
         version=payload.version,
@@ -326,7 +330,11 @@ def upsert_holiday_override(
     principal: Principal = Depends(current_principal),
 ) -> HolidayMarkerOut:
     authorize(principal, Capability.HOLIDAY_WRITE)
-    month = _month_or_404(session, month_id, principal)
+    month = lock_month_for_financial_write(
+        session,
+        tenant_id=principal.tenant_id,
+        month_id=month_id,
+    )
     HolidayRepository(session).upsert_override(
         tenant_id=principal.tenant_id,
         version=payload.version,
