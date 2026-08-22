@@ -66,9 +66,10 @@ def test_program_cell_records_authenticated_actor_and_route_source(
             .order_by(AuditEvent.id.desc())
             .limit(1)
         ).scalar_one()
+        actor_id = event.actor_id
         payload = json.loads(event.payload)
 
-    assert event.actor_id == "user_admin"
+    assert actor_id == "user_admin"
     assert payload["source"] == "API_PROGRAM_CELL"
     assert payload["revision_before"] == 1
     assert payload["revision_after"] == 2
