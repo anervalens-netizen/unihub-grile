@@ -61,7 +61,8 @@ def retry_delay_seconds(kind: str, attempts: int) -> int:
 
     policy = retry_policy_for(kind)
     exponent = max(attempts - 1, 0)
-    return min(policy.base_delay_seconds * (2**exponent), policy.max_delay_seconds)
+    delay = int(policy.base_delay_seconds * (2**exponent))
+    return min(delay, policy.max_delay_seconds)
 
 
 __all__ = ["RetryPolicy", "retry_delay_seconds", "retry_policy_for"]
