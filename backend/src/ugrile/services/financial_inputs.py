@@ -4,8 +4,9 @@ Final close must not trust a grid row merely because its calendar revision is
 current. Salary master, incentives, targets and connector sales can change
 without incrementing ``Month.revision``. A persisted payload can also be
 partial or corrupted while retaining a current-looking revision. This module
-therefore checks current authoritative values, validates the payload hashes,
-and reconstructs the complete current canonical grid before close.
+therefore checks current authoritative values and connector generation,
+validates the payload hashes, and reconstructs the complete current canonical
+grid before close.
 """
 
 from __future__ import annotations
@@ -72,12 +73,39 @@ def _latest_target(
     ).scalar_one_or_none()
 
 
-def _latest_sale(
+def _latest_sales_generation(
+    session: Session, *, tenant_id: str, month: Month
+) -> str | None:
+    """Return the newest persisted generation discriminator for the month.
+
+    The current connector contract uses stable sortable generation strings.
+    Historical generations remain stored for reconciliation, but final close
+    must bind to the newest accepted generation instead of merely comparing
+    the monetary values from an older snapshot.
+    """
+
+    first = date(month.year, month.month, 1)
+    last_day = monthrange(month.year, month.month)[1]
+    last = date(month.year, month.month, last_day)
+    return session.execute(
+        select(SalesStoreDay.generation)
+        .where(
+            SalesStoreDay.tenant_id == tenant_id,
+            SalesStoreDay.business_date >= first,
+            SalesStoreDay.business_date <= last,
+        )
+        .order_by(SalesStoreDay.generation.desc(), SalesStoreDay.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _sale_for_generation(
     session: Session,
     *,
     tenant_id: str,
     store_id: str,
     business_date: date,
+    generation: str,
 ) -> SalesStoreDay | None:
     return session.execute(
         select(SalesStoreDay)
@@ -85,8 +113,9 @@ def _latest_sale(
             SalesStoreDay.tenant_id == tenant_id,
             SalesStoreDay.store_id == store_id,
             SalesStoreDay.business_date == business_date,
+            SalesStoreDay.generation == generation,
         )
-        .order_by(SalesStoreDay.generation.desc(), SalesStoreDay.id.desc())
+        .order_by(SalesStoreDay.id.desc())
         .limit(1)
     ).scalar_one_or_none()
 
@@ -162,9 +191,9 @@ def financial_input_mismatch(
 
     E-pay is additionally checked by ``PolicyCloseService`` against the exact
     month-bound last-good snapshot. Calendar/Pontaj changes are guarded by the
-    exact month revision, while the complete recomputation below proves that a
-    persisted row cannot omit days, alter components or forge matching-looking
-    revision metadata.
+    exact month revision. Connector sales are checked against the newest month
+    generation, and the complete recomputation proves that a persisted row
+    cannot omit days, alter components or forge matching-looking metadata.
     """
 
     try:
@@ -179,6 +208,21 @@ def financial_input_mismatch(
     parameters = inputs.get("parameters")
     if not isinstance(parameters, dict):
         return "grid payload has no canonical parameters"
+
+    persisted_generation = inputs.get("sales_generation")
+    if not isinstance(persisted_generation, str) or not persisted_generation:
+        return "grid payload has no sales generation discriminator"
+    current_generation = _latest_sales_generation(
+        session,
+        tenant_id=tenant_id,
+        month=month,
+    )
+    if current_generation is not None and persisted_generation != current_generation:
+        return (
+            "sales generation changed: "
+            f"grid={persisted_generation}, current={current_generation}"
+        )
+    accepted_generation = current_generation or persisted_generation
 
     # First produce human-readable source mismatches for operational diagnosis.
     first_day = date(month.year, month.month, 1)
@@ -223,11 +267,12 @@ def financial_input_mismatch(
         except ValueError:
             return f"grid calendar date is invalid: {raw_date}"
 
-        sale = _latest_sale(
+        sale = _sale_for_generation(
             session,
             tenant_id=tenant_id,
             store_id=store_id,
             business_date=business_date,
+            generation=accepted_generation,
         )
         expected_sales = sale.amount if sale is not None else Decimal("0")
         expected_sim = sale.sim_quantity if sale is not None else 0
@@ -235,12 +280,14 @@ def financial_input_mismatch(
         actual_sim = entry.get("sim_quantity")
         if actual_sales != expected_sales:
             return (
-                f"sales changed for {store_id}/{business_date.isoformat()}: "
+                f"sales changed for {store_id}/{business_date.isoformat()} "
+                f"in generation {accepted_generation}: "
                 f"grid={actual_sales}, current={expected_sales}"
             )
         if not isinstance(actual_sim, int) or actual_sim != expected_sim:
             return (
-                f"SIM quantity changed for {store_id}/{business_date.isoformat()}: "
+                f"SIM quantity changed for {store_id}/{business_date.isoformat()} "
+                f"in generation {accepted_generation}: "
                 f"grid={actual_sim}, current={expected_sim}"
             )
 
