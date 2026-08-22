@@ -137,7 +137,7 @@ def test_xlsx_template_preview_and_atomic_apply(client, faker_tenant):
     assert stale_apply.status_code == 409
     # The workbook's contract was consumed by the first successful apply;
     # a replay is rejected as a consumed contract, never re-applied.
-    assert stale_apply.json()["code"] == "CONFLICT"
+    assert stale_apply.json()["code"] == "CONTRACT_CONSUMED"
     assert stale_apply.json()["details"]["code"] == "CONTRACT_CONSUMED"
 
 
