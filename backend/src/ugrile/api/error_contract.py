@@ -8,9 +8,11 @@ shape::
 Domain errors already carry typed codes. Some older services attach a more
 specific semantic code (for example ``MONTH_CLOSED``) inside ``details`` while
 the class itself is a generic ``CONFLICT``/``MONTH_STATE``; those semantic codes
-are promoted without changing the HTTP status. FastAPI/Starlette HTTP errors
-and request-validation failures are normalized here as well so clients never
-need to understand the framework's legacy ``{"detail": ...}`` wrapper.
+are promoted without changing the HTTP status. For those generic legacy errors
+``details.code`` is retained as a compatibility alias while clients migrate to
+the authoritative top-level ``code``. FastAPI/Starlette HTTP errors and request
+validation failures are normalized here as well so clients never need to
+understand the framework's legacy ``{"detail": ...}`` wrapper.
 """
 
 from __future__ import annotations
@@ -35,13 +37,20 @@ def _details_dict(value: object) -> dict[str, Any]:
 
 
 def _typed_code(code: str, details: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Return the most specific stable code and remove duplicate code metadata."""
+    """Return the most specific stable code with bounded compatibility metadata."""
 
     semantic = details.get("code")
-    if isinstance(semantic, str) and (code in _GENERIC_PROMOTABLE_CODES or semantic == code):
+    if not isinstance(semantic, str):
+        return code, details
+    if code in _GENERIC_PROMOTABLE_CODES:
+        # The top-level code is authoritative. Keep details.code temporarily so
+        # existing internal consumers of generic ConflictError/MonthStateError
+        # do not break during the envelope migration.
+        return semantic, details
+    if semantic == code:
         cleaned = dict(details)
         cleaned.pop("code", None)
-        return semantic, cleaned
+        return code, cleaned
     return code, details
 
 
