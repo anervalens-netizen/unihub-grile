@@ -1,21 +1,30 @@
 import type { MonthSummary } from "../api/client";
+import { hasCapability, type Capability, type SessionInfo } from "../capabilities";
 import { navigate, type Route } from "../router";
 
 export interface NavProps {
   route: Route;
   months: MonthSummary[];
+  capabilities: ReadonlySet<Capability>;
+  role: SessionInfo["role"] | null;
 }
 
-const links = [
-  { name: "overview", label: "Hub", icon: "▦" },
-  { name: "program", label: "Program", icon: "✣" },
-  { name: "exceptions", label: "Excepții", icon: "!" },
-  { name: "jobs", label: "Joburi", icon: "↻" },
-  { name: "close", label: "Management", icon: "▣" },
+const links: ReadonlyArray<{
+  name: string;
+  label: string;
+  icon: string;
+  capability: Capability;
+}> = [
+  { name: "overview", label: "Hub", icon: "▦", capability: "schedule.read" },
+  { name: "program", label: "Program", icon: "✣", capability: "schedule.read" },
+  { name: "exceptions", label: "Excepții", icon: "!", capability: "schedule.read" },
+  { name: "jobs", label: "Joburi", icon: "↻", capability: "jobs.read" },
+  { name: "close", label: "Management", icon: "▣", capability: "month.close.read" },
 ];
 
-export function Nav({ route, months }: NavProps) {
+export function Nav({ route, months, capabilities, role }: NavProps) {
   const activeName = route.name === "store" || route.name === "agent" ? "overview" : route.name;
+  const visibleLinks = links.filter((link) => hasCapability(capabilities, link.capability));
 
   return (
     <div className="sidebar-inner">
@@ -23,12 +32,12 @@ export function Nav({ route, months }: NavProps) {
         <span className="brand-mark">U</span>
         <span>
           <strong>UniHub Grile</strong>
-          <small>Manager Console</small>
+          <small>{role ? `${role} Console` : "Access Console"}</small>
         </span>
       </button>
 
       <nav className="app-nav" aria-label="Navigare principală">
-        {links.map((link) => (
+        {visibleLinks.map((link) => (
           <button
             key={link.name}
             type="button"
@@ -40,6 +49,9 @@ export function Nav({ route, months }: NavProps) {
             <span>{link.label}</span>
           </button>
         ))}
+        {role && visibleLinks.length === 0 && (
+          <p className="muted">Nu există module operaționale disponibile pentru acest rol.</p>
+        )}
       </nav>
 
       <div className="sidebar-footer">
