@@ -60,7 +60,7 @@ describe("Jobs operator workspace", () => {
     expect(screen.getByText("#40")).toBeInTheDocument();
     expect(screen.getByText("provider timeout", { exact: false })).toBeInTheDocument();
     expect(screen.getByText("2/5")).toBeInTheDocument();
-    expect(screen.getByText("store_acme_s1")).toBeInTheDocument();
+    expect(screen.getAllByText("store_acme_s1")).toHaveLength(2);
     expect(screen.getByText("Eșuate")).toBeInTheDocument();
     expect(screen.getByText("Finalizate")).toBeInTheDocument();
   });
