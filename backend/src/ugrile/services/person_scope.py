@@ -28,8 +28,10 @@ def effective_home_store_map(
     """Return ``(person, date) -> effective home store`` for requested cells.
 
     Effective-dated assignments take precedence. When legacy data has no
-    assignment history, the current ``Person.home_store_id`` is the explicit
-    compatibility fallback. Overlapping assignment rows resolve
+    assignment history at all, the current ``Person.home_store_id`` is the
+    explicit compatibility fallback. Once a person has dated history, a gap in
+    that history is unknown state and therefore fails closed: no mapping is
+    returned for that person/date. Overlapping assignment rows resolve
     deterministically to the latest ``effective_from`` then highest row id.
     """
 
@@ -56,11 +58,6 @@ def effective_home_store_map(
             .where(
                 StoreAssignment.tenant_id == tenant_id,
                 StoreAssignment.person_id.in_(set(current_home)),
-                StoreAssignment.effective_from <= last_day,
-                (
-                    StoreAssignment.effective_to.is_(None)
-                    | (StoreAssignment.effective_to >= first_day)
-                ),
             )
             .order_by(
                 StoreAssignment.person_id,
@@ -75,17 +72,29 @@ def effective_home_store_map(
 
     result: dict[tuple[str, date], str] = {}
     for person_id, fallback_store_id in current_home.items():
-        candidates = by_person.get(person_id, [])
+        history = by_person.get(person_id, [])
+        if not history:
+            for business_date in business_dates:
+                result[(person_id, business_date)] = fallback_store_id
+            continue
+
+        # History exists, so every requested date must be explained by an
+        # effective row. A transfer gap is intentionally not filled from the
+        # mutable current catalog value.
+        relevant = [
+            assignment
+            for assignment in history
+            if assignment.effective_from <= last_day
+            and (assignment.effective_to is None or assignment.effective_to >= first_day)
+        ]
         for business_date in business_dates:
-            resolved = fallback_store_id
-            for assignment in candidates:
+            for assignment in relevant:
                 if assignment.effective_from > business_date:
                     continue
                 if assignment.effective_to is not None and assignment.effective_to < business_date:
                     continue
-                resolved = assignment.store_id
+                result[(person_id, business_date)] = assignment.store_id
                 break
-            result[(person_id, business_date)] = resolved
     return result
 
 
