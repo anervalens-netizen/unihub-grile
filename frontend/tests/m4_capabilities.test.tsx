@@ -52,7 +52,7 @@ describe("capability-aware shell", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /Hub/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Hub$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Program/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Excepții/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Joburi/i })).toBeInTheDocument();
