@@ -7,6 +7,7 @@ from collections.abc import Mapping
 
 from sqlalchemy.orm import Session
 
+from ..core.correlation import current_correlation_id
 from ..repositories.models import AuditEvent
 
 
@@ -24,8 +25,17 @@ def record_audit_event(
 
     The helper never commits. A rollback of the business mutation therefore
     rolls the audit row back as well; a successful mutation and its evidence
-    become visible atomically.
+    become visible atomically. When invoked inside an API request or worker
+    dispatch, the active correlation id is persisted in the audit payload.
     """
+
+    audit_payload = dict(payload)
+    correlation_id = current_correlation_id()
+    if correlation_id is not None:
+        # The active request/job context is authoritative. This intentionally
+        # replaces older service-generated audit-only ids so one operation can
+        # be traced across API, durable job and audit evidence.
+        audit_payload["correlation_id"] = correlation_id
 
     row = AuditEvent(
         tenant_id=tenant_id,
@@ -34,7 +44,7 @@ def record_audit_event(
         entity=entity,
         entity_id=entity_id,
         payload=json.dumps(
-            dict(payload),
+            audit_payload,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
