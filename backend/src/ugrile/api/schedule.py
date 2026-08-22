@@ -66,14 +66,23 @@ def _catalog_for_scope(
     principal: Principal,
     month: Month,
 ) -> tuple[dict[str, str], list[dict[str, str]], dict[date, set[str]]]:
-    """Build the legacy single-home-store XLSX catalog for current active people.
+    """Build an effective-dated, fail-closed XLSX person/store catalog.
 
-    Direct UI/calendar writes already use effective-dated home-store history.
-    The XLSX row format still carries one display/default home-store code, so a
-    later dedicated contract revision will encode mid-month transfers without
-    weakening server-side apply validation.
+    The current XLSX schema has one display/default ``home_store_code`` per
+    person row. A person is included when their effective home belongs to the
+    caller on at least one day in the month, but that single display value is
+    emitted only when the effective home is known and identical on *every*
+    business date. Transfers or assignment-history gaps therefore render the
+    whole row as ``BLOCAT`` instead of pretending one mutable catalog home is
+    authoritative. Direct UI/calendar writes continue to support per-day
+    effective homes.
+
+    ``effective_home_fingerprint`` is server-only contract material. It is not
+    rendered into the workbook; hashing it makes any dated assignment drift
+    invalidate an outstanding import contract.
     """
 
+    month_dates = _month_dates(month)
     allowed_by_date = _allowed_by_date(session, principal, month)
     allowed_store_ids = set().union(*allowed_by_date.values()) if allowed_by_date else set()
     stores = list(
@@ -94,20 +103,51 @@ def _catalog_for_scope(
             .where(
                 Person.tenant_id == principal.tenant_id,
                 Person.is_active.is_(True),
-                Person.home_store_id.in_(set(store_by_id)),
             )
             .order_by(Person.internal_code)
         ).scalars()
     )
-    people_rows = [
-        {
-            "person_id": person.id,
-            "display_name": person.display_name,
-            "home_store_code": store_by_id[person.home_store_id].internal_code,
-            "manager_code": principal.user_id,
-        }
-        for person in people
-    ]
+    effective_home = effective_home_store_map(
+        session,
+        tenant_id=principal.tenant_id,
+        person_ids={person.id for person in people},
+        business_dates=set(month_dates),
+    )
+
+    people_rows: list[dict[str, str]] = []
+    for person in people:
+        resolved = [effective_home.get((person.id, business_date)) for business_date in month_dates]
+        if not any(
+            home_store_id is not None
+            and home_store_id in allowed_by_date.get(business_date, set())
+            for business_date, home_store_id in zip(month_dates, resolved, strict=True)
+        ):
+            continue
+
+        distinct_homes = {home_store_id for home_store_id in resolved if home_store_id is not None}
+        stable_home_id = (
+            next(iter(distinct_homes))
+            if len(distinct_homes) == 1 and all(home_store_id is not None for home_store_id in resolved)
+            else None
+        )
+        home_store_code = (
+            store_by_id[stable_home_id].internal_code
+            if stable_home_id is not None and stable_home_id in store_by_id
+            else ""
+        )
+        fingerprint = "|".join(
+            f"{business_date.isoformat()}={home_store_id or ''}"
+            for business_date, home_store_id in zip(month_dates, resolved, strict=True)
+        )
+        people_rows.append(
+            {
+                "person_id": person.id,
+                "display_name": person.display_name,
+                "home_store_code": home_store_code,
+                "manager_code": principal.user_id,
+                "effective_home_fingerprint": fingerprint,
+            }
+        )
     return store_codes, people_rows, allowed_by_date
 
 
