@@ -311,6 +311,8 @@ async def schedule_preview(
                 changes=parsed.changes,
                 expected_revision=parsed.base_revision,
                 allowed_store_ids_by_date=allowed_by_date,
+                actor_id=principal.user_id,
+                source="XLSX_PREVIEW",
             )
         except DomainError as exc:
             errors.append(
@@ -375,6 +377,8 @@ async def schedule_apply(
         changes=parsed.changes,
         expected_revision=contract.base_revision,
         allowed_store_ids_by_date=allowed_by_date,
+        actor_id=principal.user_id,
+        source="XLSX_IMPORT",
     )
     consume_contract(session, contract)
     return CalendarProjectionOut(
