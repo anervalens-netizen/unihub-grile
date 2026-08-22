@@ -40,7 +40,9 @@ def test_month_closed_promotes_semantic_conflict_code(client, faker_tenant):
     assert response.json() == {
         "code": "MONTH_CLOSED",
         "message": "month is closed",
-        "details": {"month_id": month_id},
+        # Top-level code is authoritative; generic legacy conflicts keep this
+        # alias during migration so older internal consumers do not break.
+        "details": {"code": "MONTH_CLOSED", "month_id": month_id},
     }
 
 
