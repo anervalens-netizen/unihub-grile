@@ -14,10 +14,11 @@ from __future__ import annotations
 import io
 import json
 import zipfile
+from collections.abc import Iterable
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Iterable, cast
+from typing import cast
 
 from openpyxl import Workbook
 from sqlalchemy import select
@@ -33,8 +34,8 @@ from ..repositories.models import (
     Store,
 )
 from .xlsx_export import (
-    ExportEnvelope,
     SCHEMA,
+    ExportEnvelope,
     _checksum,
     _determine_generation,
     _safe_filename,
