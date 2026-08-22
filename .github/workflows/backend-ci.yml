@@ -54,5 +54,8 @@ jobs:
       - name: Fresh migration bootstrap
         run: alembic upgrade head
 
+      - name: M3 performance contract
+        run: pytest tests/integration/test_m3_performance.py -q -s
+
       - name: Test
-        run: pytest tests -q
+        run: pytest tests -q -m "not performance"
