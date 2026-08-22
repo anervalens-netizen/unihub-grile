@@ -5,11 +5,18 @@ from __future__ import annotations
 import os
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .api.assignments import router as assignments_router
 from .api.catalog import router as catalog_router
 from .api.close import router as close_router
+from .api.error_contract import (
+    domain_error_response,
+    http_error_response,
+    validation_error_response,
+)
 from .api.grid import router as grid_router
 from .api.health import router as health_router
 from .api.ingest import router as ingest_router
@@ -41,14 +48,19 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(DomainError)
     async def _domain_error_handler(_request: Request, exc: DomainError) -> JSONResponse:
-        return JSONResponse(
-            status_code=exc.http_status,
-            content={
-                "code": exc.code,
-                "message": exc.message,
-                "details": exc.details,
-            },
-        )
+        return domain_error_response(exc)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error_handler(
+        _request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        return http_error_response(exc)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_handler(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return validation_error_response(exc)
 
     @app.get("/version")
     def _version() -> dict[str, str]:
