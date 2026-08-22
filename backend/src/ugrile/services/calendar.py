@@ -471,7 +471,12 @@ class CalendarService:
         domains: list[SiteDayAssignment],
         hours: HoursConfig,
     ) -> None:
-        """Persist the complete historical-participant/day Pontaj lattice."""
+        """Persist the complete historical-participant/day Pontaj lattice.
+
+        The revision remains a complete immutable snapshot. Rows are compiled
+        into bounded multi-value INSERT statements so heterogeneous working/off
+        rows do not degrade into thousands of per-row ORM executions.
+        """
 
         all_days = [
             date(month.year, month.month, day)
@@ -488,21 +493,23 @@ class CalendarService:
             derive_person_calendar(domains, participants, all_days),
             hours,
         )
-        self.session.execute(
-            insert(PontajProjection),
-            [
-                {
-                    "tenant_id": tenant_id,
-                    "month_id": month.id,
-                    "person_id": row.person_id,
-                    "business_date": row.business_date,
-                    "revision": revision,
-                    "status": row.status.value,
-                    "start_time": row.start,
-                    "end_time": row.end,
-                    "pause_minutes": row.pause_minutes,
-                    "hours": row.hours,
-                }
-                for row in rows
-            ],
-        )
+        values = [
+            {
+                "tenant_id": tenant_id,
+                "month_id": month.id,
+                "person_id": row.person_id,
+                "business_date": row.business_date,
+                "revision": revision,
+                "status": row.status.value,
+                "start_time": row.start,
+                "end_time": row.end,
+                "pause_minutes": row.pause_minutes,
+                "hours": row.hours,
+            }
+            for row in rows
+        ]
+        chunk_size = 500
+        for start in range(0, len(values), chunk_size):
+            self.session.execute(
+                insert(PontajProjection).values(values[start : start + chunk_size])
+            )
