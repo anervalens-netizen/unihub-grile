@@ -17,13 +17,13 @@ jobs:
       postgres:
         image: postgres:17-alpine
         env:
-          POSTGRES_DB: grile
+          POSTGRES_DB: grile_test
           POSTGRES_USER: grile
           POSTGRES_PASSWORD: grile
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U grile -d grile"
+          --health-cmd "pg_isready -U grile -d grile_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
@@ -32,8 +32,8 @@ jobs:
         working-directory: backend
     env:
       APP_ENV: ci
-      DATABASE_URL: postgresql+psycopg://grile:grile@127.0.0.1:5432/grile
-      UGRILE_PG_URL: postgresql+psycopg://grile:grile@127.0.0.1:5432/grile
+      DATABASE_URL: postgresql+psycopg://grile:grile@127.0.0.1:5432/grile_test
+      UGRILE_PG_URL: postgresql+psycopg://grile:grile@127.0.0.1:5432/grile_test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
