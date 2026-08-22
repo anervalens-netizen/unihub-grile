@@ -49,7 +49,7 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
 
       - name: Ruff
-        run: ruff check src tests --diff
+        run: ruff check src tests
 
       - name: Mypy strict
         run: mypy src
