@@ -10,6 +10,7 @@ const links = [
   { name: "overview", label: "Hub", icon: "▦" },
   { name: "program", label: "Program", icon: "✣" },
   { name: "exceptions", label: "Excepții", icon: "!" },
+  { name: "jobs", label: "Joburi", icon: "↻" },
   { name: "close", label: "Management", icon: "▣" },
 ];
 
