@@ -36,7 +36,8 @@ Admins are tenant-wide unless a more restrictive product rule applies. Managers 
 |---|---|---|---|
 | `/catalog/*` | `catalog.read` | tenant; managers receive only visible resources where route returns store/person rows | authenticated tenant principal |
 | `/months`, month metadata | `month.read` | tenant | authenticated principal |
-| assignments / program / coverage / pontaj | `schedule.read` or `schedule.write` | month + effective store/person scope for business date | manager effective scope; admin tenant-wide |
+| assignment readback / coverage / program / pontaj | `schedule.read` | month + effective store/person scope for business date | manager effective scope; admin tenant-wide |
+| Program cell mutation | `schedule.write` | month + effective store/person scope for business date + revision/CAS | manager effective scope; admin tenant-wide |
 | schedule XLSX template/preview/apply | `schedule.read` / `schedule.write` | signed contract scope + current effective scope | manager scope; admin tenant-wide |
 | attribution / grid / store-agent drilldown | `grid.read` | month + store/person effective scope; returned aggregates/anomalies must be scoped too | manager scope; admin tenant-wide |
 | grid recompute | `grid.compute` | tenant month | admin-only |
@@ -77,7 +78,7 @@ Admins are tenant-wide unless a more restrictive product rule applies. Managers 
 
 ## M1 re-attestation result
 
-- assignments, calendar, Program and XLSX schedule writes use the central capability boundary and effective-dated person/store scope;
+- assignment/coverage readback remains scope-aware; business calendar writes have one interactive authority (`/program/cell`) plus the signed XLSX apply path, both using the central capability boundary and effective-dated person/store scope;
 - Program/Overview/Exceptions/attribution manager reads were re-attested and corrected to derive detail, aggregates and anomaly metadata from the same visible resource set;
 - historical Program/Pontaj/XLSX paths prefer effective-dated home-store history and fail closed on dated-history gaps or ambiguous monthly ownership instead of trusting mutable current catalog state;
 - close checklist and close/reopen audit history are administrative surfaces guarded by `month.close.read`, not regionally scoped manager diagnostics;

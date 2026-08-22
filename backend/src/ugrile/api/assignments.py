@@ -1,31 +1,25 @@
-"""Calendar compatibility read/write endpoints."""
+"""Calendar/month compatibility read endpoints.
+
+Business calendar writes are intentionally not exposed here. The canonical
+mutation surfaces are the manager Program cell API and signed XLSX apply, both
+of which converge on ``CalendarService.apply`` with revision/CAS and audit.
+"""
 
 from __future__ import annotations
 
 from calendar import monthrange
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from ..api.deps import current_principal, db_session
-from ..api.schemas import (
-    AssignmentCreate,
-    AssignmentOut,
-    CalendarApplyIn,
-    CalendarProjectionOut,
-    ConflictOut,
-    CoverageReport,
-    MonthOut,
-)
-from ..domain.enums import DayStatus
-from ..domain.errors import CoverageInvariantError, ValidationError
+from ..api.schemas import AssignmentOut, ConflictOut, CoverageReport, MonthOut
 from ..repositories.assignments import AssignmentRepository
 from ..repositories.models import Month, SiteDayAssignment
 from ..repositories.months import MonthRepository
 from ..services.auth import Principal, assert_same_tenant, effective_store_ids
 from ..services.authorization import Capability, authorize, authorize_store_for_month
-from ..services.calendar import CalendarChange, CalendarService
 from ..services.person_scope import effective_home_store_map
 
 router = APIRouter(prefix="/months", tags=["calendar"])
@@ -85,60 +79,6 @@ def list_months(
         MonthOut.model_validate(month)
         for month in MonthRepository(session).list_for_tenant(requested_tenant)
     ]
-
-
-@router.post("/{month_id}/assignments", response_model=AssignmentOut)
-def upsert_assignment(
-    month_id: str,
-    payload: AssignmentCreate,
-    session: Session = Depends(db_session),
-    principal: Principal = Depends(current_principal),
-) -> AssignmentOut:
-    """Compatibility endpoint backed by the revisioned calendar authority."""
-
-    authorize(principal, Capability.SCHEDULE_WRITE)
-    month = MonthRepository(session).get(month_id)
-    assert_same_tenant(principal, month.tenant_id)
-    expected_revision = (
-        payload.expected_revision if payload.expected_revision is not None else month.revision
-    )
-    try:
-        result = CalendarService(session).apply(
-            month=month,
-            tenant_id=principal.tenant_id,
-            changes=[
-                CalendarChange(
-                    person_id=payload.person_id,
-                    business_date=payload.business_date,
-                    store_id=payload.store_id,
-                    status=DayStatus.WORKING,
-                    working_kind=payload.working_kind,
-                )
-            ],
-            expected_revision=expected_revision,
-            allowed_store_ids_by_date={
-                payload.business_date: effective_store_ids(
-                    session,
-                    principal,
-                    payload.business_date,
-                )
-            },
-            actor_id=principal.user_id,
-            source="API_ASSIGNMENT",
-        )
-    except CoverageInvariantError as exc:
-        raise HTTPException(
-            status_code=exc.http_status,
-            detail={"code": exc.code, "message": exc.message, "details": exc.details},
-        ) from exc
-    for row in result.assignments:
-        if (
-            row.person_id == payload.person_id
-            and row.store_id == payload.store_id
-            and row.business_date == payload.business_date
-        ):
-            return _rehydrate(row)
-    raise ValidationError("calendar apply did not return the requested assignment")
 
 
 @router.get("/{month_id}/assignments", response_model=list[AssignmentOut])
@@ -205,45 +145,6 @@ def month_coverage(
             )
             for conflict in conflicts
         ],
-    )
-
-
-@router.post("/{month_id}/calendar/apply", response_model=CalendarProjectionOut)
-def apply_calendar(
-    month_id: str,
-    payload: CalendarApplyIn,
-    session: Session = Depends(db_session),
-    principal: Principal = Depends(current_principal),
-) -> CalendarProjectionOut:
-    authorize(principal, Capability.SCHEDULE_WRITE)
-    month = MonthRepository(session).get(month_id)
-    assert_same_tenant(principal, month.tenant_id)
-    changes = [
-        CalendarChange(
-            person_id=change.person_id,
-            business_date=change.business_date,
-            store_id=change.store_id,
-            status=change.status,
-            working_kind=change.working_kind,
-        )
-        for change in payload.changes
-    ]
-    result = CalendarService(session).apply(
-        month=month,
-        tenant_id=principal.tenant_id,
-        changes=changes,
-        expected_revision=payload.expected_revision,
-        allowed_store_ids_by_date=_allowed_by_date(session, principal, month),
-        actor_id=principal.user_id,
-        source="API_CALENDAR",
-    )
-    return CalendarProjectionOut(
-        month_id=result.month_id,
-        revision=result.revision,
-        assignment_count=len(result.assignments),
-        person_calendar_count=len(result.person_calendar),
-        coverage_count=len(result.coverage),
-        pontaj_count=len(result.pontaj),
     )
 
 

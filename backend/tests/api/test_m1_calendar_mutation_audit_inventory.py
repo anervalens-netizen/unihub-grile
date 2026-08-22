@@ -68,60 +68,6 @@ def _assert_single_route_audit(
     assert target["after"]["person_id"] == person_id
 
 
-def test_assignment_compatibility_write_is_audited(client, faker_tenant):
-    month_id = _open_month(faker_tenant)
-    business_date = "2026-08-10"
-    response = client.post(
-        f"/months/{month_id}/assignments",
-        headers=ADMIN,
-        json={
-            "month_id": month_id,
-            "store_id": faker_tenant["store_id"],
-            "person_id": faker_tenant["person_a_id"],
-            "business_date": business_date,
-            "working_kind": "NORMAL",
-            "expected_revision": 0,
-        },
-    )
-    assert response.status_code == 200, response.text
-    _assert_single_route_audit(
-        faker_tenant,
-        month_id=month_id,
-        source="API_ASSIGNMENT",
-        person_id=faker_tenant["person_a_id"],
-        business_date=business_date,
-    )
-
-
-def test_calendar_apply_write_is_audited(client, faker_tenant):
-    month_id = _open_month(faker_tenant)
-    business_date = "2026-08-11"
-    response = client.post(
-        f"/months/{month_id}/calendar/apply",
-        headers=ADMIN,
-        json={
-            "expected_revision": 0,
-            "changes": [
-                {
-                    "person_id": faker_tenant["person_a_id"],
-                    "business_date": business_date,
-                    "status": "WORKING",
-                    "store_id": faker_tenant["store_id"],
-                    "working_kind": "NORMAL",
-                }
-            ],
-        },
-    )
-    assert response.status_code == 200, response.text
-    _assert_single_route_audit(
-        faker_tenant,
-        month_id=month_id,
-        source="API_CALENDAR",
-        person_id=faker_tenant["person_a_id"],
-        business_date=business_date,
-    )
-
-
 def test_program_cell_write_is_audited(client, faker_tenant):
     month_id = _open_month(faker_tenant)
     business_date = "2026-08-12"

@@ -58,19 +58,14 @@ def test_request_correlation_overrides_calendar_audit_only_id(client, faker_tena
     correlation_id = "corr-calendar-001"
 
     response = client.post(
-        f"/months/{month_id}/calendar/apply",
+        f"/months/{month_id}/program/cell?expected_revision=0",
         headers={**ADMIN, CORRELATION_HEADER: correlation_id},
         json={
-            "expected_revision": 0,
-            "changes": [
-                {
-                    "person_id": faker_tenant["person_a_id"],
-                    "business_date": "2026-08-01",
-                    "status": "WORKING",
-                    "store_id": faker_tenant["store_id"],
-                    "working_kind": "NORMAL",
-                }
-            ],
+            "person_id": faker_tenant["person_a_id"],
+            "business_date": "2026-08-01",
+            "status": "WORKING",
+            "store_id": faker_tenant["store_id"],
+            "working_kind": "NORMAL",
         },
     )
     assert response.status_code == 200, response.text

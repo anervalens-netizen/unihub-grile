@@ -60,46 +60,6 @@ def _assert_month_closed(response) -> None:
     assert set(body) == {"code", "message", "details"}
 
 
-def test_closed_month_rejects_assignment_compatibility_write(client, faker_tenant):
-    month_id = _closed_month_id(faker_tenant)
-    response = client.post(
-        f"/months/{month_id}/assignments",
-        headers=ADMIN,
-        json={
-            "month_id": month_id,
-            "store_id": faker_tenant["store_id"],
-            "person_id": faker_tenant["person_a_id"],
-            "business_date": "2026-08-10",
-            "working_kind": "NORMAL",
-            "expected_revision": 7,
-        },
-    )
-    _assert_month_closed(response)
-    _assert_month_unchanged(faker_tenant, month_id)
-
-
-def test_closed_month_rejects_calendar_apply(client, faker_tenant):
-    month_id = _closed_month_id(faker_tenant)
-    response = client.post(
-        f"/months/{month_id}/calendar/apply",
-        headers=ADMIN,
-        json={
-            "expected_revision": 7,
-            "changes": [
-                {
-                    "person_id": faker_tenant["person_a_id"],
-                    "business_date": "2026-08-11",
-                    "status": "WORKING",
-                    "store_id": faker_tenant["store_id"],
-                    "working_kind": "NORMAL",
-                }
-            ],
-        },
-    )
-    _assert_month_closed(response)
-    _assert_month_unchanged(faker_tenant, month_id)
-
-
 def test_closed_month_rejects_program_cell(client, faker_tenant):
     month_id = _closed_month_id(faker_tenant)
     response = client.post(

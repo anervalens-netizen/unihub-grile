@@ -60,42 +60,45 @@ def test_ready(client):
     assert body["schema_version"] == "missing"
 
 
-def test_create_and_conflict(client, faker_tenant):
-    # Seed a month first via direct DB call.
+def test_program_cell_create_and_conflict(client, faker_tenant):
     from ugrile.core import database
+    from ugrile.domain.enums import MonthState
     from ugrile.repositories.months import MonthRepository
 
     tenant_id = faker_tenant["tenant_id"]
     with database.session_scope() as session:
         month = MonthRepository(session).get_or_create(tenant_id, 2026, 8)
+        month.state = MonthState.OPEN
         session.commit()
 
-    # Open the month so assignments are allowed.
-    from ugrile.domain.enums import MonthState
-
-    with database.session_scope() as session:
-        m = MonthRepository(session).get(month.id)
-        m.state = MonthState.OPEN
-        session.commit()
-
+    business_date = date(2026, 8, 10).isoformat()
     payload = {
-        "month_id": month.id,
         "store_id": faker_tenant["store_id"],
         "person_id": faker_tenant["person_a_id"],
-        "business_date": date(2026, 8, 10).isoformat(),
+        "business_date": business_date,
+        "status": "WORKING",
         "working_kind": "NORMAL",
     }
-    r = client.post(f"/months/{month.id}/assignments", json=payload, headers=HEADERS)
+    r = client.post(
+        f"/months/{month.id}/program/cell?expected_revision=0",
+        json=payload,
+        headers=HEADERS,
+    )
     assert r.status_code == 200, r.text
+    assert r.json()["revision"] == 1
 
     payload2 = {
-        "month_id": month.id,
         "store_id": faker_tenant["store_id"],
         "person_id": faker_tenant["person_b_id"],
-        "business_date": date(2026, 8, 10).isoformat(),
+        "business_date": business_date,
+        "status": "WORKING",
         "working_kind": "NORMAL",
     }
-    r = client.post(f"/months/{month.id}/assignments", json=payload2, headers=HEADERS)
+    r = client.post(
+        f"/months/{month.id}/program/cell?expected_revision=1",
+        json=payload2,
+        headers=HEADERS,
+    )
     assert r.status_code == 409
     body = r.json()
     assert body["code"] == "COVERAGE_INVARIANT"
@@ -128,8 +131,6 @@ def test_ingest_fixture_enqueues_job(client, worker_runner):
         after = session.query(OutboxJob).count()
     assert after == before + 1
 
-    # Drain the outbox once and assert the fixture landed under the
-    # requested tenant.
     row, result = worker_runner()
     assert row is not None
     assert result is not None
