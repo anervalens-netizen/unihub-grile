@@ -187,14 +187,7 @@ def financial_input_mismatch(
     person: Person,
     row: GridCalculation,
 ) -> str | None:
-    """Return the first stale/corrupt canonical financial fact, else ``None``.
-
-    E-pay is additionally checked by ``PolicyCloseService`` against the exact
-    month-bound last-good snapshot. Calendar/Pontaj changes are guarded by the
-    exact month revision. Connector sales are checked against the newest month
-    generation, and the complete recomputation proves that a persisted row
-    cannot omit days, alter components or forge matching-looking metadata.
-    """
+    """Return the first stale/corrupt canonical financial fact, else ``None``."""
 
     try:
         payload = json.loads(row.payload)
@@ -219,12 +212,11 @@ def financial_input_mismatch(
     )
     if current_generation is not None and persisted_generation != current_generation:
         return (
-            "sales generation changed: "
+            "sales changed because generation changed: "
             f"grid={persisted_generation}, current={current_generation}"
         )
     accepted_generation = current_generation or persisted_generation
 
-    # First produce human-readable source mismatches for operational diagnosis.
     first_day = date(month.year, month.month, 1)
     salary, tickets, flip = SalaryRepository(session).find_effective_window(
         tenant_id=tenant_id,
