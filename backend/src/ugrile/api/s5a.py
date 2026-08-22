@@ -30,6 +30,7 @@ from ..repositories.months import MonthRepository
 from ..services.auth import Principal, assert_same_tenant
 from ..services.authorization import Capability, authorize_store_for_month
 from ..services.epay import freshness_for_month, record_readback
+from ..services.month_write_gate import lock_month_for_financial_write
 from ..worker.worker import enqueue
 
 router = APIRouter(prefix="/months", tags=["epay-sheets"])
@@ -48,7 +49,18 @@ def post_epay_readback(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> EpayReadbackOut:
-    month = _month_for(session, month_id, principal)
+    """Persist E-pay close input only while the month is writable.
+
+    This acquires the same month row lock as close/reopen before recording the
+    accepted snapshot, preventing a readback from landing after close has
+    validated the previous E-pay state.
+    """
+
+    month = lock_month_for_financial_write(
+        session,
+        tenant_id=principal.tenant_id,
+        month_id=month_id,
+    )
     authorize_store_for_month(
         session,
         principal,
