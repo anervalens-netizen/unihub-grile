@@ -20,6 +20,7 @@ from ..domain.attribution import (
     StoreDaySale,
     attribute_sales,
 )
+from ..domain.enums import WorkingKind
 from .models import (
     SalesPersonDayProjection,
     SalesStoreDay,
@@ -91,16 +92,12 @@ def working_days_for_month(
             person_id=row.person_id,
             store_id=row.store_id,
             business_date=row.business_date,
-            working_kind=_working_kind(row.working_kind),
+            working_kind=WorkingKind(row.working_kind)
+            if row.working_kind
+            else WorkingKind.NORMAL,
         )
         for row in rows
     ]
-
-
-def _working_kind(value: str | None):
-    from ..domain.enums import WorkingKind
-
-    return WorkingKind(value) if value else WorkingKind.NORMAL
 
 
 def attribute_for_month(
