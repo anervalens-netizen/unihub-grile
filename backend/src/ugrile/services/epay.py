@@ -17,6 +17,12 @@ requested payroll month. The close checklist surfaces
 ``EPAY_FRESH_READBACK_REQUIRED`` when there is no observation in the freshness
 window for any month-bound agent/category that participates in the calculation.
 A recent readback from another month can never satisfy this check.
+
+When a valid E-pay quantity actually changes, all current-revision grid rows
+for the month are invalidated. A subsequent grid computation can therefore
+replace the payroll snapshot without colliding with the same-revision unique
+key. Refreshing identical E-pay values for freshness does not invalidate the
+grid because the financial inputs are unchanged.
 """
 
 from __future__ import annotations
@@ -30,9 +36,12 @@ from sqlalchemy.orm import Session
 
 from ..domain.enums import EpayCategory
 from ..domain.errors import NotFoundError, ValidationError
-from ..repositories.epay import month_source
+from ..domain.rule_pack import RULE_PACK_VERSION
+from ..repositories.epay import latest_snapshot, month_source
 from ..repositories.models import (
     EpayObservation,
+    GridCalculation,
+    Month,
     Person,
     SiteDayAssignment,
     Store,
@@ -124,6 +133,18 @@ def _require_store(session: Session, *, tenant_id: str, store_id: str) -> Store:
     return store
 
 
+def _require_month(session: Session, *, tenant_id: str, month_id: str) -> Month:
+    month = session.execute(
+        select(Month).where(Month.tenant_id == tenant_id, Month.id == month_id)
+    ).scalar_one_or_none()
+    if month is None:
+        raise NotFoundError(
+            "month not found",
+            details={"tenant_id": tenant_id, "month_id": month_id},
+        )
+    return month
+
+
 def _working_persons_for_store_month(
     session: Session, *, tenant_id: str, month_id: str, store_id: str
 ) -> list[str]:
@@ -174,6 +195,7 @@ def record_readback(
             details={"code": "EPAY_READBACK_INVALID", "received": type(observations).__name__},
         )
     _require_store(session, tenant_id=tenant_id, store_id=store_id)
+    month = _require_month(session, tenant_id=tenant_id, month_id=month_id)
     working_persons = _working_persons_for_store_month(
         session, tenant_id=tenant_id, month_id=month_id, store_id=store_id
     )
@@ -195,12 +217,27 @@ def record_readback(
             },
         )
 
+    prior_values: dict[tuple[str, str], int] = {}
+    for person_id in working_persons:
+        snapshot = latest_snapshot(
+            session,
+            tenant_id=tenant_id,
+            month_id=month_id,
+            store_id=store_id,
+            person_id=person_id,
+        )
+        prior_values[(person_id, EpayCategory.UNDER_50.value)] = snapshot.under_50_quantity
+        prior_values[(person_id, EpayCategory.AT_OR_OVER_50.value)] = (
+            snapshot.at_or_over_50_quantity
+        )
+
     items: list[EpayReadbackItem] = []
     valid_count = 0
     invalid_count = 0
     observed_at = _utcnow()
     seen: set[tuple[str, str]] = set()
     source = month_source(month_id)
+    grid_inputs_changed = False
 
     for entry in observations:
         if not isinstance(entry, dict):
@@ -250,6 +287,9 @@ def record_readback(
         parsed_value, raw_text, is_valid = _parse_quantity(value)
         if is_valid:
             valid_count += 1
+            prior = prior_values.get(key, 0)
+            if parsed_value != prior:
+                grid_inputs_changed = True
         else:
             invalid_count += 1
         items.append(
@@ -274,6 +314,14 @@ def record_readback(
                 observed_at=observed_at,
             )
         )
+
+    if grid_inputs_changed:
+        session.query(GridCalculation).filter(
+            GridCalculation.tenant_id == tenant_id,
+            GridCalculation.month_id == month.id,
+            GridCalculation.revision == month.revision,
+            GridCalculation.rule_pack_version == RULE_PACK_VERSION,
+        ).delete(synchronize_session=False)
 
     return EpayReadbackResult(
         store_id=store_id,
