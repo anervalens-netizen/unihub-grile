@@ -23,6 +23,12 @@ for the month are invalidated. A subsequent grid computation can therefore
 replace the payroll snapshot without colliding with the same-revision unique
 key. Refreshing identical E-pay values for freshness does not invalidate the
 grid because the financial inputs are unchanged.
+
+The month row is locked before readback state is inspected or observations are
+written. This is the same serialization boundary used by final close, so a
+concurrent readback can never mutate E-pay after close has validated an older
+snapshot: either readback commits first and close sees the new state, or close
+commits first and the readback observes ``CLOSED`` and fails.
 """
 
 from __future__ import annotations
@@ -34,8 +40,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..domain.enums import EpayCategory
-from ..domain.errors import NotFoundError, ValidationError
+from ..domain.enums import EpayCategory, MonthState
+from ..domain.errors import ConflictError, NotFoundError, ValidationError
 from ..domain.rule_pack import RULE_PACK_VERSION
 from ..repositories.epay import latest_snapshot, month_source
 from ..repositories.models import (
@@ -133,14 +139,19 @@ def _require_store(session: Session, *, tenant_id: str, store_id: str) -> Store:
     return store
 
 
-def _require_month(session: Session, *, tenant_id: str, month_id: str) -> Month:
+def _lock_writable_month(session: Session, *, tenant_id: str, month_id: str) -> Month:
     month = session.execute(
-        select(Month).where(Month.tenant_id == tenant_id, Month.id == month_id)
+        select(Month).where(Month.id == month_id).with_for_update()
     ).scalar_one_or_none()
-    if month is None:
+    if month is None or month.tenant_id != tenant_id:
         raise NotFoundError(
             "month not found",
             details={"tenant_id": tenant_id, "month_id": month_id},
+        )
+    if month.state == MonthState.CLOSED.value:
+        raise ConflictError(
+            "month is closed",
+            details={"code": "MONTH_CLOSED", "month_id": month.id},
         )
     return month
 
@@ -179,14 +190,7 @@ def record_readback(
     observations: list[dict[str, Any]],
     actor_id: str,
 ) -> EpayReadbackResult:
-    """Persist one month-bound readback call.
-
-    ``observations`` contains one entry per required ``(person, category)``
-    pair for agents that worked in this store/month. Invalid values remain
-    auditable but do not feed payroll. ``actor_id`` is accepted by the service
-    contract for audit correlation; the observation row itself stores the
-    immutable month discriminator in ``source``.
-    """
+    """Persist one serialized, month-bound readback call."""
 
     _ = actor_id
     if not isinstance(observations, list):
@@ -195,7 +199,7 @@ def record_readback(
             details={"code": "EPAY_READBACK_INVALID", "received": type(observations).__name__},
         )
     _require_store(session, tenant_id=tenant_id, store_id=store_id)
-    month = _require_month(session, tenant_id=tenant_id, month_id=month_id)
+    month = _lock_writable_month(session, tenant_id=tenant_id, month_id=month_id)
     working_persons = _working_persons_for_store_month(
         session, tenant_id=tenant_id, month_id=month_id, store_id=store_id
     )
