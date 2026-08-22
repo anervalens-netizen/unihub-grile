@@ -9,6 +9,7 @@ from ugrile.domain.rule_pack import RULE_PACK_VERSION
 from ugrile.repositories.models import (
     GridCalculation,
     IncentiveInput,
+    Person,
     SalesStoreDay,
     StoreTarget,
 )
@@ -98,6 +99,12 @@ def _seed_financial_grid(session, faker_tenant):
     return month, row
 
 
+def _person_a(session, faker_tenant) -> Person:
+    person = session.get(Person, faker_tenant["person_a_id"])
+    assert person is not None
+    return person
+
+
 def test_final_close_detects_salary_change_without_calendar_revision(session, faker_tenant):
     month, _ = _seed_financial_grid(session, faker_tenant)
     original_revision = month.revision
@@ -147,9 +154,7 @@ def test_financial_guard_detects_new_connector_sales_generation(session, faker_t
         session,
         tenant_id=faker_tenant["tenant_id"],
         month=month,
-        person=session.get(type(row).person.property.mapper.class_, faker_tenant["person_a_id"])
-        if False
-        else session.get(__import__("ugrile.repositories.models", fromlist=["Person"]).Person, faker_tenant["person_a_id"]),
+        person=_person_a(session, faker_tenant),
         row=row,
     )
     assert mismatch is not None
@@ -158,10 +163,7 @@ def test_financial_guard_detects_new_connector_sales_generation(session, faker_t
 
 def test_financial_guard_detects_target_and_incentive_changes(session, faker_tenant):
     month, row = _seed_financial_grid(session, faker_tenant)
-    from ugrile.repositories.models import Person
-
-    person = session.get(Person, faker_tenant["person_a_id"])
-    assert person is not None
+    person = _person_a(session, faker_tenant)
 
     session.add(
         StoreTarget(
