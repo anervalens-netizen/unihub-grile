@@ -16,7 +16,7 @@ from ..domain.close_policy import policy_for_rule_pack
 from ..domain.enums import CloseBlockerCode, MonthState
 from ..domain.rule_pack import get_default_rule_pack
 from ..repositories.models import Month, OutboxJob
-from .overview import ChecklistItem, CloseChecklist
+from .overview import CloseChecklist, ChecklistItem
 from .policy_close import PolicyCloseService
 
 
