@@ -83,8 +83,6 @@ def test_financial_guard_rejects_new_generation_even_when_values_match(
     session.commit()
     row = next(item for item in rows if item.person_id == person_id)
 
-    # New authoritative generation, but deliberately identical money/SIM values.
-    # The close guard must still reject the prior snapshot by generation identity.
     session.add(
         SalesStoreDay(
             tenant_id=tenant_id,
@@ -107,4 +105,7 @@ def test_financial_guard_rejects_new_generation_even_when_values_match(
         person=person,
         row=row,
     )
-    assert mismatch == "sales generation changed: grid=GEN_001, current=GEN_002"
+    assert mismatch is not None
+    assert "sales changed" in mismatch
+    assert "generation changed" in mismatch
+    assert "grid=GEN_001, current=GEN_002" in mismatch
