@@ -15,6 +15,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
+from ..repositories.models import Month
 from .overview import ProgramCell, ProgramGrid, ProgramRow, ProgramService
 from .person_scope import effective_home_store_map
 
@@ -58,7 +59,7 @@ class ScopedProgramService:
         self,
         *,
         tenant_id: str,
-        month,
+        month: Month,
         perspective: str,
         manager_scope_store_ids: Mapping[date, set[str]] | None,
     ) -> ProgramGrid:
