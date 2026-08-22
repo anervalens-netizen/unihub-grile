@@ -36,6 +36,7 @@ class Capability(StrEnum):
     EXPORT_READ = "export.read"
     EXPORT_CREATE = "export.create"
     MONTH_READ = "month.read"
+    MONTH_CLOSE_READ = "month.close.read"
     MONTH_CLOSE = "month.close"
     MONTH_REOPEN = "month.reopen"
     ADMIN_FIXTURE = "admin.fixture"
