@@ -64,4 +64,5 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "postgres: requires a reachable PostgreSQL server (set UGRILE_PG_URL).",
+    "performance: realistic-scale performance contract run separately in CI.",
 ]
