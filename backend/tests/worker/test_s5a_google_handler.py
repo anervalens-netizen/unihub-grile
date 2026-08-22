@@ -41,6 +41,16 @@ def _seed_working(session, faker_tenant, month: Month) -> SiteDayAssignment:
     return row
 
 
+def _projection_payload(month: Month, faker_tenant) -> dict[str, object]:
+    return {
+        "month_id": month.id,
+        "store_id": faker_tenant["store_id"],
+        "year": month.year,
+        "month": month.month,
+        "revision": month.revision,
+    }
+
+
 def test_google_projection_handler_writes_adapter_payload(session, faker_tenant):
     month = _open_month(session, faker_tenant)
     _seed_working(session, faker_tenant, month)
@@ -50,13 +60,7 @@ def test_google_projection_handler_writes_adapter_payload(session, faker_tenant)
         tenant_id=faker_tenant["tenant_id"],
         kind=JobKind.GOOGLE_PROJECTION_STORE.value,
         idempotency_key="google-s5a-1",
-        payload={
-            "month_id": month.id,
-            "store_id": faker_tenant["store_id"],
-            "year": month.year,
-            "month": month.month,
-            "revision": month.revision,
-        },
+        payload=_projection_payload(month, faker_tenant),
     )
     session.commit()
 
@@ -98,13 +102,7 @@ def test_google_projection_provider_failure_is_retried_and_diagnostic_is_kept(
         tenant_id=faker_tenant["tenant_id"],
         kind=JobKind.GOOGLE_PROJECTION_STORE.value,
         idempotency_key="google-s5a-fail",
-        payload={
-            "month_id": month.id,
-            "store_id": faker_tenant["store_id"],
-            "year": month.year,
-            "month": month.month,
-            "revision": month.revision,
-        },
+        payload=_projection_payload(month, faker_tenant),
     )
     session.commit()
 
@@ -118,7 +116,6 @@ def test_google_projection_provider_failure_is_retried_and_diagnostic_is_kept(
     assert row.locked_by is None
     assert row.locked_at is None
 
-    # The provider-authored FAILED diagnostic commits with the retry decision.
     failed_run = (
         session.query(SheetProjectionRun)
         .filter_by(
@@ -132,7 +129,6 @@ def test_google_projection_provider_failure_is_retried_and_diagnostic_is_kept(
     assert failed_run is not None
     assert "UGR_S5_GOOGLE_FAIL" in (failed_run.last_error or "")
 
-    # There was no prior good projection, so retry state must not invent one.
     assert (
         read_store_projection(
             session,
@@ -141,6 +137,55 @@ def test_google_projection_provider_failure_is_retried_and_diagnostic_is_kept(
         )
         is None
     )
+
+
+def test_google_retry_never_destroys_last_good_projection(monkeypatch, session, faker_tenant):
+    month = _open_month(session, faker_tenant)
+    _seed_working(session, faker_tenant, month)
+
+    enqueue(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        kind=JobKind.GOOGLE_PROJECTION_STORE.value,
+        idempotency_key="google-last-good-seed",
+        payload=_projection_payload(month, faker_tenant),
+    )
+    session.commit()
+    good_row, good_result = run_once(locked_by=WORKER_LOCKED_BY)
+    assert good_row is not None and good_row.status == "DONE"
+    assert good_result is not None
+
+    before = read_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+    )
+    assert before is not None
+    before_grila = dict(before.grila)
+    before_pontaj = dict(before.pontaj)
+
+    monkeypatch.setenv("UGR_S5_GOOGLE_FAIL", "1")
+    enqueue(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        kind=JobKind.GOOGLE_PROJECTION_STORE.value,
+        idempotency_key="google-last-good-fail",
+        payload=_projection_payload(month, faker_tenant),
+    )
+    session.commit()
+    retry_row, retry_result = run_once(locked_by=WORKER_LOCKED_BY)
+    assert retry_row is not None and retry_row.status == "PENDING"
+    assert retry_result is None
+
+    after = read_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+    )
+    assert after is not None
+    assert after.generation == before.generation
+    assert dict(after.grila) == before_grila
+    assert dict(after.pontaj) == before_pontaj
 
 
 def test_google_projection_handler_rejects_cross_tenant_payload(session, faker_tenant):
@@ -152,13 +197,7 @@ def test_google_projection_handler_rejects_cross_tenant_payload(session, faker_t
         tenant_id="tenant_other",
         kind=JobKind.GOOGLE_PROJECTION_STORE.value,
         idempotency_key="google-cross-tenant",
-        payload={
-            "month_id": month.id,
-            "store_id": faker_tenant["store_id"],
-            "year": month.year,
-            "month": month.month,
-            "revision": month.revision,
-        },
+        payload=_projection_payload(month, faker_tenant),
     )
     session.commit()
 
