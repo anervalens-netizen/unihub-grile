@@ -40,34 +40,63 @@ def _open_month(faker_tenant):
         return month.id
 
 
-def test_calendar_apply_derives_absence_and_revision(client, faker_tenant):
+def _program_cell(
+    client,
+    month_id: str,
+    *,
+    expected_revision: int,
+    person_id: str,
+    business_date: str,
+    status: str,
+    store_id: str | None = None,
+    working_kind: str | None = None,
+):
+    return client.post(
+        f"/months/{month_id}/program/cell?expected_revision={expected_revision}",
+        headers=HEADERS,
+        json={
+            "person_id": person_id,
+            "business_date": business_date,
+            "status": status,
+            "store_id": store_id,
+            "working_kind": working_kind,
+        },
+    )
+
+
+def test_program_cells_derive_absence_and_revision(client, faker_tenant):
     month_id = _open_month(faker_tenant)
-    payload = {
-        "expected_revision": 0,
-        "changes": [
-            {
-                "person_id": faker_tenant["person_a_id"],
-                "business_date": "2026-08-01",
-                "status": "WORKING",
-                "store_id": faker_tenant["store_id"],
-                "working_kind": "NORMAL",
-            },
-            {
-                "person_id": faker_tenant["person_b_id"],
-                "business_date": "2026-08-01",
-                "status": "LEAVE",
-            },
-            {
-                "person_id": faker_tenant["person_c_id"],
-                "business_date": "2026-08-01",
-                "status": "OFF",
-            },
-        ],
-    }
-    response = client.post(f"/months/{month_id}/calendar/apply", json=payload, headers=HEADERS)
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["revision"] == 1
+    first = _program_cell(
+        client,
+        month_id,
+        expected_revision=0,
+        person_id=faker_tenant["person_a_id"],
+        business_date="2026-08-01",
+        status="WORKING",
+        store_id=faker_tenant["store_id"],
+        working_kind="NORMAL",
+    )
+    assert first.status_code == 200, first.text
+    second = _program_cell(
+        client,
+        month_id,
+        expected_revision=1,
+        person_id=faker_tenant["person_b_id"],
+        business_date="2026-08-01",
+        status="LEAVE",
+    )
+    assert second.status_code == 200, second.text
+    third = _program_cell(
+        client,
+        month_id,
+        expected_revision=2,
+        person_id=faker_tenant["person_c_id"],
+        business_date="2026-08-01",
+        status="OFF",
+    )
+    assert third.status_code == 200, third.text
+    body = third.json()
+    assert body["revision"] == 3
     assert body["assignment_count"] == 1
     assert body["person_calendar_count"] == 3 * 31
     assert body["pontaj_count"] == 3 * 31
@@ -81,10 +110,13 @@ def test_calendar_apply_derives_absence_and_revision(client, faker_tenant):
         assignments = session.query(SiteDayAssignment).filter_by(month_id=month_id).all()
         assert len(assignments) == 1
 
-    stale = client.post(
-        f"/months/{month_id}/calendar/apply",
-        json={"expected_revision": 0, "changes": []},
-        headers=HEADERS,
+    stale = _program_cell(
+        client,
+        month_id,
+        expected_revision=0,
+        person_id=faker_tenant["person_a_id"],
+        business_date="2026-08-02",
+        status="OFF",
     )
     assert stale.status_code == 409
 
@@ -135,8 +167,6 @@ def test_xlsx_template_preview_and_atomic_apply(client, faker_tenant):
         headers=HEADERS,
     )
     assert stale_apply.status_code == 409
-    # The workbook's contract was consumed by the first successful apply;
-    # a replay is rejected as a consumed contract, never re-applied.
     assert stale_apply.json()["code"] == "CONTRACT_CONSUMED"
     assert stale_apply.json()["details"]["code"] == "CONTRACT_CONSUMED"
 
@@ -280,7 +310,7 @@ def test_template_manifest_embeds_unique_contract_token(client, faker_tenant):
     token1 = wb1["Manifest"]["B5"].value
     token2 = wb2["Manifest"]["B5"].value
     assert token1 and token2
-    assert token1 != token2  # every download gets a fresh single-use token
+    assert token1 != token2
     assert wb1["Manifest"].protection.sheet is True
     assert wb1["Manifest"].sheet_state == "hidden"
 
@@ -297,7 +327,6 @@ def test_preview_never_consumes_the_contract(client, faker_tenant):
         )
         assert preview.status_code == 200, preview.text
         assert preview.json()["errors"] == []
-    # The contract is still consumable after two previews.
     applied = client.post(
         f"/months/{month_id}/schedule/apply",
         files={"file": ("schedule.xlsx", edited, XLSX)},
@@ -311,7 +340,7 @@ def test_tampered_manifest_base_revision_is_rejected(client, faker_tenant):
     month_id = _open_month(faker_tenant)
     template = client.get(f"/months/{month_id}/schedule/template", headers=HEADERS)
     workbook = load_workbook(BytesIO(template.content))
-    workbook["Manifest"]["B4"] = 99  # tamper base_revision
+    workbook["Manifest"]["B4"] = 99
     out = BytesIO()
     workbook.save(out)
     tampered = out.getvalue()
@@ -377,22 +406,15 @@ def test_stale_contract_workbook_is_rejected(client, faker_tenant):
     template = client.get(f"/months/{month_id}/schedule/template", headers=HEADERS)
     edited = _edit_cell(template.content, "D2", "NORMAL - s1")
 
-    # Advance the month revision via the JSON calendar API (no contract).
-    response = client.post(
-        f"/months/{month_id}/calendar/apply",
-        json={
-            "expected_revision": 0,
-            "changes": [
-                {
-                    "person_id": faker_tenant["person_a_id"],
-                    "business_date": "2026-08-01",
-                    "status": "WORKING",
-                    "store_id": faker_tenant["store_id"],
-                    "working_kind": "NORMAL",
-                }
-            ],
-        },
-        headers=HEADERS,
+    response = _program_cell(
+        client,
+        month_id,
+        expected_revision=0,
+        person_id=faker_tenant["person_a_id"],
+        business_date="2026-08-01",
+        status="WORKING",
+        store_id=faker_tenant["store_id"],
+        working_kind="NORMAL",
     )
     assert response.status_code == 200
     assert response.json()["revision"] == 1
@@ -411,7 +433,6 @@ def test_stale_contract_workbook_is_rejected(client, faker_tenant):
 def test_failed_apply_rolls_back_consumption_and_writes(client, faker_tenant):
     month_id = _open_month(faker_tenant)
     template = client.get(f"/months/{month_id}/schedule/template", headers=HEADERS)
-    # Two working agents on the same store-day -> coverage conflict.
     conflict = _edit_cell(_edit_cell(template.content, "D2", "NORMAL - s1"), "D3", "NORMAL - s1")
     failed = client.post(
         f"/months/{month_id}/schedule/apply",
@@ -424,8 +445,6 @@ def test_failed_apply_rolls_back_consumption_and_writes(client, faker_tenant):
         assert session.query(SiteDayAssignment).filter_by(month_id=month_id).count() == 0
         assert session.query(Month).filter_by(id=month_id).one().revision == 0
 
-    # Fix the workbook but keep the same contract token: the failed apply
-    # must not have consumed it, so this second apply succeeds.
     fixed = _edit_cell(conflict, "D3", "LIBER")
     applied = client.post(
         f"/months/{month_id}/schedule/apply",
@@ -438,26 +457,19 @@ def test_failed_apply_rolls_back_consumption_and_writes(client, faker_tenant):
 
 def test_partial_month_manager_scope_blocks_out_of_scope_days(client, faker_tenant):
     month_id = _open_month(faker_tenant)
-    # Admin builds an initial schedule: person_a works days 1-5 at s1.
-    initial = client.post(
-        f"/months/{month_id}/calendar/apply",
-        json={
-            "expected_revision": 0,
-            "changes": [
-                {
-                    "person_id": faker_tenant["person_a_id"],
-                    "business_date": f"2026-08-{day:02d}",
-                    "status": "WORKING",
-                    "store_id": faker_tenant["store_id"],
-                    "working_kind": "NORMAL",
-                }
-                for day in range(1, 6)
-            ],
-        },
-        headers=HEADERS,
-    )
-    assert initial.status_code == 200
-    assert initial.json()["revision"] == 1
+    for day in range(1, 6):
+        initial = _program_cell(
+            client,
+            month_id,
+            expected_revision=day - 1,
+            person_id=faker_tenant["person_a_id"],
+            business_date=f"2026-08-{day:02d}",
+            status="WORKING",
+            store_id=faker_tenant["store_id"],
+            working_kind="NORMAL",
+        )
+        assert initial.status_code == 200, initial.text
+    assert initial.json()["revision"] == 5
 
     manager_headers = {
         "X-Ugrile-Identity": "user_manager",
@@ -488,16 +500,13 @@ def test_partial_month_manager_scope_blocks_out_of_scope_days(client, faker_tena
     assert template.status_code == 200, template.text
     wb = load_workbook(BytesIO(template.content), data_only=True)
     sheet = wb["user_manager"]
-    # person_a (row 2): days 1-5 keep the existing schedule, 6-15 editable,
-    # 16-31 locked BLOCAT (column for day d is d+3).
     assert sheet["D2"].value == "NORMAL - s1"
-    assert sheet["I2"].value == "LIBER"  # day 6
-    assert sheet["S2"].value == "BLOCAT"  # day 16
+    assert sheet["I2"].value == "LIBER"
+    assert sheet["S2"].value == "BLOCAT"
     assert sheet["S2"].protection.locked is True
-    assert sheet["I2"].protection.locked is False  # day 6 is editable
-    assert sheet["AH2"].value == "BLOCAT"  # day 31
+    assert sheet["I2"].protection.locked is False
+    assert sheet["AH2"].value == "BLOCAT"
 
-    # Manager edits an in-scope day and applies: day 2 becomes LIBER.
     edited = _edit_cell(template.content, "E2", "LIBER", sheet="user_manager")
     applied = client.post(
         f"/months/{month_id}/schedule/apply",
@@ -505,18 +514,15 @@ def test_partial_month_manager_scope_blocks_out_of_scope_days(client, faker_tena
         headers=manager_headers,
     )
     assert applied.status_code == 200, applied.text
-    assert applied.json()["revision"] == 2
+    assert applied.json()["revision"] == 6
     with database.session_scope() as session:
         working = {
             row.business_date.day
             for row in session.query(SiteDayAssignment).filter_by(month_id=month_id)
             if row.status == DayStatus.WORKING.value
         }
-    assert working == {1, 3, 4, 5}  # day 2 freed; no out-of-scope writes
+    assert working == {1, 3, 4, 5}
 
-    # Untouched blocked cells produce no changes: applying the pristine
-    # template again keeps the same working set (revision advances once more
-    # but days 16-31 stay absent).
     pristine = client.get(f"/months/{month_id}/schedule/template", headers=manager_headers)
     reapply = client.post(
         f"/months/{month_id}/schedule/apply",
@@ -563,8 +569,8 @@ def test_tampered_blocked_cell_is_rejected_without_writes(client, faker_tenant):
     template = client.get(f"/months/{month_id}/schedule/template", headers=manager_headers)
     wb = load_workbook(BytesIO(template.content))
     sheet = wb["user_manager"]
-    assert sheet["S2"].value == "BLOCAT"  # person_a day 16 is blocked
-    sheet["S2"] = "NORMAL - s1"  # tamper the blocked cell
+    assert sheet["S2"].value == "BLOCAT"
+    sheet["S2"] = "NORMAL - s1"
     out = BytesIO()
     wb.save(out)
     tampered = out.getvalue()
@@ -590,35 +596,32 @@ def test_tampered_blocked_cell_is_rejected_without_writes(client, faker_tenant):
 
 def test_pontaj_endpoint_reads_persisted_projection(client, faker_tenant):
     month_id = _open_month(faker_tenant)
-    response = client.post(
-        f"/months/{month_id}/calendar/apply",
-        json={
-            "expected_revision": 0,
-            "changes": [
-                {
-                    "person_id": faker_tenant["person_a_id"],
-                    "business_date": "2026-08-01",
-                    "status": "WORKING",
-                    "store_id": faker_tenant["store_id"],
-                    "working_kind": "NORMAL",
-                },
-                {
-                    "person_id": faker_tenant["person_b_id"],
-                    "business_date": "2026-08-02",
-                    "status": "LEAVE",
-                },
-            ],
-        },
-        headers=HEADERS,
+    working_response = _program_cell(
+        client,
+        month_id,
+        expected_revision=0,
+        person_id=faker_tenant["person_a_id"],
+        business_date="2026-08-01",
+        status="WORKING",
+        store_id=faker_tenant["store_id"],
+        working_kind="NORMAL",
     )
-    assert response.status_code == 200
-    assert response.json()["revision"] == 1
+    assert working_response.status_code == 200, working_response.text
+    leave_response = _program_cell(
+        client,
+        month_id,
+        expected_revision=1,
+        person_id=faker_tenant["person_b_id"],
+        business_date="2026-08-02",
+        status="LEAVE",
+    )
+    assert leave_response.status_code == 200, leave_response.text
+    assert leave_response.json()["revision"] == 2
 
     pontaj = client.get(f"/months/{month_id}/pontaj", headers=HEADERS)
     assert pontaj.status_code == 200, pontaj.text
     body = pontaj.json()
-    assert body["revision"] == 1
-    # Full lattice: 3 active people x 31 days.
+    assert body["revision"] == 2
     assert len(body["rows"]) == 3 * 31
     working = next(
         r
@@ -648,22 +651,17 @@ def test_pontaj_endpoint_reads_persisted_projection(client, faker_tenant):
 
 def test_pontaj_endpoint_filters_manager_scope(client, faker_tenant):
     month_id = _open_month(faker_tenant)
-    client.post(
-        f"/months/{month_id}/calendar/apply",
-        json={
-            "expected_revision": 0,
-            "changes": [
-                {
-                    "person_id": faker_tenant["person_a_id"],
-                    "business_date": "2026-08-01",
-                    "status": "WORKING",
-                    "store_id": faker_tenant["store_id"],
-                    "working_kind": "NORMAL",
-                }
-            ],
-        },
-        headers=HEADERS,
+    response = _program_cell(
+        client,
+        month_id,
+        expected_revision=0,
+        person_id=faker_tenant["person_a_id"],
+        business_date="2026-08-01",
+        status="WORKING",
+        store_id=faker_tenant["store_id"],
+        working_kind="NORMAL",
     )
+    assert response.status_code == 200, response.text
     manager_headers = {
         "X-Ugrile-Identity": "user_manager",
         "X-Ugrile-Tenant": "tenant_acme",
@@ -692,7 +690,6 @@ def test_pontaj_endpoint_filters_manager_scope(client, faker_tenant):
     pontaj = client.get(f"/months/{month_id}/pontaj", headers=manager_headers)
     assert pontaj.status_code == 200, pontaj.text
     body = pontaj.json()
-    # Days 1..15 are in scope: person_a + person_b (home s1) x 15 days each.
     assert len(body["rows"]) == 2 * 15
     assert all(r["business_date"] <= "2026-08-15" for r in body["rows"])
     assert all(r["person_id"] != faker_tenant["person_c_id"] for r in body["rows"])
