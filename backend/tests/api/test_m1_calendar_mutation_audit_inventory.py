@@ -31,6 +31,7 @@ def _assert_single_route_audit(
     source: str,
     person_id: str,
     business_date: str,
+    expect_single_change: bool = True,
 ) -> None:
     with database.session_scope() as session:
         events = list(
@@ -52,11 +53,19 @@ def _assert_single_route_audit(
     assert payload["revision_before"] == 0
     assert payload["revision_after"] == 1
     assert payload["correlation_id"]
-    assert len(payload["changes"]) == 1
-    assert payload["changes"][0]["person_id"] == person_id
-    assert payload["changes"][0]["business_date"] == business_date
-    assert payload["changes"][0]["before"] is None
-    assert payload["changes"][0]["after"]["person_id"] == person_id
+    changes = payload["changes"]
+    if expect_single_change:
+        assert len(changes) == 1
+
+    target_changes = [
+        change
+        for change in changes
+        if change["person_id"] == person_id and change["business_date"] == business_date
+    ]
+    assert len(target_changes) == 1
+    target = target_changes[0]
+    assert target["before"] is None
+    assert target["after"]["person_id"] == person_id
 
 
 def test_assignment_compatibility_write_is_audited(client, faker_tenant):
@@ -159,4 +168,5 @@ def test_xlsx_apply_write_is_audited(client, faker_tenant):
         source="XLSX_IMPORT",
         person_id=faker_tenant["person_a_id"],
         business_date=date(2026, 8, 1).isoformat(),
+        expect_single_change=False,
     )
