@@ -1,10 +1,9 @@
 /**
  * S4 Program matrix test.
  *
- * Verifies the matrix renders 31 cells and that the perspective switch
- * triggers a fresh ``GET /program?perspective=people``. The actual cell
- * edit dialog is wired in a follow-up; the matrix exposes a click
- * handler hook that the page passes through for future use.
+ * Verifies the matrix renders 31 cells, perspective changes re-fetch, and
+ * write controls are available only when the backend session grants
+ * ``schedule.write``.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -18,6 +17,7 @@ import type {
   ProgramGrid,
   ProgramRow,
 } from "../src/api/client";
+import type { Capability } from "../src/capabilities";
 
 const MONTH: MonthSummary = {
   id: "month_tenantacme_2026-08",
@@ -28,6 +28,8 @@ const MONTH: MonthSummary = {
   revision: 0,
   closed_at: null,
 };
+const EDIT_CAPABILITIES = new Set<Capability>(["schedule.read", "schedule.write"]);
+const READ_CAPABILITIES = new Set<Capability>(["schedule.read"]);
 
 function makeGrid(): ProgramGrid {
   const dates = Array.from({ length: 31 }, (_, idx) =>
@@ -83,7 +85,7 @@ function makeApi(): { api: ApiClient; posts: { path: string; body: unknown }[] }
 describe("Program page", () => {
   it("renders the 31-day matrix with the seeded row + cells", async () => {
     const { api } = makeApi();
-    render(<Program api={api} months={[MONTH]} monthsError={null} />);
+    render(<Program api={api} months={[MONTH]} monthsError={null} capabilities={EDIT_CAPABILITIES} />);
     expect(await screen.findByText("store_x · Demo Store")).toBeTruthy();
     const button = await screen.findByRole("button", { name: /Demo Store pe 2026-08-02/i });
     expect(button).toBeTruthy();
@@ -91,29 +93,40 @@ describe("Program page", () => {
 
   it("switches between stores / people perspectives and re-fetches", async () => {
     const { api } = makeApi();
-    render(<Program api={api} months={[MONTH]} monthsError={null} />);
+    render(<Program api={api} months={[MONTH]} monthsError={null} capabilities={EDIT_CAPABILITIES} />);
     await screen.findByText("store_x · Demo Store");
     const beforeCalls = (api.get as unknown as { mock: { calls: unknown[][] } }).mock.calls.length;
     const peopleOption = screen.getByLabelText("Per agent") as HTMLInputElement;
     fireEvent.click(peopleOption);
-    // After the click the component re-fetches with the new perspective.
     const afterCalls = (api.get as unknown as { mock: { calls: unknown[][] } }).mock.calls.length;
     expect(afterCalls).toBeGreaterThanOrEqual(beforeCalls);
   });
 
   it("posts an unlocked cell through the revisioned endpoint", async () => {
     const { api, posts } = makeApi();
-    render(<Program api={api} months={[MONTH]} monthsError={null} />);
+    render(<Program api={api} months={[MONTH]} monthsError={null} capabilities={EDIT_CAPABILITIES} />);
     await screen.findByText("store_x · Demo Store");
     fireEvent.click(screen.getByRole("button", { name: /Demo Store pe 2026-08-01/i }));
     fireEvent.click(screen.getByRole("button", { name: "Salvează" }));
     expect(posts[0]?.path).toBe(`/months/${MONTH.id}/program/cell?expected_revision=0`);
   });
 
+  it("keeps schedule.read sessions inert when schedule.write is absent", async () => {
+    const { api, posts } = makeApi();
+    render(<Program api={api} months={[MONTH]} monthsError={null} capabilities={READ_CAPABILITIES} />);
+    await screen.findByText("store_x · Demo Store");
+    expect(screen.getByText(/doar pentru vizualizare/i)).toBeInTheDocument();
+    const cell = screen.getByRole("button", { name: /Demo Store pe 2026-08-01/i });
+    expect(cell).toBeDisabled();
+    fireEvent.click(cell);
+    expect(screen.queryByRole("button", { name: "Salvează" })).not.toBeInTheDocument();
+    expect(posts).toHaveLength(0);
+  });
+
   it("shows a stale-revision conflict without replacing the editor or grid", async () => {
     const { api } = makeApi();
     (api.post as ReturnType<typeof vi.fn>).mockRejectedValueOnce({ status: 409, message: "conflict" });
-    render(<Program api={api} months={[MONTH]} monthsError={null} />);
+    render(<Program api={api} months={[MONTH]} monthsError={null} capabilities={EDIT_CAPABILITIES} />);
     await screen.findByText("store_x · Demo Store");
     fireEvent.click(screen.getByRole("button", { name: /Demo Store pe 2026-08-01/i }));
     fireEvent.click(screen.getByRole("button", { name: "Salvează" }));
