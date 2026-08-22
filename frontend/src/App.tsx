@@ -16,8 +16,13 @@ import {
 import { currentRoute, subscribeRoute, type Route } from "./router";
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "/api") as string;
-const identity = (import.meta.env.VITE_DEV_IDENTITY ?? "user_admin") as string;
-const tenant = (import.meta.env.VITE_DEV_TENANT ?? "tenant_acme") as string;
+// Standalone development keeps convenient fixture defaults. Production builds
+// never synthesize an admin/tenant identity; the future Retail host provides
+// identity through the configured provider boundary.
+const identity = (import.meta.env.VITE_DEV_IDENTITY ??
+  (import.meta.env.DEV ? "user_admin" : undefined)) as string | undefined;
+const tenant = (import.meta.env.VITE_DEV_TENANT ??
+  (import.meta.env.DEV ? "tenant_acme" : undefined)) as string | undefined;
 
 export function App() {
   const [health, setHealth] = useState<HealthReport | null>(null);
