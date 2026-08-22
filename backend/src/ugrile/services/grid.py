@@ -12,36 +12,21 @@ The service is intentionally thin:
 * The coefficient bundle lives in :mod:`ugrile.domain.rule_pack`.
 * This module owns the IO boundary and the canonical hashing.
 
-Authoritative inputs (AC-09 remediation)
-----------------------------------------
+Authoritative inputs
+--------------------
 
-The grid reads the frozen contract inputs from their authoritative
-sources instead of substituting zeroes (docs/MOBIUP_RULE_PACK.md §1-2, §5):
+* targets use the latest versioned connector target and ``sales_days`` divisor;
+* Pontaj is read only from the exact current calendar revision;
+* current WORKING assignments decide who receives a store/day sale;
+* sales and SIM values come directly from immutable ``SalesStoreDay`` rows for
+  the requested connector generation, so a new connector generation can be
+  recalculated without requiring a calendar edit merely to rebuild attribution;
+* incentive, E-pay and salary master remain versioned/effective authoritative
+  inputs;
+* holidays are informational canonical inputs only.
 
-* per-day targets use the connector ``sales_days`` divisor
-  (``target_day = monthly target / zile_vanzare_magazin``); a missing
-  ``sales_days`` is a deterministic ``SALES_DAY_COUNT_MISSING`` marker,
-  never a silent assumption;* SIM quantity rides on the physical ``SalesStoreDay`` row (latest
-  generation per store/date);
-* the monthly incentive comes from the versioned ``IncentiveInput`` row
-  (latest version per person/month);
-* E-pay comes from the latest *valid* ``EpayObservation`` per category;
-* salary/tickets/Flip come from the effective-dated HR/payroll master; a
-  missing master row is an explicit ``SALARY_MASTER_MISSING`` marker with
-  a documented zero substitution;
-* versioned Romanian holiday markers plus admin overrides are serialised
-  into the canonical inputs as informational-only data — they never change
-  schedule, Pontaj, target or pay.
-
-The persisted payload stores the *actual* canonical inputs used for each
-snapshot (not a synthetic row), so ``hash_inputs(payload["inputs"])``
-round-trips to the stored ``inputs_hash``.
-
-Tenant safety
--------------
-
-The composite FKs on ``grid_calculations`` keep tenant isolation at the DB
-layer; the service always passes ``tenant_id`` explicitly.
+The persisted payload stores the actual canonical inputs used for each snapshot
+and round-trips through the stored input/output hashes.
 """
 
 from __future__ import annotations
@@ -52,10 +37,11 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from ..domain.enums import WorkingKind
+from ..domain.enums import MonthState, WorkingKind
+from ..domain.errors import ConflictError
 from ..domain.grid import (
     CalendarGridDay,
     GridAnomalyCode,
@@ -80,7 +66,6 @@ from ..repositories.models import (
     Month,
     Person,
     PontajProjection,
-    SalesPersonDayProjection,
     SalesStoreDay,
     Store,
     StoreTarget,
@@ -183,21 +168,17 @@ def _serialise_inputs(
         },
         "calendar": [
             {
-                "person_id": d.person_id,
-                "business_date": d.business_date.isoformat()
-                if hasattr(d.business_date, "isoformat")
-                else str(d.business_date),
-                "working_kind": d.working_kind.value
-                if d.working_kind
-                else None,
-                "store_id": d.store_id,
-                "target_amount": format(d.target_amount, "f"),
-                "sales_amount": format(d.sales_amount, "f"),
-                "sim_quantity": d.sim_quantity,
+                "person_id": day.person_id,
+                "business_date": day.business_date.isoformat()
+                if hasattr(day.business_date, "isoformat")
+                else str(day.business_date),
+                "working_kind": day.working_kind.value if day.working_kind else None,
+                "store_id": day.store_id,
+                "target_amount": format(day.target_amount, "f"),
+                "sales_amount": format(day.sales_amount, "f"),
+                "sim_quantity": day.sim_quantity,
             }
-            for d in sorted(
-                days, key=lambda d: (d.business_date, d.store_id or "")
-            )
+            for day in sorted(days, key=lambda item: (item.business_date, item.store_id or ""))
         ],
         "epay": {
             "under_50": epay.under_50_quantity,
@@ -210,8 +191,8 @@ def _serialise_inputs(
             "off_days": pontaj.off_days,
         },
         "sales_generation": sales_generation,
-        "target_sources": [dict(t) for t in target_sources],
-        "holidays": [dict(h) for h in holidays],
+        "target_sources": [dict(target) for target in target_sources],
+        "holidays": [dict(holiday) for holiday in holidays],
     }
 
 
@@ -220,8 +201,6 @@ class GridService:
         self.session = session
         self.pack = get_default_rule_pack()
 
-    # --- inputs assembly --------------------------------------------------
-
     def _calendar_days(
         self,
         *,
@@ -229,46 +208,34 @@ class GridService:
         month: Month,
         person_id: str,
         home_store_id: str,
+        sales_generation: str,
     ) -> tuple[
         list[CalendarGridDay],
         PontajHoursSnapshot,
         list[dict[str, object]],
         list[dict[str, object]],
     ]:
-        """Pull calendar + Pontaj + sales rows and project the engine shape.
-
-        The Pontaj row count, working days and total hours are aggregated in
-        one pass; per-day targets use the connector-authoritative
-        ``sales_days`` divisor (with an explicit marker when the count is
-        missing); sales amounts come from the persisted
-        ``sales_person_day_projections`` (deterministic and immutable across
-        calls) while SIM quantities ride on the physical
-        ``sales_store_day`` rows (latest generation per store/date).
-
-        Returns ``(days, pontaj, anomalies, target_sources)``.
-        """
+        """Build exact-revision calendar/Pontaj and generation-bound sales inputs."""
 
         days_in_month = monthrange(month.year, month.month)[1]
         first = date(month.year, month.month, 1)
         last = date(month.year, month.month, days_in_month)
 
-        assignments = list(
+        pontaj_rows = list(
             self.session.execute(
                 select(PontajProjection).where(
                     PontajProjection.tenant_id == tenant_id,
                     PontajProjection.month_id == month.id,
                     PontajProjection.person_id == person_id,
+                    PontajProjection.revision == month.revision,
                 )
             ).scalars()
         )
-        # Pontaj rows exist for every day of the month under the active
-        # revision, but in case the schedule is missing we still synthesise
-        # them by treating OFF as the default.
         working_days = 0
         leave_days = 0
         off_days = 0
         working_hours = Decimal("0")
-        for row in assignments:
+        for row in pontaj_rows:
             if row.status == "WORKING":
                 working_days += 1
                 working_hours += row.hours
@@ -276,11 +243,8 @@ class GridService:
                 leave_days += 1
             else:
                 off_days += 1
-        # ``PontajProjection`` covers every day; if no rows at all, default
-        # to month-length OFF so the totals are well-defined.
-        if not assignments:
+        if not pontaj_rows:
             off_days = days_in_month
-
         pontaj = PontajHoursSnapshot(
             working_days=working_days,
             working_hours=working_hours,
@@ -288,43 +252,27 @@ class GridService:
             off_days=off_days,
         )
 
-        sales_index: dict[tuple[str, date], Decimal] = {}
-        proj_rows = list(
-            self.session.execute(
-                select(SalesPersonDayProjection).where(
-                    SalesPersonDayProjection.tenant_id == tenant_id,
-                    SalesPersonDayProjection.month_id == month.id,
-                    SalesPersonDayProjection.person_id == person_id,
-                )
-            ).scalars()
-        )
-        for proj_row in proj_rows:
-            sales_index[(proj_row.store_id, proj_row.business_date)] = proj_row.amount
-
-        # Physical store-day rows drive the SIM quantity and the
-        # missing-sale detection. The latest generation per (store, date)
-        # wins — mirroring the attribution projection semantics.
+        # ``SalesStoreDay`` is the physical sales authority. Attribution is
+        # deterministic from the current WORKING assignment, so payroll can
+        # derive the same credit directly and is not stranded when sales advance
+        # without a calendar mutation/reprojection.
         sale_rows = list(
             self.session.execute(
                 select(SalesStoreDay).where(
                     SalesStoreDay.tenant_id == tenant_id,
                     SalesStoreDay.business_date >= first,
                     SalesStoreDay.business_date <= last,
+                    SalesStoreDay.generation == sales_generation,
                 )
             ).scalars()
         )
-        sales_pairs: set[tuple[str, date]] = set()
-        latest_generation: dict[tuple[str, date], str] = {}
-        for sale_row in sale_rows:
-            pair = (sale_row.store_id, sale_row.business_date)
-            sales_pairs.add(pair)
-            if pair not in latest_generation or sale_row.generation > latest_generation[pair]:
-                latest_generation[pair] = sale_row.generation
-        sim_index: dict[tuple[str, date], int] = {}
-        for sale_row in sale_rows:
-            pair = (sale_row.store_id, sale_row.business_date)
-            if latest_generation.get(pair) == sale_row.generation:
-                sim_index[pair] = sale_row.sim_quantity
+        sales_index = {
+            (row.store_id, row.business_date): row.amount for row in sale_rows
+        }
+        sim_index = {
+            (row.store_id, row.business_date): row.sim_quantity for row in sale_rows
+        }
+        sales_pairs = set(sales_index)
 
         target_index: dict[tuple[str, date], Decimal] = {}
         target_sources: list[dict[str, object]] = []
@@ -339,29 +287,35 @@ class GridService:
                 )
             ).scalars()
         )
+        latest_targets: dict[str, StoreTarget] = {}
         for target_row in store_targets:
-            # The divisor is the connector-authoritative selling-day count
-            # (``zile_vanzare_magazin``); a missing count falls back to the
-            # calendar month length and is surfaced as an explicit marker.
+            existing = latest_targets.get(target_row.store_id)
+            if existing is None or (target_row.version, target_row.id) > (
+                existing.version,
+                existing.id,
+            ):
+                latest_targets[target_row.store_id] = target_row
+
+        for target_row in sorted(latest_targets.values(), key=lambda row: row.store_id):
             if target_row.sales_days is not None:
                 divisor = target_row.sales_days
             else:
                 divisor = days_in_month
                 stores_missing_sales_days.add(target_row.store_id)
-            per_day = (target_row.amount / Decimal(divisor)).quantize(
-                Decimal("0.01")
-            )
+            per_day = (target_row.amount / Decimal(divisor)).quantize(Decimal("0.01"))
             for offset in range(days_in_month):
-                target_index[(target_row.store_id, date(month.year, month.month, 1 + offset))] = per_day
+                target_index[
+                    (target_row.store_id, date(month.year, month.month, 1 + offset))
+                ] = per_day
             target_sources.append(
                 {
                     "store_id": target_row.store_id,
+                    "version": target_row.version,
                     "monthly_amount": format(target_row.amount, "f"),
                     "sales_days": target_row.sales_days,
                     "divisor": divisor,
                 }
             )
-        target_sources.sort(key=lambda t: str(t["store_id"]))
 
         anomalies: list[dict[str, object]] = []
         for store_id in sorted(stores_missing_sales_days):
@@ -377,31 +331,31 @@ class GridService:
                 )
             )
 
-        # Build one row per (date, store_id) for the person, or a single
-        # OFF row per date when the person is not assigned.
-        # The grid engine treats absences implicitly (working_kind=None).
-        rows_by_day: dict[date, CalendarGridDay | None] = {}
-        for offset in range(days_in_month):
-            rows_by_day[date(month.year, month.month, 1 + offset)] = None
-        working_assignments_by_day = self._working_assignments_by_day(
-            tenant_id=tenant_id, month=month, person_id=person_id
+        working_assignments = self._working_assignments_by_day(
+            tenant_id=tenant_id,
+            month=month,
+            person_id=person_id,
         )
+        days: list[CalendarGridDay] = []
         for offset in range(days_in_month):
-            d = date(month.year, month.month, 1 + offset)
-            asg = working_assignments_by_day.get(d)
-            if asg is None:
+            business_date = date(month.year, month.month, 1 + offset)
+            assignment = working_assignments.get(business_date)
+            if assignment is None:
                 continue
-            store_id = asg["store_id"]
-            sales_amount = sales_index.get((store_id, d), Decimal("0"))
-            target_amount = target_index.get((store_id, d), Decimal("0"))
-            if (store_id, d) not in sales_pairs:
+            store_id = assignment["store_id"]
+            sales_amount = sales_index.get((store_id, business_date), Decimal("0"))
+            target_amount = target_index.get((store_id, business_date), Decimal("0"))
+            if (store_id, business_date) not in sales_pairs:
                 anomalies.append(
                     _anomaly(
                         GridAnomalyCode.MISSING_SALE,
                         store_id=store_id,
                         person_id=person_id,
-                        business_date=d,
-                        message="worked store/date has no SalesStoreDay row",
+                        business_date=business_date,
+                        message=(
+                            "worked store/date has no SalesStoreDay row in accepted "
+                            f"generation {sales_generation}"
+                        ),
                     )
                 )
             if target_amount == 0:
@@ -410,26 +364,24 @@ class GridService:
                         GridAnomalyCode.TARGET_ZERO,
                         store_id=store_id,
                         person_id=person_id,
-                        business_date=d,
+                        business_date=business_date,
                         message="worked day target is zero",
                     )
                 )
-            rows_by_day[d] = CalendarGridDay(
-                person_id=person_id,
-                person_home_store_id=home_store_id,
-                business_date=d,
-                working_kind=WorkingKind(asg["working_kind"])
-                if asg["working_kind"]
-                else WorkingKind.NORMAL,
-                store_id=store_id,
-                target_amount=target_amount,
-                sales_amount=sales_amount,
-                sim_quantity=sim_index.get((store_id, d), 0),
+            days.append(
+                CalendarGridDay(
+                    person_id=person_id,
+                    person_home_store_id=home_store_id,
+                    business_date=business_date,
+                    working_kind=WorkingKind(assignment["working_kind"])
+                    if assignment["working_kind"]
+                    else WorkingKind.NORMAL,
+                    store_id=store_id,
+                    target_amount=target_amount,
+                    sales_amount=sales_amount,
+                    sim_quantity=sim_index.get((store_id, business_date), 0),
+                )
             )
-        days = [d for d in (rows_by_day[d] for d in sorted(rows_by_day)) if d is not None]
-        # ``first``/``last`` anchor the month window; the engine does not
-        # need them.
-        _ = (first, last)
         return days, pontaj, anomalies, target_sources
 
     def _working_assignments_by_day(
@@ -448,16 +400,16 @@ class GridService:
             .order_by(SiteDayAssignment.business_date)
         )
         return {
-            row.business_date: {"store_id": row.store_id, "working_kind": row.working_kind or "NORMAL"}
+            row.business_date: {
+                "store_id": row.store_id,
+                "working_kind": row.working_kind or "NORMAL",
+            }
             for row in self.session.execute(stmt).scalars()
         }
 
-    def _incentive_for(self, *, tenant_id: str, person_id: str, month: Month) -> Decimal:
-        """Return the latest versioned incentive for the person/month.
-
-        No row means no campaign — a legitimate zero, not an anomaly.
-        """
-
+    def _incentive_for(
+        self, *, tenant_id: str, person_id: str, month: Month
+    ) -> Decimal:
         stmt = (
             select(IncentiveInput)
             .where(
@@ -466,13 +418,11 @@ class GridService:
                 IncentiveInput.year == month.year,
                 IncentiveInput.month == month.month,
             )
-            .order_by(IncentiveInput.version.desc())
+            .order_by(IncentiveInput.version.desc(), IncentiveInput.id.desc())
             .limit(1)
         )
         row = self.session.execute(stmt).scalar_one_or_none()
         return row.amount if row is not None else Decimal("0")
-
-    # --- public API -------------------------------------------------------
 
     def compute_for_person(
         self,
@@ -482,29 +432,17 @@ class GridService:
         person_id: str,
         sales_generation: str,
     ) -> GridSnapshot:
-        """Build the GridInputs, run the engine, return the snapshot.
-
-        ``sales_generation`` is the connector generation the grid should
-        bind to; the same value flows into ``inputs_hash`` so the grid
-        evolves deterministically with the connector.
-        """
-
         person = self.session.get(Person, person_id)
         if person is None or person.tenant_id != tenant_id:
             raise ValueError(f"person not found: {person_id}")
         anomalies: list[dict[str, object]] = []
-        # SALARY + TICKETS + FLIP from master; on_date is the first day of
-        # the month so the latest effective window is selected.
         first_day = date(month.year, month.month, 1)
-        salary, tickets, flip = SalaryRepository(
-            self.session
-        ).find_effective_window(
-            tenant_id=tenant_id, person_id=person_id, on_date=first_day
+        salary, tickets, flip = SalaryRepository(self.session).find_effective_window(
+            tenant_id=tenant_id,
+            person_id=person_id,
+            on_date=first_day,
         )
         if salary is None or tickets is None or flip is None:
-            # Missing effective-dated HR/payroll master: substitute zeroes
-            # deterministically and surface an explicit anomaly — never a
-            # silent zero.
             salary = Decimal("0")
             tickets = Decimal("0")
             flip = Decimal("0")
@@ -519,7 +457,9 @@ class GridService:
                 )
             )
         incentive = self._incentive_for(
-            tenant_id=tenant_id, person_id=person_id, month=month
+            tenant_id=tenant_id,
+            person_id=person_id,
+            month=month,
         )
         parameters = RulePackParameters(
             salary=salary,
@@ -527,25 +467,21 @@ class GridService:
             flip=flip,
             incentive=incentive,
         )
-
         days, pontaj, day_anomalies, target_sources = self._calendar_days(
             tenant_id=tenant_id,
             month=month,
             person_id=person_id,
             home_store_id=person.home_store_id,
+            sales_generation=sales_generation,
         )
         anomalies.extend(day_anomalies)
-        # E-pay snapshot: only valid observations count; the latest valid
-        # row per category per (store, person) wins.
         epay = latest_snapshot(
             self.session,
             tenant_id=tenant_id,
+            month_id=month.id,
             store_id=person.home_store_id,
             person_id=person_id,
         )
-        # Versioned Romanian legal holiday markers + admin overrides:
-        # informational-only canonical inputs (no schedule/Pontaj/target/pay
-        # effect).
         holidays = [
             {
                 "version": marker.version,
@@ -556,10 +492,11 @@ class GridService:
                 "override_reason": marker.override_reason,
             }
             for marker in HolidayRepository(self.session).markers_for_month(
-                tenant_id=tenant_id, year=month.year, month=month.month
+                tenant_id=tenant_id,
+                year=month.year,
+                month=month.month,
             )
         ]
-
         inputs = GridInputs(
             person_id=person_id,
             person_home_store_id=person.home_store_id,
@@ -573,7 +510,7 @@ class GridService:
             person_id=person_id,
             home_store_id=person.home_store_id,
             parameters=parameters,
-            days=list(days),
+            days=days,
             epay=epay,
             pontaj=pontaj,
             pack=self.pack,
@@ -584,14 +521,12 @@ class GridService:
             target_sources=target_sources,
         )
         ordered_anomalies = _sort_anomalies(anomalies)
-        inputs_hash = hash_inputs(canonical_inputs)
-        outputs_hash = hash_inputs(_serialise_components(components))
         return GridSnapshot(
             person_id=person_id,
             store_id=person.home_store_id,
             components=components,
-            inputs_hash=inputs_hash,
-            outputs_hash=outputs_hash,
+            inputs_hash=hash_inputs(canonical_inputs),
+            outputs_hash=hash_inputs(_serialise_components(components)),
             anomalies=ordered_anomalies,
             canonical_inputs=canonical_inputs,
         )
@@ -603,67 +538,81 @@ class GridService:
         month: Month,
         sales_generation: str = "FIXTURE_V1",
     ) -> tuple[list[GridSnapshot], list[GridCalculation]]:
-        """Build snapshots for every person in the tenant and persist them.
+        """Build and atomically replace the exact current-revision snapshots."""
 
-        Each row carries ``(person, month, rule_pack_version, revision)`` as
-        the unique key; re-running the same computation produces the same
-        hashes so the unique constraint rejects duplicates on the SQL
-        level. The persisted payload stores the *actual* canonical inputs
-        used for the snapshot (the same dict that produced ``inputs_hash``),
-        the decomposed components and the deterministic anomaly markers.
-        """
-
+        locked_month = self.session.execute(
+            select(Month).where(Month.id == month.id).with_for_update()
+        ).scalar_one()
+        if locked_month.tenant_id != tenant_id:
+            raise ValueError("month belongs to another tenant")
+        if locked_month.state == MonthState.CLOSED.value:
+            raise ConflictError(
+                "month is closed",
+                details={"code": "MONTH_CLOSED", "month_id": locked_month.id},
+            )
+        month = locked_month
         people = list(
             self.session.execute(
                 select(Person).where(
-                    Person.tenant_id == tenant_id, Person.is_active.is_(True)
+                    Person.tenant_id == tenant_id,
+                    Person.is_active.is_(True),
                 )
             ).scalars()
         )
-        snapshots: list[GridSnapshot] = []
-        for person in people:
-            snapshot = self.compute_for_person(
+        snapshots = [
+            self.compute_for_person(
                 tenant_id=tenant_id,
                 month=month,
                 person_id=person.id,
                 sales_generation=sales_generation,
             )
-            snapshots.append(snapshot)
+            for person in people
+        ]
+        self.session.execute(
+            delete(GridCalculation).where(
+                GridCalculation.tenant_id == tenant_id,
+                GridCalculation.month_id == month.id,
+                GridCalculation.revision == month.revision,
+                GridCalculation.rule_pack_version == RULE_PACK_VERSION,
+            )
+        )
+        for snapshot in snapshots:
             payload = json.dumps(
                 {
                     "inputs": snapshot.canonical_inputs,
                     "components": _serialise_components(snapshot.components),
-                    "anomalies": [dict(a) for a in snapshot.anomalies],
+                    "anomalies": [dict(anomaly) for anomaly in snapshot.anomalies],
                 },
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            row = GridCalculation(
-                tenant_id=tenant_id,
-                month_id=month.id,
-                store_id=snapshot.store_id,
-                person_id=snapshot.person_id,
-                rule_pack_version=RULE_PACK_VERSION,
-                revision=month.revision,
-                inputs_hash=snapshot.inputs_hash,
-                outputs_hash=snapshot.outputs_hash,
-                payload=payload,
+            self.session.add(
+                GridCalculation(
+                    tenant_id=tenant_id,
+                    month_id=month.id,
+                    store_id=snapshot.store_id,
+                    person_id=snapshot.person_id,
+                    rule_pack_version=RULE_PACK_VERSION,
+                    revision=month.revision,
+                    inputs_hash=snapshot.inputs_hash,
+                    outputs_hash=snapshot.outputs_hash,
+                    payload=payload,
+                )
             )
-            self.session.add(row)
         self.session.flush()
-        return snapshots, list(
+        rows = list(
             self.session.execute(
                 select(GridCalculation).where(
                     GridCalculation.tenant_id == tenant_id,
                     GridCalculation.month_id == month.id,
                     GridCalculation.revision == month.revision,
+                    GridCalculation.rule_pack_version == RULE_PACK_VERSION,
                 )
             ).scalars()
         )
+        return snapshots, rows
 
-    # Convenience for tests / API: read the latest GridCalculation for one
-    # person/month.
     def latest_for_person(
         self, *, tenant_id: str, month_id: str, person_id: str
     ) -> GridCalculation | None:
@@ -680,17 +629,6 @@ class GridService:
         return self.session.execute(stmt).scalar_one_or_none()
 
 
-# Re-export the AttributionService for callers that want both calculations
-# from a single service handle.
-__all__ = [
-    "AttributionService",
-    "GridService",
-    "GridSnapshot",
-]
+__all__ = ["AttributionService", "GridService", "GridSnapshot"]
 
-
-# ``Store`` is referenced by the schema FKs; the service is given a
-# tenant id and uses ``Person`` to discover the home store id. We import
-# the model here only to keep mypy happy with the unused import pattern
-# used in the rest of the codebase.
 _ = Store

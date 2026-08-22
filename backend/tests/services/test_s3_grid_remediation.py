@@ -31,7 +31,7 @@ from ugrile.connectors.fixtures import FIXTURE_GENERATION
 from ugrile.domain.enums import DayStatus, EpayCategory, MonthState, WorkingKind
 from ugrile.domain.grid import GridAnomalyCode
 from ugrile.domain.rule_pack import RULE_PACK_VERSION, hash_inputs
-from ugrile.repositories.epay import latest_snapshot
+from ugrile.repositories.epay import latest_snapshot, month_source
 from ugrile.repositories.holidays import HolidayRepository
 from ugrile.repositories.models import (
     EpayObservation,
@@ -205,6 +205,7 @@ def test_sim_incentive_and_epay_inputs_flow_into_snapshot(session, faker_tenant)
             currency="RON",
         )
     )
+    month = MonthRepository(session).get_or_create(faker_tenant["tenant_id"], 2026, 8)
     observed_at = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
     session.add_all(
         [
@@ -216,7 +217,7 @@ def test_sim_incentive_and_epay_inputs_flow_into_snapshot(session, faker_tenant)
                 value=1,
                 raw_value="1",
                 is_valid=True,
-                source="SHEET",
+                source=month_source(month.id),
                 observed_at=observed_at,
             ),
             EpayObservation(
@@ -227,7 +228,7 @@ def test_sim_incentive_and_epay_inputs_flow_into_snapshot(session, faker_tenant)
                 value=10,
                 raw_value="10",
                 is_valid=True,
-                source="SHEET",
+                source=month_source(month.id),
                 observed_at=observed_at,
             ),
         ]
@@ -261,6 +262,7 @@ def test_invalid_epay_observations_do_not_count(session, faker_tenant):
     _seed_store_target(
         session, faker_tenant, faker_tenant["store_id"], "0", sales_days=26
     )
+    month = MonthRepository(session).get_or_create(faker_tenant["tenant_id"], 2026, 8)
     observed_at = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
     session.add(
         EpayObservation(
@@ -271,7 +273,7 @@ def test_invalid_epay_observations_do_not_count(session, faker_tenant):
             value=None,
             raw_value="abc",
             is_valid=False,
-            source="SHEET",
+            source=month_source(month.id),
             observed_at=observed_at,
         )
     )
@@ -279,6 +281,7 @@ def test_invalid_epay_observations_do_not_count(session, faker_tenant):
     snapshot = latest_snapshot(
         session,
         tenant_id=faker_tenant["tenant_id"],
+        month_id=month.id,
         store_id=faker_tenant["store_id"],
         person_id=faker_tenant["person_a_id"],
     )

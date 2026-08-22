@@ -51,12 +51,18 @@ def test_authorize_denies_missing_capability() -> None:
 def test_mobiup_close_policy_blocks_fresh_epay_requirement() -> None:
     policy = policy_for_rule_pack(get_default_rule_pack())
     assert policy.rule_pack_version == "mobiup-v1-compat"
-    assert policy.disposition(CloseBlockerCode.EPAY_FRESH_READBACK_REQUIRED) is BlockerDisposition.BLOCKING
+    assert (
+        policy.disposition(CloseBlockerCode.EPAY_FRESH_READBACK_REQUIRED)
+        is BlockerDisposition.BLOCKING
+    )
 
 
 def test_projection_and_external_reconciliation_are_not_payroll_truth() -> None:
     policy = policy_for_rule_pack(get_default_rule_pack())
-    assert policy.disposition(CloseBlockerCode.SHEET_CANARY_REQUIRED) is BlockerDisposition.WARNING
+    assert (
+        policy.disposition(CloseBlockerCode.SHEET_CANARY_REQUIRED)
+        is BlockerDisposition.WARNING
+    )
     assert (
         policy.disposition(CloseBlockerCode.EXTERNAL_RECONCILIATION_REQUIRED)
         is BlockerDisposition.WARNING
@@ -66,3 +72,11 @@ def test_projection_and_external_reconciliation_are_not_payroll_truth() -> None:
 def test_all_current_grid_anomalies_block_final_close() -> None:
     policy = policy_for_rule_pack(get_default_rule_pack())
     assert all(policy.grid_is_blocking(code) for code in GridAnomalyCode)
+    assert (
+        policy.disposition(CloseBlockerCode.GRID_CURRENT_REVISION_REQUIRED)
+        is BlockerDisposition.BLOCKING
+    )
+    assert (
+        policy.disposition(CloseBlockerCode.GRID_ANOMALY_BLOCKING)
+        is BlockerDisposition.BLOCKING
+    )
