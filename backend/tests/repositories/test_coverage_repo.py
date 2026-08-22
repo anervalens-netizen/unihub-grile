@@ -1,4 +1,4 @@
-"""Repository coverage tests at the assignment row level."""
+"""Repository coverage diagnostics over authoritative assignment rows."""
 
 from __future__ import annotations
 
@@ -14,46 +14,59 @@ def _open_month(session, tenant_id: str):
     return MonthRepository(session).get_or_create(tenant_id, 2026, 8)
 
 
-def test_check_month_coverage_returns_empty_for_clean_data(session, faker_tenant):
-    """A month that respects AC-02 at the DB layer has no coverage conflicts.
+def _seed_working(
+    session,
+    *,
+    tenant_id: str,
+    month_id: str,
+    store_id: str,
+    person_id: str,
+    business_date: date,
+) -> None:
+    session.add(
+        SiteDayAssignment(
+            tenant_id=tenant_id,
+            month_id=month_id,
+            store_id=store_id,
+            person_id=person_id,
+            business_date=business_date,
+            status=DayStatus.WORKING,
+            working_kind=WorkingKind.NORMAL.value,
+            revision=0,
+            source="TEST",
+        )
+    )
 
-    The conflict-detection paths are exercised at the DB constraint level
-    in ``test_db_constraints.py`` and at the domain level in
-    ``tests/domain/test_coverage.py``. Here we just confirm the repository
-    round-trip is empty when the partial unique indexes have done their job.
-    """
+
+def test_coverage_diagnostics_pass_for_clean_persisted_data(session, faker_tenant):
+    """Read-side diagnostics accept rows already protected by AC-02 indexes."""
 
     month = _open_month(session, faker_tenant["tenant_id"])
-    repo = AssignmentRepository(session)
-    repo.upsert_working(
+    _seed_working(
+        session,
         tenant_id=faker_tenant["tenant_id"],
         month_id=month.id,
         store_id=faker_tenant["store_id"],
         person_id=faker_tenant["person_a_id"],
         business_date=date(2026, 8, 1),
-        working_kind=WorkingKind.NORMAL,
     )
-    repo.upsert_working(
+    _seed_working(
+        session,
         tenant_id=faker_tenant["tenant_id"],
         month_id=month.id,
         store_id=faker_tenant["other_store_id"],
         person_id=faker_tenant["person_c_id"],
         business_date=date(2026, 8, 1),
-        working_kind=WorkingKind.NORMAL,
     )
     session.commit()
+
+    repo = AssignmentRepository(session)
     assert repo.check_month_coverage(month.id) == []
-    repo.assert_month_coverage(month.id)  # no raise
+    repo.assert_month_coverage(month.id)
 
 
 def test_check_month_coverage_flags_manually_introduced_violation(session, faker_tenant):
-    """Drop the partial unique indexes, inject a conflict, and assert the domain
-    checker catches it.
-
-    The partial unique indexes are the production defence; the domain check
-    exists for diagnostics and as a pre-flight when migrations land before
-    the indexes do.
-    """
+    """Domain diagnostics still detect corrupted state if DB guards are bypassed."""
 
     from sqlalchemy import text
 
@@ -61,51 +74,36 @@ def test_check_month_coverage_flags_manually_introduced_violation(session, faker
     repo = AssignmentRepository(session)
 
     try:
-        # Drop the partial unique indexes so we can introduce a violation on
-        # purpose. The test restores them so subsequent tests are unaffected.
         session.execute(text("DROP INDEX IF EXISTS uq_site_day_one_working"))
         session.execute(text("DROP INDEX IF EXISTS uq_person_day_one_working"))
         session.commit()
 
-        session.add_all(
-            [
-                SiteDayAssignment(
-                    tenant_id=faker_tenant["tenant_id"],
-                    month_id=month.id,
-                    store_id=faker_tenant["store_id"],
-                    person_id=faker_tenant["person_a_id"],
-                    business_date=date(2026, 8, 2),
-                    status=DayStatus.WORKING,
-                    working_kind=WorkingKind.NORMAL.value,
-                    revision=0,
-                    source="TEST",
-                ),
-                SiteDayAssignment(
-                    tenant_id=faker_tenant["tenant_id"],
-                    month_id=month.id,
-                    store_id=faker_tenant["store_id"],
-                    person_id=faker_tenant["person_b_id"],
-                    business_date=date(2026, 8, 2),
-                    status=DayStatus.WORKING,
-                    working_kind=WorkingKind.NORMAL.value,
-                    revision=0,
-                    source="TEST",
-                ),
-            ]
+        _seed_working(
+            session,
+            tenant_id=faker_tenant["tenant_id"],
+            month_id=month.id,
+            store_id=faker_tenant["store_id"],
+            person_id=faker_tenant["person_a_id"],
+            business_date=date(2026, 8, 2),
+        )
+        _seed_working(
+            session,
+            tenant_id=faker_tenant["tenant_id"],
+            month_id=month.id,
+            store_id=faker_tenant["store_id"],
+            person_id=faker_tenant["person_b_id"],
+            business_date=date(2026, 8, 2),
         )
         session.commit()
 
         conflicts = repo.check_month_coverage(month.id)
-        codes = {c.code for c in conflicts}
-        assert "MULTIPLE_AGENTS_PER_STORE_DAY" in codes
+        assert "MULTIPLE_AGENTS_PER_STORE_DAY" in {conflict.code for conflict in conflicts}
     finally:
-        # Remove the conflicting rows so we can safely re-create the indexes.
         session.execute(
             text("DELETE FROM site_day_assignments WHERE business_date = :d AND source = 'TEST'"),
             {"d": date(2026, 8, 2)},
         )
         session.commit()
-        # Restore the partial unique indexes for subsequent tests.
         session.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_site_day_one_working "
@@ -121,26 +119,3 @@ def test_check_month_coverage_flags_manually_introduced_violation(session, faker
             )
         )
         session.commit()
-
-
-def test_assert_month_coverage_passes_on_clean_data(session, faker_tenant):
-    month = _open_month(session, faker_tenant["tenant_id"])
-    repo = AssignmentRepository(session)
-    repo.upsert_working(
-        tenant_id=faker_tenant["tenant_id"],
-        month_id=month.id,
-        store_id=faker_tenant["store_id"],
-        person_id=faker_tenant["person_a_id"],
-        business_date=date(2026, 8, 1),
-        working_kind=WorkingKind.NORMAL,
-    )
-    repo.upsert_working(
-        tenant_id=faker_tenant["tenant_id"],
-        month_id=month.id,
-        store_id=faker_tenant["other_store_id"],
-        person_id=faker_tenant["person_c_id"],
-        business_date=date(2026, 8, 1),
-        working_kind=WorkingKind.NORMAL,
-    )
-    session.commit()
-    repo.assert_month_coverage(month.id)  # no raise
