@@ -42,10 +42,11 @@ from ..services.auth import Principal, assert_same_tenant, effective_store_ids
 from ..services.authorization import Capability, authorize
 from ..services.calendar import CalendarChange, CalendarService
 from ..services.close import ReopenRequest
-from ..services.overview import ExceptionService, OverviewService, ProgramService
+from ..services.overview import ProgramService
 from ..services.person_scope import effective_home_store_map
 from ..services.policy_checklist import PolicyCloseChecklistService
 from ..services.policy_close import PolicyCloseService
+from ..services.scoped_overview import ScopedExceptionService, ScopedOverviewService
 
 router = APIRouter(prefix="/months", tags=["manager-ui"])
 
@@ -77,7 +78,7 @@ def get_overview(
     authorize(principal, Capability.SCHEDULE_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
-    report = OverviewService(session).month_overview(
+    report = ScopedOverviewService(session).month_overview(
         tenant_id=principal.tenant_id,
         month=month,
         manager_scope_store_ids=_scope_or_admin(session, principal, month),
@@ -259,7 +260,7 @@ def get_exceptions(
     authorize(principal, Capability.SCHEDULE_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
-    entries = ExceptionService(session).month_exceptions(
+    entries = ScopedExceptionService(session).month_exceptions(
         tenant_id=principal.tenant_id,
         month=month,
         manager_scope_store_ids=_scope_or_admin(session, principal, month),
