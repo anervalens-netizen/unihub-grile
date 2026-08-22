@@ -17,8 +17,9 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..domain.enums import CloseBlockerCode, DayStatus, MonthState
-from ..repositories.models import (
+from ugrile.domain.close import BlockerDetail
+from ugrile.domain.enums import CloseBlockerCode, DayStatus, MonthState
+from ugrile.repositories.models import (
     EpayObservation,
     GridCalculation,
     Month,
@@ -29,7 +30,7 @@ from ..repositories.models import (
     SiteDayAssignment,
     Store,
 )
-from .overview import (
+from ugrile.services.overview import (
     ExceptionEntry,
     ExceptionService,
     OverviewKpis,
@@ -42,7 +43,7 @@ from .overview import (
     _action_hint,
     _overview_validation,
 )
-from .person_scope import effective_home_store_map
+from ugrile.services.person_scope import effective_home_store_map
 
 _SYNC_KINDS = {
     "GOOGLE_PROJECTION_STORE",
@@ -94,7 +95,7 @@ def _manager_visible_job(row: OutboxJob, *, month_id: str, visible_store_ids: se
 
 
 def _manager_visible_blocker(
-    blocker,
+    blocker: BlockerDetail,
     *,
     allowed_by_date: Mapping[date, set[str]],
     visible_store_ids: set[str],
@@ -104,7 +105,7 @@ def _manager_visible_blocker(
 ) -> bool:
     business_date = blocker.business_date
 
-    if blocker.code == CloseBlockerCode.PERSON_DAY_MULTIPLE_WORKING.value:
+    if blocker.code == CloseBlockerCode.PERSON_DAY_MULTIPLE_WORKING:
         if blocker.person_id is None or business_date is None:
             return False
         assigned = working_stores_by_person_date.get((blocker.person_id, business_date), set())
@@ -113,8 +114,16 @@ def _manager_visible_blocker(
 
     if blocker.store_id is not None:
         if business_date is not None:
-            return blocker.store_id in allowed_by_date.get(business_date, set())
-        return blocker.store_id in visible_store_ids
+            if blocker.store_id not in allowed_by_date.get(business_date, set()):
+                return False
+            if blocker.person_id is not None:
+                return effective_home.get((blocker.person_id, business_date)) in allowed_by_date.get(
+                    business_date, set()
+                )
+            return True
+        if blocker.store_id not in visible_store_ids:
+            return False
+        return blocker.person_id is None or blocker.person_id in visible_person_ids
 
     if blocker.person_id is not None:
         if business_date is not None:
@@ -209,14 +218,16 @@ class ScopedOverviewService:
 
         epay_invalid = 0
         if visible_store_ids:
-            epay_invalid = int(
+            epay_invalid = len(
                 self.session.execute(
                     select(EpayObservation).where(
                         EpayObservation.tenant_id == tenant_id,
                         EpayObservation.store_id.in_(visible_store_ids),
                         EpayObservation.is_valid.is_(False),
                     )
-                ).scalars().all().__len__()
+                )
+                .scalars()
+                .all()
             )
 
         sync_rows = list(
@@ -275,18 +286,22 @@ class ScopedOverviewService:
             }
             manager_to_stores.setdefault(manager_id, set()).update(homes)
 
-        pontaj_rows = self.session.execute(
-            select(
-                PontajProjection.person_id,
-                PontajProjection.business_date,
-                PontajProjection.status,
-            ).where(
-                PontajProjection.tenant_id == tenant_id,
-                PontajProjection.month_id == month.id,
-                PontajProjection.revision == month.revision,
-                PontajProjection.person_id.in_(visible_person_ids) if visible_person_ids else False,
+        pontaj_rows: list[tuple[str, date, str]] = []
+        if visible_person_ids:
+            pontaj_rows = list(
+                self.session.execute(
+                    select(
+                        PontajProjection.person_id,
+                        PontajProjection.business_date,
+                        PontajProjection.status,
+                    ).where(
+                        PontajProjection.tenant_id == tenant_id,
+                        PontajProjection.month_id == month.id,
+                        PontajProjection.revision == month.revision,
+                        PontajProjection.person_id.in_(visible_person_ids),
+                    )
+                ).all()
             )
-        ).all()
         manager_uncovered: dict[str, int] = {key: 0 for key in manager_to_stores}
         for person_id, business_date, status in pontaj_rows:
             home_store = effective_home.get((person_id, business_date))
@@ -297,11 +312,12 @@ class ScopedOverviewService:
             manager_id = person_to_manager.get(person_id, person_id)
             manager_uncovered[manager_id] = manager_uncovered.get(manager_id, 0) + 1
 
+        covered_store_ids = {store_id for store_id, _ in covered_set}
         managers = tuple(
             OverviewManagerRow(
                 user_id=manager_id,
                 display_name=manager_to_name.get(manager_id, manager_id),
-                stores_covered=len(store_ids & {store for store, _ in covered_set}),
+                stores_covered=len(store_ids & covered_store_ids),
                 stores_total=len(store_ids),
                 days_uncovered=manager_uncovered.get(manager_id, 0),
                 last_sync=None,
@@ -359,7 +375,7 @@ class ScopedOverviewService:
             rule_pack_version=latest_rule_pack,
             kpis=OverviewKpis(
                 stores_total=len(visible_store_ids),
-                stores_covered=len({store_id for store_id, _ in covered_set}),
+                stores_covered=len(covered_store_ids),
                 days_uncovered=len(lattice - covered_set),
                 conflicts=conflicts_total,
                 extra_home_days=sum(row.working_kind == "EXTRA_HOME" for row in visible_working),
