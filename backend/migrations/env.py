@@ -1,8 +1,8 @@
 """Alembic environment.
 
-The migration set is small at S1; future revisions land as separate files under
-``migrations/versions``. The URL is read from ``DATABASE_URL`` so CI can
-override it without touching ``alembic.ini``.
+The URL is read from ``DATABASE_URL`` so CI can override it without touching
+``alembic.ini``. Entity models and the query-driven secondary index contract
+are both registered on ``Base.metadata`` before migration drift is evaluated.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from sqlalchemy import engine_from_config, pool
 from ugrile.core.config import get_settings
 from ugrile.repositories.base import Base
 import ugrile.repositories.models  # noqa: F401  (registers models on Base.metadata)
+import ugrile.repositories.index_contract  # noqa: F401  (registers operational indexes)
 
 config = context.config
 
