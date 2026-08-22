@@ -24,6 +24,8 @@ _SEVERITY: dict[str, int] = {
     CloseBlockerCode.STORE_DAY_MULTIPLE_WORKING.value: 1,
     CloseBlockerCode.PERSON_DAY_MULTIPLE_WORKING.value: 1,
     CloseBlockerCode.SALES_MISSING_FOR_WORKED_DAY.value: 1,
+    CloseBlockerCode.GRID_CURRENT_REVISION_REQUIRED.value: 1,
+    CloseBlockerCode.GRID_ANOMALY_BLOCKING.value: 1,
     CloseBlockerCode.INVALID_WORKING_KIND.value: 2,
     CloseBlockerCode.SALES_ORPHAN_FOR_COVERED_DAY.value: 2,
     CloseBlockerCode.TARGET_ZERO_FOR_WORKED_STORE.value: 2,
@@ -41,6 +43,8 @@ _TITLES: dict[str, str] = {
     CloseBlockerCode.SALES_ORPHAN_FOR_COVERED_DAY.value: "Vânzare fără calendar",
     CloseBlockerCode.TARGET_ZERO_FOR_WORKED_STORE.value: "Target lipsă/zero pentru magazin lucrat",
     CloseBlockerCode.EPAY_FRESH_READBACK_REQUIRED.value: "E-pay incomplet sau expirat",
+    CloseBlockerCode.GRID_CURRENT_REVISION_REQUIRED.value: "Grilă lipsă sau neactualizată",
+    CloseBlockerCode.GRID_ANOMALY_BLOCKING.value: "Anomalie financiară în grilă",
     CloseBlockerCode.SHEET_CANARY_REQUIRED.value: "Verificare Sheet necesară",
     CloseBlockerCode.EXTERNAL_RECONCILIATION_REQUIRED.value: "Reconciliere externă necesară",
 }
