@@ -1,11 +1,10 @@
-"""Financial close orchestration layered on the legacy close snapshot builder.
+"""Financial close orchestration layered on the close snapshot builder.
 
-This service keeps the proven transaction/locking/audit implementation from
-``CloseService`` while applying the versioned close policy. Final close requires
-fresh month-bound E-pay plus one valid grid snapshot for every active person at
-the exact current month revision. Persisted grid anomalies are enforced here,
-not merely classified in policy metadata. The persisted financial values are
-also revalidated against their current authoritative sources before close.
+Final close requires fresh month-bound E-pay plus one valid grid snapshot for
+every historical payroll participant at the exact current month revision.
+Current ``Person.is_active`` and ``Person.home_store_id`` are not historical
+truth: leavers and later transfers remain bound to the month evidence that
+actually existed then.
 """
 
 from __future__ import annotations
@@ -21,10 +20,11 @@ from ..domain.enums import CloseBlockerCode
 from ..domain.grid import GridAnomalyCode
 from ..domain.rule_pack import RULE_PACK_VERSION, get_default_rule_pack
 from ..repositories.epay import latest_snapshot
-from ..repositories.models import GridCalculation, Month, Person, Store
+from ..repositories.models import GridCalculation, Month, Person, SiteDayAssignment, Store
 from .close import CloseService
 from .epay import freshness_for_month
 from .financial_inputs import financial_input_mismatch
+from .month_participants import month_participant_ids, payroll_home_store_for_month
 
 
 class PolicyCloseService(CloseService):
@@ -37,7 +37,11 @@ class PolicyCloseService(CloseService):
             for blocker in base.blockers
             if blocker.code is not CloseBlockerCode.EPAY_FRESH_READBACK_REQUIRED
         ]
-        active_store_ids = list(
+
+        # Current store activity is not enough for historical payroll. A store
+        # that later became inactive but still owns working rows in this month
+        # remains an E-pay freshness obligation for the month being closed.
+        epay_store_ids = set(
             self.session.execute(
                 select(Store.id).where(
                     Store.tenant_id == tenant_id,
@@ -45,7 +49,16 @@ class PolicyCloseService(CloseService):
                 )
             ).scalars()
         )
-        for store_id in sorted(active_store_ids):
+        epay_store_ids.update(
+            self.session.execute(
+                select(SiteDayAssignment.store_id).where(
+                    SiteDayAssignment.tenant_id == tenant_id,
+                    SiteDayAssignment.month_id == month.id,
+                    SiteDayAssignment.status == "WORKING",
+                )
+            ).scalars()
+        )
+        for store_id in sorted(epay_store_ids):
             report = freshness_for_month(
                 self.session,
                 tenant_id=tenant_id,
@@ -69,27 +82,36 @@ class PolicyCloseService(CloseService):
 
         blockers.extend(self._grid_blockers(tenant_id=tenant_id, month=month))
         blockers.sort(
-            key=lambda b: (
-                b.code.value,
-                b.store_id or "",
-                b.person_id or "",
-                b.business_date.isoformat() if b.business_date else "",
-                b.message,
+            key=lambda blocker: (
+                blocker.code.value,
+                blocker.store_id or "",
+                blocker.person_id or "",
+                blocker.business_date.isoformat() if blocker.business_date else "",
+                blocker.message,
             )
         )
         return CloseValidation(blockers=tuple(blockers))
 
     def _grid_blockers(self, *, tenant_id: str, month: Month) -> list[BlockerDetail]:
-        """Validate exact-revision grid completeness, anomalies and live inputs."""
+        """Validate grid completeness for every historical month participant."""
 
         policy = policy_for_rule_pack(get_default_rule_pack())
-        people = list(
-            self.session.execute(
-                select(Person).where(
-                    Person.tenant_id == tenant_id,
-                    Person.is_active.is_(True),
-                )
-            ).scalars()
+        participant_ids = month_participant_ids(
+            self.session,
+            tenant_id=tenant_id,
+            month=month,
+        )
+        people = (
+            list(
+                self.session.execute(
+                    select(Person).where(
+                        Person.tenant_id == tenant_id,
+                        Person.id.in_(participant_ids),
+                    )
+                ).scalars()
+            )
+            if participant_ids
+            else []
         )
         rows = list(
             self.session.execute(
@@ -107,12 +129,35 @@ class PolicyCloseService(CloseService):
 
         blockers: list[BlockerDetail] = []
         for person in sorted(people, key=lambda item: item.id):
+            home_resolution = payroll_home_store_for_month(
+                self.session,
+                tenant_id=tenant_id,
+                month=month,
+                person=person,
+            )
+            expected_home_store_id = home_resolution.store_id
+            if expected_home_store_id is None:
+                condition = "ambiguous" if home_resolution.ambiguous else "unresolved"
+                blockers.append(
+                    BlockerDetail(
+                        code=CloseBlockerCode.GRID_CURRENT_REVISION_REQUIRED,
+                        store_id=None,
+                        person_id=person.id,
+                        business_date=None,
+                        message=(
+                            f"person {person.id} payroll home store is {condition} for {month.id}; "
+                            f"candidates={list(home_resolution.candidate_store_ids)}"
+                        ),
+                    )
+                )
+                continue
+
             person_rows = rows_by_person.get(person.id, [])
             if len(person_rows) != 1:
                 blockers.append(
                     BlockerDetail(
                         code=CloseBlockerCode.GRID_CURRENT_REVISION_REQUIRED,
-                        store_id=person.home_store_id,
+                        store_id=expected_home_store_id,
                         person_id=person.id,
                         business_date=None,
                         message=(
@@ -124,7 +169,7 @@ class PolicyCloseService(CloseService):
                 continue
 
             row = person_rows[0]
-            if row.store_id != person.home_store_id:
+            if row.store_id != expected_home_store_id:
                 blockers.append(
                     BlockerDetail(
                         code=CloseBlockerCode.GRID_CURRENT_REVISION_REQUIRED,
@@ -132,8 +177,8 @@ class PolicyCloseService(CloseService):
                         person_id=person.id,
                         business_date=None,
                         message=(
-                            f"grid home store {row.store_id} does not match current home store "
-                            f"{person.home_store_id} for person {person.id}"
+                            f"grid home store {row.store_id} does not match historical payroll home "
+                            f"{expected_home_store_id} for person {person.id}"
                         ),
                     )
                 )
@@ -183,7 +228,7 @@ class PolicyCloseService(CloseService):
                 self.session,
                 tenant_id=tenant_id,
                 month_id=month.id,
-                store_id=person.home_store_id,
+                store_id=expected_home_store_id,
                 person_id=person.id,
             )
             expected_pair = (
@@ -229,7 +274,8 @@ class PolicyCloseService(CloseService):
     ) -> BlockerDetail | None:
         if not isinstance(anomaly, dict):
             return PolicyCloseService._invalid_grid_payload(
-                row, "grid anomaly entry is not an object"
+                row,
+                "grid anomaly entry is not an object",
             )
         code_value = anomaly.get("code")
         try:
@@ -271,7 +317,11 @@ class PolicyCloseService(CloseService):
     @staticmethod
     def _enforced_blockers(validation: CloseValidation) -> tuple[BlockerDetail, ...]:
         policy = policy_for_rule_pack(get_default_rule_pack())
-        return tuple(blocker for blocker in validation.blockers if policy.is_blocking(blocker.code))
+        return tuple(
+            blocker
+            for blocker in validation.blockers
+            if policy.is_blocking(blocker.code)
+        )
 
 
 __all__ = ["PolicyCloseService"]

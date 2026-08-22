@@ -9,34 +9,19 @@ Close contract
 --------------
 
 * Admin-only — non-admin callers get a typed ``FORBIDDEN`` response.
-* The ``Month`` row is acquired ``SELECT ... FOR UPDATE`` **before** any
-  state/revision decision, so two concurrent close attempts serialize and
-  exactly one succeeds; the loser observes the committed ``CLOSED`` state.
-* ``expected_revision`` (when provided) is validated against the locked
-  row, never against an unlocked pre-read.
-* Deterministic blocker detection over the full open-store/day lattice
-  (:func:`ugrile.domain.close.validate_close`); any blocker aborts the
-  transaction before state or audit rows are touched.
-* A successful close appends exactly one audit event and sets
-  ``state``/``revision`` together in the same transaction.
-* A successful close freezes all subsequent business writes (the existing
-  ``CalendarService`` already raises ``MONTH_CLOSED`` on any change).
+* The in-tenant ``Month`` row is acquired ``SELECT ... FOR UPDATE`` before any
+  state/revision decision, so concurrent close/write attempts serialize.
+* ``expected_revision`` (when provided) is validated against the locked row.
+* Deterministic blocker detection runs over the full open-store/day lattice.
+* A successful close appends exactly one audit event and sets state/revision in
+  the same transaction.
 
 Reopen contract
 ---------------
 
-* Admin-only — non-admin callers get a typed ``FORBIDDEN`` response.
-* The ``Month`` row is locked before the ``CLOSED`` state check.
-* Reason required (>= 4 chars, non-empty after trim).
-* ``months.revision`` is bumped; ``state`` flips ``CLOSED`` → ``REOPENED``.
-* A new audit chain entry is appended; the previous close row stays.
-
-Audit chain
------------
-
-Each event is chained by a deterministic digest (see
-:mod:`ugrile.domain.close`); ``MonthCloseEventRepository.verify_chain``
-proves the chain is intact.
+* Admin-only with a mandatory reason.
+* The same in-tenant month row is locked before the CLOSED state check.
+* The previous close remains append-only; reopen creates a new audit event.
 """
 
 from __future__ import annotations
@@ -68,12 +53,12 @@ from ..domain.errors import NotFoundError, ScopeError, StaleRevisionError, Valid
 from ..repositories.close import MonthCloseEventRepository
 from ..repositories.models import (
     Month,
-    Person,
     SalesStoreDay,
     SiteDayAssignment,
     Store,
     StoreTarget,
 )
+from .person_scope import effective_home_store_map
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,13 +89,13 @@ class CloseService:
         self.session = session
         self.audit = MonthCloseEventRepository(session)
 
-    # --- validation builders ---------------------------------------------
-
-    def _lock_month(self, month_id: str) -> Month:
-        """Lock the month row; returns the locked row (tenant-agnostic)."""
+    def _lock_month(self, *, tenant_id: str, month_id: str) -> Month:
+        """Lock only an in-tenant month row; foreign rows are never locked."""
 
         locked = self.session.execute(
-            select(Month).where(Month.id == month_id).with_for_update()
+            select(Month)
+            .where(Month.id == month_id, Month.tenant_id == tenant_id)
+            .with_for_update()
         ).scalar_one_or_none()
         if locked is None:
             raise NotFoundError(f"month not found: {month_id}")
@@ -133,13 +118,10 @@ class CloseService:
             ).scalars()
         )
         store_ids = sorted({store.id for store in stores})
-        # S3 authoritative open-store/day lattice: every active store for
-        # every date of the month. There is no separate closed-day table; a
-        # missing assignment row must never silently mean the store is closed.
         open_days = [
-            OpenStoreDay(store_id=store_id, business_date=d)
+            OpenStoreDay(store_id=store_id, business_date=business_date)
             for store_id in store_ids
-            for d in dates
+            for business_date in dates
         ]
         lattice = {(day.store_id, day.business_date) for day in open_days}
 
@@ -152,25 +134,26 @@ class CloseService:
                 )
             ).scalars()
         )
-        person_ids = {row.person_id for row in working}
-        home_stores: dict[str, str] = {}
-        if person_ids:
-            home_stores = {
-                person.id: person.home_store_id
-                for person in self.session.execute(
-                    select(Person).where(Person.tenant_id == tenant_id, Person.id.in_(person_ids))
-                ).scalars()
-            }
+        effective_home = effective_home_store_map(
+            self.session,
+            tenant_id=tenant_id,
+            person_ids={row.person_id for row in working},
+            business_dates={row.business_date for row in working},
+        )
         coverage: list[StoreCoverageSnapshot] = []
         person_days: list[PersonDaySnapshot] = []
         for row in working:
+            home_store_id = effective_home.get((row.person_id, row.business_date))
+            # Missing effective home history is financially ambiguous. Feed a
+            # missing working kind into the typed validator so close fails with
+            # INVALID_WORKING_KIND instead of silently trusting today's catalog.
             coverage.append(
                 StoreCoverageSnapshot(
                     store_id=row.store_id,
                     business_date=row.business_date,
                     person_id=row.person_id,
-                    working_kind=row.working_kind,
-                    person_home_store_id=home_stores.get(row.person_id),
+                    working_kind=row.working_kind if home_store_id is not None else None,
+                    person_home_store_id=home_store_id,
                 )
             )
             person_days.append(
@@ -193,19 +176,16 @@ class CloseService:
         sales_index: dict[tuple[str, date], bool] = {}
         for sale_row in sales:
             sales_index[(sale_row.store_id, sale_row.business_date)] = True
-        # Full-lattice sales availability, plus any sale rows that land
-        # outside the lattice (e.g. an inactive store) so orphan detection
-        # stays precise.
         sales_availability: list[SalesAvailabilitySnapshot] = []
-        for store_id, d in sorted(lattice):
+        for store_id, business_date in sorted(lattice):
             sales_availability.append(
                 SalesAvailabilitySnapshot(
                     store_id=store_id,
-                    business_date=d,
-                    has_sale=sales_index.get((store_id, d), False),
+                    business_date=business_date,
+                    has_sale=sales_index.get((store_id, business_date), False),
                 )
             )
-        for sale_row in sorted(sales, key=lambda s: (s.store_id, s.business_date)):
+        for sale_row in sorted(sales, key=lambda sale: (sale.store_id, sale.business_date)):
             if (sale_row.store_id, sale_row.business_date) not in lattice:
                 sales_availability.append(
                     SalesAvailabilitySnapshot(
@@ -231,14 +211,14 @@ class CloseService:
             existing = latest_targets.get(key)
             if existing is None or target_row.version > existing.version:
                 latest_targets[key] = target_row
-        for d in dates:
+        for business_date in dates:
             for store_id in store_ids:
-                target_lookup: StoreTarget | None = latest_targets.get((store_id, "MONTHLY_SALES"))
+                target_lookup = latest_targets.get((store_id, "MONTHLY_SALES"))
                 if target_lookup is None or target_lookup.amount <= 0:
                     target_availability.append(
                         StoreTargetAvailabilitySnapshot(
                             store_id=store_id,
-                            business_date=d,
+                            business_date=business_date,
                             has_target=False,
                             target_amount=Decimal("0"),
                         )
@@ -247,7 +227,7 @@ class CloseService:
                 target_availability.append(
                     StoreTargetAvailabilitySnapshot(
                         store_id=store_id,
-                        business_date=d,
+                        business_date=business_date,
                         has_target=True,
                         target_amount=target_lookup.amount,
                     )
@@ -256,7 +236,8 @@ class CloseService:
 
     def _validation(self, *, tenant_id: str, month: Month) -> CloseValidation:
         open_days, coverage, person_days, sales, targets = self._build_snapshots(
-            tenant_id=tenant_id, month=month
+            tenant_id=tenant_id,
+            month=month,
         )
         return validate_close(
             open_days=open_days,
@@ -269,20 +250,8 @@ class CloseService:
 
     @staticmethod
     def _enforced_blockers(validation: CloseValidation) -> tuple[BlockerDetail, ...]:
-        """Return the blockers that actually block close at S5a.
-
-        The typed S4/S5 deferred blockers (``EPAY_FRESH_READBACK_REQUIRED``,
-        ``SHEET_CANARY_REQUIRED``, ``EXTERNAL_RECONCILIATION_REQUIRED``)
-        are surfaced in the close checklist as informational items but
-        never fail close until their respective integration lands. The
-        S3 lattice blockers (STORE_DAY_UNCOVERED, etc.) remain
-        authoritative.
-        """
-
         deferred = set(deferred_blockers())
-        return tuple(b for b in validation.blockers if b.code not in deferred)
-
-    # --- public API -------------------------------------------------------
+        return tuple(blocker for blocker in validation.blockers if blocker.code not in deferred)
 
     def close_month(
         self,
@@ -296,11 +265,7 @@ class CloseService:
                 "admin role required to close a month",
                 details={"role": request.role_value, "actor_id": request.actor_id},
             )
-        locked = self._lock_month(month_id)
-        if locked.tenant_id != tenant_id:
-            raise NotFoundError("month not found")
-        # State and revision decisions happen only under the row lock, so two
-        # concurrent close attempts serialize and exactly one succeeds.
+        locked = self._lock_month(tenant_id=tenant_id, month_id=month_id)
         assert_close_state(locked.state)
         if request.expected_revision is not None and locked.revision != request.expected_revision:
             raise StaleRevisionError(
@@ -321,15 +286,17 @@ class CloseService:
                     "month_id": locked.id,
                     "blockers": [
                         {
-                            "code": b.code.value,
-                            "store_id": b.store_id,
-                            "person_id": b.person_id,
-                            "business_date": b.business_date.isoformat()
-                            if b.business_date
-                            else None,
-                            "message": b.message,
+                            "code": blocker.code.value,
+                            "store_id": blocker.store_id,
+                            "person_id": blocker.person_id,
+                            "business_date": (
+                                blocker.business_date.isoformat()
+                                if blocker.business_date
+                                else None
+                            ),
+                            "message": blocker.message,
                         }
-                        for b in enforced
+                        for blocker in enforced
                     ],
                 },
             )
@@ -337,9 +304,6 @@ class CloseService:
         revision_before = locked.revision
         locked.state = MonthState.CLOSED.value
         locked.revision = revision_before + 1
-        # Persist the full blocker list (enforced + deferred) in the audit
-        # chain so the manager UI can replay the close decision verbatim;
-        # only the enforced subset ever blocked close.
         audit = self.audit.append(
             tenant_id=tenant_id,
             month_id=locked.id,
@@ -352,13 +316,15 @@ class CloseService:
             reason=None,
             blockers=[
                 {
-                    "code": b.code.value,
-                    "store_id": b.store_id,
-                    "person_id": b.person_id,
-                    "business_date": b.business_date.isoformat() if b.business_date else None,
-                    "message": b.message,
+                    "code": blocker.code.value,
+                    "store_id": blocker.store_id,
+                    "person_id": blocker.person_id,
+                    "business_date": (
+                        blocker.business_date.isoformat() if blocker.business_date else None
+                    ),
+                    "message": blocker.message,
                 }
-                for b in validation.blockers
+                for blocker in validation.blockers
             ],
         )
         return CloseOutcome(
@@ -388,9 +354,7 @@ class CloseService:
                 error or "invalid reopen reason",
                 details={"code": "REOPEN_REASON_REQUIRED"},
             )
-        locked = self._lock_month(month_id)
-        if locked.tenant_id != tenant_id:
-            raise NotFoundError("month not found")
+        locked = self._lock_month(tenant_id=tenant_id, month_id=month_id)
         assert_reopen_state(locked.state)
         previous_state = locked.state
         revision_before = locked.revision
@@ -431,5 +395,4 @@ __all__ = [
 ]
 
 
-# Keep references visible for mypy / future imports.
 _ = BlockerDetail
