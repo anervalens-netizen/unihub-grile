@@ -4,11 +4,14 @@ import "@testing-library/jest-dom/vitest";
 import { Magazin } from "../src/pages/Magazin";
 import { Agent } from "../src/pages/Agent";
 import type { ApiClient, MonthSummary } from "../src/api/client";
+import type { Capability } from "../src/capabilities";
 
 const MONTH: MonthSummary = { id: "month_tenantacme_2026-08", tenant_id: "tenant_acme", year: 2026, month: 8, state: "OPEN", revision: 2, closed_at: null };
 const grid = { month_id: MONTH.id, year: 2026, month: 8, revision: 2, dates: ["2026-08-01"], legend: ["NORMAL"], rows: [{ row_id: "person_a", label: "Alice", home_store_id: "store_x", cells: [{ business_date: "2026-08-01", person_id: "person_a", store_id: "store_x", status: "WORKING", working_kind: "NORMAL", display_name: "Alice", home_store_id: "store_x", badge: "NORMAL", locked: false }] }] };
 const store = { id: "store_x", tenant_id: "tenant_acme", company_code: "ACME", internal_code: "SX", external_code: null, name: "Demo Store", is_active: true };
 const person = { id: "person_a", tenant_id: "tenant_acme", internal_code: "PA", external_code: null, display_name: "Alice", home_store_id: "store_x", is_active: true };
+const ADMIN_CAPABILITIES = new Set<Capability>(["schedule.read", "schedule.write", "grid.read", "epay.read", "sheet.read", "sheet.sync", "export.create"]);
+const MANAGER_CAPABILITIES = new Set<Capability>(["schedule.read", "schedule.write", "grid.read", "epay.read", "sheet.read"]);
 
 function apiForPage() {
   const calls: string[] = [];
@@ -28,9 +31,9 @@ function apiForPage() {
 }
 
 describe("Magazin and Agent contract routes", () => {
-  it("uses scoped routes and exposes command actions", async () => {
+  it("uses scoped routes and exposes admin command actions", async () => {
     const { api, calls } = apiForPage();
-    render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} />);
+    render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} capabilities={ADMIN_CAPABILITIES} />);
     expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
     expect(screen.getAllByText(/126/).length).toBeGreaterThan(0);
     expect(screen.getByText("g1")).toBeInTheDocument();
@@ -41,6 +44,16 @@ describe("Magazin and Agent contract routes", () => {
     expect(calls.some((path) => path.includes("/store/"))).toBe(false);
     expect((api.post as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([`/months/${MONTH.id}/sheet-projection/enqueue`, { store_id: "store_x" }]);
     expect((api.post as ReturnType<typeof vi.fn>).mock.calls[1]).toEqual([`/months/${MONTH.id}/export/store`, { store_id: "store_x" }]);
+  });
+
+  it("keeps manager calendar editing but removes admin-only sync/export actions", async () => {
+    const { api } = apiForPage();
+    render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} capabilities={MANAGER_CAPABILITIES} />);
+    expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Editează calendarul/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Sincronizează Sheet/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Exportă XLSX/i })).not.toBeInTheDocument();
+    expect(api.post).not.toHaveBeenCalled();
   });
 
   it("keeps the existing person-filtered Agent routes", async () => {
