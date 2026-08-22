@@ -21,7 +21,8 @@ Every authenticated UniHub Grile API route must have an explicit capability and 
 - `sheet.sync` — enqueue Sheet projection for an allowed store.
 - `export.read` — read/download export runs only when their requested store set is within scope.
 - `export.create` — enqueue exports for an allowed store set.
-- `month.read` — read month/checklist/audit.
+- `month.read` — read ordinary tenant month metadata.
+- `month.close.read` — read close checklist and close/reopen audit history; admin-only in the current product contract.
 - `month.close` — close a month; admin-only in the current product contract.
 - `month.reopen` — reopen a month with reason; admin-only.
 - `admin.fixture` — development/test fixture bootstrap only; never mounted in prod.
@@ -43,7 +44,7 @@ Admins are tenant-wide unless a more restrictive product rule applies. Managers 
 | salary/payroll master write | `payroll.master.write` | tenant person + selected month write gate | admin-only; CLOSED month rejects write |
 | holiday read | `holiday.read` | tenant month | authenticated role with capability |
 | holiday write/override | `holiday.write` | tenant month | admin-only |
-| close checklist / audit | `month.read` | tenant month | manager/admin read; backend remains authoritative |
+| close checklist / audit | `month.close.read` | tenant month | admin-only |
 | close | `month.close` | tenant month | admin-only |
 | reopen | `month.reopen` | tenant month | admin-only + reason |
 | E-pay freshness | `epay.read` | requested store | manager effective scope; admin tenant-wide |
