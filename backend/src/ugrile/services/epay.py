@@ -218,16 +218,18 @@ def record_readback(
         )
 
     prior_values: dict[tuple[str, str], int] = {}
-    for person_id in working_persons:
+    for existing_person_id in working_persons:
         snapshot = latest_snapshot(
             session,
             tenant_id=tenant_id,
             month_id=month_id,
             store_id=store_id,
-            person_id=person_id,
+            person_id=existing_person_id,
         )
-        prior_values[(person_id, EpayCategory.UNDER_50.value)] = snapshot.under_50_quantity
-        prior_values[(person_id, EpayCategory.AT_OR_OVER_50.value)] = (
+        prior_values[(existing_person_id, EpayCategory.UNDER_50.value)] = (
+            snapshot.under_50_quantity
+        )
+        prior_values[(existing_person_id, EpayCategory.AT_OR_OVER_50.value)] = (
             snapshot.at_or_over_50_quantity
         )
 
