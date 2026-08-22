@@ -1,30 +1,18 @@
-"""S5a service tests — close checklist surfaces the typed deferred blockers.
-
-The :class:`ugrile.services.overview.CloseChecklistService` already calls
-:func:`ugrile.domain.close.deferred_blockers`. The tests confirm the
-``EPAY_FRESH_READBACK_REQUIRED`` / ``SHEET_CANARY_REQUIRED`` /
-``EXTERNAL_RECONCILIATION_REQUIRED`` codes appear in the rendered
-checklist as informational items (severity preserved from
-``_SEVERITY``) and do not block close by themselves.
-"""
+"""Close-checklist tests for policy/freshness consistency."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from ugrile.domain.enums import (
-    CloseBlockerCode,
-    DayStatus,
-    MonthState,
-    WorkingKind,
-)
+from ugrile.domain.enums import CloseBlockerCode, DayStatus, MonthState, WorkingKind
 from ugrile.repositories.models import SalesStoreDay, SiteDayAssignment, StoreTarget
 from ugrile.repositories.months import MonthRepository
-from ugrile.services.overview import CloseChecklistService
+from ugrile.services.epay import record_readback
+from ugrile.services.policy_checklist import PolicyCloseChecklistService
 
 
-def _seed_clean_month(session, faker_tenant):
+def _seed_month(session, faker_tenant):
     month = MonthRepository(session).get_or_create(faker_tenant["tenant_id"], 2026, 8)
     month.state = MonthState.OPEN
     session.flush()
@@ -69,27 +57,64 @@ def _seed_clean_month(session, faker_tenant):
     return month
 
 
-def test_close_checklist_includes_typed_s4s5_blockers(session, faker_tenant):
-    month = _seed_clean_month(session, faker_tenant)
-    checklist = CloseChecklistService(session).month_checklist(
-        tenant_id=faker_tenant["tenant_id"], month=month
+def _checklist(session, faker_tenant, month):
+    return PolicyCloseChecklistService(session).month_checklist(
+        tenant_id=faker_tenant["tenant_id"],
+        month=month,
     )
-    codes = {item.code for item in checklist.blockers}
-    assert CloseBlockerCode.EPAY_FRESH_READBACK_REQUIRED.value in codes
-    assert CloseBlockerCode.SHEET_CANARY_REQUIRED.value in codes
-    assert CloseBlockerCode.EXTERNAL_RECONCILIATION_REQUIRED.value in codes
 
 
-def test_close_checklist_marks_deferred_blockers_with_severity(session, faker_tenant):
-    month = _seed_clean_month(session, faker_tenant)
-    checklist = CloseChecklistService(session).month_checklist(
-        tenant_id=faker_tenant["tenant_id"], month=month
+def test_stale_epay_is_visible_and_blocking(session, faker_tenant):
+    month = _seed_month(session, faker_tenant)
+    checklist = _checklist(session, faker_tenant, month)
+    epay_items = [
+        item
+        for item in checklist.blockers
+        if item.code == CloseBlockerCode.EPAY_FRESH_READBACK_REQUIRED.value
+    ]
+    assert epay_items
+    assert all(item.blocking for item in epay_items)
+
+
+def test_fresh_epay_removes_store_epay_blocker(session, faker_tenant):
+    month = _seed_month(session, faker_tenant)
+    result = record_readback(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        month_id=month.id,
+        store_id=faker_tenant["store_id"],
+        actor_id="user_admin",
+        observations=[
+            {
+                "person_id": faker_tenant["person_a_id"],
+                "category": "UNDER_50",
+                "value": 0,
+            },
+            {
+                "person_id": faker_tenant["person_a_id"],
+                "category": "AT_OR_OVER_50",
+                "value": 0,
+            },
+        ],
     )
-    severity_by_code = {
-        item.code: item.severity for item in checklist.blockers
-    }
-    # E-pay readback is severity 2 (typed but not enforced at S5a).
-    assert severity_by_code[CloseBlockerCode.EPAY_FRESH_READBACK_REQUIRED.value] == 2
-    # Sheet canary + external reconciliation are severity 3 (integration-stage).
-    assert severity_by_code[CloseBlockerCode.SHEET_CANARY_REQUIRED.value] == 3
-    assert severity_by_code[CloseBlockerCode.EXTERNAL_RECONCILIATION_REQUIRED.value] == 3
+    assert result.valid_count == 2
+    session.commit()
+
+    checklist = _checklist(session, faker_tenant, month)
+    store_epay_items = [
+        item
+        for item in checklist.blockers
+        if item.code == CloseBlockerCode.EPAY_FRESH_READBACK_REQUIRED.value
+        and faker_tenant["store_id"] in item.detail
+    ]
+    assert store_epay_items == []
+
+
+def test_sheet_and_external_evidence_are_visible_warnings(session, faker_tenant):
+    month = _seed_month(session, faker_tenant)
+    checklist = _checklist(session, faker_tenant, month)
+    by_code = {item.code: item for item in checklist.blockers}
+    assert by_code[CloseBlockerCode.SHEET_CANARY_REQUIRED.value].blocking is False
+    assert by_code[CloseBlockerCode.SHEET_CANARY_REQUIRED.value].severity == 3
+    assert by_code[CloseBlockerCode.EXTERNAL_RECONCILIATION_REQUIRED.value].blocking is False
+    assert by_code[CloseBlockerCode.EXTERNAL_RECONCILIATION_REQUIRED.value].severity == 3
