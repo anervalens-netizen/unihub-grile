@@ -2,9 +2,10 @@
 
 Final close must not trust a grid row merely because its calendar revision is
 current. Salary master, incentives, targets and connector sales can change
-without incrementing ``Month.revision``. This module compares the canonical
-financial values persisted in a grid payload with the values that are
-currently authoritative in the database and fails closed on any mismatch.
+without incrementing ``Month.revision``. A persisted payload can also be
+partial or corrupted while retaining a current-looking revision. This module
+therefore checks current authoritative values, validates the payload hashes,
+and reconstructs the complete current canonical grid before close.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..domain.rule_pack import hash_inputs
 from ..repositories.models import (
     GridCalculation,
     IncentiveInput,
@@ -26,6 +28,7 @@ from ..repositories.models import (
     StoreTarget,
 )
 from ..repositories.salary import SalaryRepository
+from .grid import GridService
 
 
 def _as_decimal(value: object) -> Decimal | None:
@@ -88,6 +91,65 @@ def _latest_sale(
     ).scalar_one_or_none()
 
 
+def _payload_integrity_mismatch(
+    payload: dict[str, object], row: GridCalculation
+) -> str | None:
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, dict):
+        return "grid payload has no canonical inputs"
+    components = payload.get("components")
+    if not isinstance(components, dict):
+        return "grid payload has no canonical components"
+    anomalies = payload.get("anomalies")
+    if not isinstance(anomalies, list):
+        return "grid payload has no canonical anomalies"
+    if hash_inputs(inputs) != row.inputs_hash:
+        return "persisted inputs_hash does not match the grid payload"
+    if hash_inputs(components) != row.outputs_hash:
+        return "persisted outputs_hash does not match the grid payload"
+    return None
+
+
+def _current_snapshot_mismatch(
+    session: Session,
+    *,
+    tenant_id: str,
+    month: Month,
+    person: Person,
+    row: GridCalculation,
+    payload: dict[str, object],
+) -> str | None:
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, dict):
+        return "grid payload has no canonical inputs"
+    sales_generation = inputs.get("sales_generation")
+    if not isinstance(sales_generation, str) or not sales_generation:
+        return "grid payload has no sales generation discriminator"
+
+    expected = GridService(session).compute_for_person(
+        tenant_id=tenant_id,
+        month=month,
+        person=person,
+        sales_generation=sales_generation,
+    )
+    if expected.inputs_hash != row.inputs_hash:
+        return (
+            "complete current canonical input hash differs from the persisted grid: "
+            f"grid={row.inputs_hash}, current={expected.inputs_hash}"
+        )
+    if expected.outputs_hash != row.outputs_hash:
+        return (
+            "complete current canonical output hash differs from the persisted grid: "
+            f"grid={row.outputs_hash}, current={expected.outputs_hash}"
+        )
+
+    persisted_anomalies = payload.get("anomalies")
+    expected_anomalies = list(expected.anomalies)
+    if persisted_anomalies != expected_anomalies:
+        return "persisted grid anomalies differ from the complete current calculation"
+    return None
+
+
 def financial_input_mismatch(
     session: Session,
     *,
@@ -96,11 +158,13 @@ def financial_input_mismatch(
     person: Person,
     row: GridCalculation,
 ) -> str | None:
-    """Return the first stale canonical financial fact, else ``None``.
+    """Return the first stale/corrupt canonical financial fact, else ``None``.
 
-    The comparison intentionally ignores E-pay because ``PolicyCloseService``
-    validates the month-bound E-pay snapshot separately. Calendar/Pontaj
-    changes are already protected by the exact ``Month.revision`` requirement.
+    E-pay is additionally checked by ``PolicyCloseService`` against the exact
+    month-bound last-good snapshot. Calendar/Pontaj changes are guarded by the
+    exact month revision, while the complete recomputation below proves that a
+    persisted row cannot omit days, alter components or forge matching-looking
+    revision metadata.
     """
 
     try:
@@ -116,6 +180,7 @@ def financial_input_mismatch(
     if not isinstance(parameters, dict):
         return "grid payload has no canonical parameters"
 
+    # First produce human-readable source mismatches for operational diagnosis.
     first_day = date(month.year, month.month, 1)
     salary, tickets, flip = SalaryRepository(session).find_effective_window(
         tenant_id=tenant_id,
@@ -197,7 +262,17 @@ def financial_input_mismatch(
                 f"grid={actual_target}, current={expected_target}"
             )
 
-    return None
+    integrity_mismatch = _payload_integrity_mismatch(payload, row)
+    if integrity_mismatch is not None:
+        return integrity_mismatch
+    return _current_snapshot_mismatch(
+        session,
+        tenant_id=tenant_id,
+        month=month,
+        person=person,
+        row=row,
+        payload=payload,
+    )
 
 
 __all__ = ["financial_input_mismatch"]
