@@ -1,9 +1,4 @@
-"""FastAPI application entry point.
-
-The app is intentionally small at S1 — health/readiness, catalog, months,
-assignments, ingest, worker probe — to prove the seams without committing
-to product surface area that S2 will define.
-"""
+"""FastAPI application entry point."""
 
 from __future__ import annotations
 
@@ -35,12 +30,11 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
         title="ugrile-backend",
-        version="0.1.0",
+        version="0.2.0",
         description=(
-            "UniHub Grile standalone foundation. S1/S2/S3: stack, schema, calendar, "
-            "derived Pontaj, XLSX schedule import, fixture connector, auth/scopes "
-            "seam, one worker, sales attribution, rule-pack/grid engine, "
-            "admin-only close/reopen core."
+            "UniHub Grile standalone plugin candidate: calendar, derived Pontaj, "
+            "sales attribution, versioned grid engine, Google/XLSX projections, "
+            "audited close/reopen and explicit future Retail integration seams."
         ),
     )
 
@@ -59,15 +53,18 @@ def create_app() -> FastAPI:
     def _version() -> dict[str, str]:
         return {
             "app": "ugrile-backend",
-            "stage": "S3",
-            "version": "0.1.0",
+            "program": "standalone-plugin-candidate",
+            "version": "0.2.0",
             "env": settings.app_env,
         }
 
     app.include_router(health_router)
     app.include_router(catalog_router)
     app.include_router(assignments_router)
-    app.include_router(ingest_router)
+    # Fixture ingestion is a development/test tool and must not even be
+    # discoverable in a production OpenAPI surface.
+    if settings.app_env != "prod":
+        app.include_router(ingest_router)
     app.include_router(schedule_router)
     app.include_router(grid_router)
     app.include_router(close_router)
