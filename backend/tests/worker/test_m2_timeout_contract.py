@@ -9,10 +9,10 @@ from ugrile.worker.policy import retry_policy_for
 from ugrile.worker.worker import enqueue, run_once
 
 
-def test_timeout_error_retries_with_backoff_then_exhausts(
+def test_google_provider_timeout_retries_with_backoff_then_exhausts(
     monkeypatch, session, faker_tenant
 ):
-    """A provider-style timeout follows the bounded retry contract (JOB-011)."""
+    """A Google-provider timeout follows its bounded retry contract (JOB-011)."""
 
     def timeout_handler(_session, _tenant_id, _payload):
         raise TimeoutError("provider request timed out")
@@ -21,11 +21,11 @@ def test_timeout_error_retries_with_backoff_then_exhausts(
     queued = enqueue(
         session,
         tenant_id=faker_tenant["tenant_id"],
-        kind=JobKind.NOOP.value,
+        kind=JobKind.GOOGLE_PROJECTION_STORE.value,
         idempotency_key="timeout-provider-contract",
     )
     session.commit()
-    policy = retry_policy_for(JobKind.NOOP.value)
+    policy = retry_policy_for(JobKind.GOOGLE_PROJECTION_STORE.value)
 
     for attempt in range(1, policy.max_attempts + 1):
         current = session.get(OutboxJob, queued.id)
