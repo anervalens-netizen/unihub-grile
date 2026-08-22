@@ -1,11 +1,9 @@
-"""Financial close orchestration layered on the legacy close snapshot builder.
+"""Financial close orchestration layered on the close snapshot builder.
 
-This service keeps the proven transaction/locking/audit implementation from
-``CloseService`` while applying the versioned close policy. Final close requires
-fresh month-bound E-pay plus one valid grid snapshot for every active person at
-the exact current month revision. Persisted grid anomalies are enforced here,
-not merely classified in policy metadata. The persisted financial values are
-also revalidated against their current authoritative sources before close.
+Final close requires fresh month-bound E-pay plus one valid grid snapshot for
+every historical payroll participant at the exact current month revision.
+Current ``Person.is_active`` is not historical truth: a leaver with month
+participation remains part of payroll and therefore remains a close obligation.
 """
 
 from __future__ import annotations
@@ -25,6 +23,7 @@ from ..repositories.models import GridCalculation, Month, Person, Store
 from .close import CloseService
 from .epay import freshness_for_month
 from .financial_inputs import financial_input_mismatch
+from .month_participants import month_participant_ids
 
 
 class PolicyCloseService(CloseService):
@@ -69,27 +68,36 @@ class PolicyCloseService(CloseService):
 
         blockers.extend(self._grid_blockers(tenant_id=tenant_id, month=month))
         blockers.sort(
-            key=lambda b: (
-                b.code.value,
-                b.store_id or "",
-                b.person_id or "",
-                b.business_date.isoformat() if b.business_date else "",
-                b.message,
+            key=lambda blocker: (
+                blocker.code.value,
+                blocker.store_id or "",
+                blocker.person_id or "",
+                blocker.business_date.isoformat() if blocker.business_date else "",
+                blocker.message,
             )
         )
         return CloseValidation(blockers=tuple(blockers))
 
     def _grid_blockers(self, *, tenant_id: str, month: Month) -> list[BlockerDetail]:
-        """Validate exact-revision grid completeness, anomalies and live inputs."""
+        """Validate grid completeness for every historical month participant."""
 
         policy = policy_for_rule_pack(get_default_rule_pack())
-        people = list(
-            self.session.execute(
-                select(Person).where(
-                    Person.tenant_id == tenant_id,
-                    Person.is_active.is_(True),
-                )
-            ).scalars()
+        participant_ids = month_participant_ids(
+            self.session,
+            tenant_id=tenant_id,
+            month=month,
+        )
+        people = (
+            list(
+                self.session.execute(
+                    select(Person).where(
+                        Person.tenant_id == tenant_id,
+                        Person.id.in_(participant_ids),
+                    )
+                ).scalars()
+            )
+            if participant_ids
+            else []
         )
         rows = list(
             self.session.execute(
@@ -229,7 +237,8 @@ class PolicyCloseService(CloseService):
     ) -> BlockerDetail | None:
         if not isinstance(anomaly, dict):
             return PolicyCloseService._invalid_grid_payload(
-                row, "grid anomaly entry is not an object"
+                row,
+                "grid anomaly entry is not an object",
             )
         code_value = anomaly.get("code")
         try:
@@ -271,7 +280,11 @@ class PolicyCloseService(CloseService):
     @staticmethod
     def _enforced_blockers(validation: CloseValidation) -> tuple[BlockerDetail, ...]:
         policy = policy_for_rule_pack(get_default_rule_pack())
-        return tuple(blocker for blocker in validation.blockers if policy.is_blocking(blocker.code))
+        return tuple(
+            blocker
+            for blocker in validation.blockers
+            if policy.is_blocking(blocker.code)
+        )
 
 
 __all__ = ["PolicyCloseService"]
