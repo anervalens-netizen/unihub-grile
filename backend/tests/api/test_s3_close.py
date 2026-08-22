@@ -7,12 +7,10 @@ from decimal import Decimal
 
 from ugrile.connectors.fixtures import FIXTURE_GENERATION
 from ugrile.domain.enums import DayStatus, MonthState, WorkingKind
-from ugrile.repositories.models import (
-    SalesStoreDay,
-    StoreTarget,
-)
+from ugrile.repositories.models import SalesStoreDay, StoreTarget
 from ugrile.repositories.months import MonthRepository
 from ugrile.services.calendar import CalendarChange, CalendarService
+from ugrile.services.epay import record_readback
 
 ADMIN = {"X-Ugrile-Identity": "user_admin", "X-Ugrile-Tenant": "tenant_acme"}
 MANAGER = {"X-Ugrile-Identity": "user_manager", "X-Ugrile-Tenant": "tenant_acme"}
@@ -21,7 +19,7 @@ AUGUST_2026_DAYS = [date(2026, 8, day) for day in range(1, 32)]
 
 
 def _seed_clean_month(client, faker_tenant, session):
-    """Seed sales + targets for every day and cover both stores all month."""
+    """Seed all final-close inputs and cover both stores for the full month."""
 
     session.add_all(
         [
@@ -98,6 +96,25 @@ def _seed_clean_month(client, faker_tenant, session):
             for d in AUGUST_2026_DAYS
         ],
     )
+    # Final close now correctly requires a fresh valid pair for each E-pay
+    # category of every person who worked in the store during the month.
+    for store_id, person_id in (
+        (faker_tenant["store_id"], faker_tenant["person_a_id"]),
+        (faker_tenant["other_store_id"], faker_tenant["person_c_id"]),
+    ):
+        result = record_readback(
+            session,
+            tenant_id=faker_tenant["tenant_id"],
+            month_id=month.id,
+            store_id=store_id,
+            actor_id="user_admin",
+            observations=[
+                {"person_id": person_id, "category": "UNDER_50", "value": 0},
+                {"person_id": person_id, "category": "AT_OR_OVER_50", "value": 0},
+            ],
+        )
+        assert result.valid_count == 2
+        assert result.invalid_count == 0
     session.commit()
     return month.id
 
@@ -121,7 +138,7 @@ def test_close_blocks_when_sale_missing(engine, faker_tenant, client):
 
     with database.session_scope() as session:
         # Targets are seeded so TARGET_ZERO does not fire — only the
-        # missing sale blocker should be reported.
+        # missing sale blocker should be reported among the structural facts.
         session.add_all(
             [
                 StoreTarget(
