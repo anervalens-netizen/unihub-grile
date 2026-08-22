@@ -28,8 +28,8 @@ from ugrile.core import database
 
 pytestmark = [pytest.mark.postgres, pytest.mark.performance]
 
-# PostgreSQL optimized calibration, run 32586557983 / head 6fc506e:
-# overview=21, program=6, grid=5, store_screen=73 SELECTs. These ceilings are
+# PostgreSQL optimized calibration, run 32589115250 / head 911ae5b:
+# overview=21, program=6, grid=5, store_screen=43 SELECTs. These ceilings are
 # locked to the improved measured counts so any additional SQL round-trip is a
 # visible regression. Latency ceilings remain deliberately wider than the
 # sample to avoid treating shared-runner jitter as an application failure.
@@ -37,7 +37,7 @@ QUERY_BUDGETS = {
     "overview": 21,
     "program": 6,
     "grid": 5,
-    "store_screen": 73,
+    "store_screen": 43,
 }
 LATENCY_BUDGET_MS = {
     "overview": 2000.0,

@@ -313,36 +313,42 @@ class CalendarService:
         revision_before = month.revision
         new_revision = revision_before + 1
         row_source = source[:32] or "SYSTEM"
+        assignment_values: list[dict[str, object]] = []
+        absence_values: list[dict[str, object]] = []
         for change in sorted(
             candidate.values(),
             key=lambda item: (item.business_date, item.person_id),
         ):
             if change.status == DayStatus.WORKING:
-                self.session.add(
-                    AssignmentRow(
-                        tenant_id=tenant_id,
-                        month_id=month.id,
-                        store_id=change.store_id or "",
-                        person_id=change.person_id,
-                        business_date=change.business_date,
-                        status=change.status.value,
-                        working_kind=(
+                assignment_values.append(
+                    {
+                        "tenant_id": tenant_id,
+                        "month_id": month.id,
+                        "store_id": change.store_id or "",
+                        "person_id": change.person_id,
+                        "business_date": change.business_date,
+                        "status": change.status.value,
+                        "working_kind": (
                             change.working_kind.value if change.working_kind else None
                         ),
-                        revision=new_revision,
-                        source=row_source,
-                    )
+                        "revision": new_revision,
+                        "source": row_source,
+                    }
                 )
             else:
-                self.session.add(
-                    PersonDayAbsence(
-                        tenant_id=tenant_id,
-                        month_id=month.id,
-                        person_id=change.person_id,
-                        business_date=change.business_date,
-                        status=change.status.value,
-                    )
+                absence_values.append(
+                    {
+                        "tenant_id": tenant_id,
+                        "month_id": month.id,
+                        "person_id": change.person_id,
+                        "business_date": change.business_date,
+                        "status": change.status.value,
+                    }
                 )
+        if assignment_values:
+            self.session.execute(insert(AssignmentRow), assignment_values)
+        if absence_values:
+            self.session.execute(insert(PersonDayAbsence), absence_values)
         month.revision = new_revision
         self.session.flush()
 
@@ -381,12 +387,25 @@ class CalendarService:
             )
             for row in absence_rows
         ]
+
+        dates = [
+            date(month.year, month.month, day)
+            for day in range(1, monthrange(month.year, month.month)[1] + 1)
+        ]
+        participants = sorted(
+            month_participant_ids(
+                self.session,
+                tenant_id=tenant_id,
+                month=month,
+            )
+        )
+        person_cal = derive_person_calendar(domains, participants, dates)
+        pontaj = derive_pontaj(person_cal, hours)
         self._materialize_pontaj(
             tenant_id=tenant_id,
             month=month,
             revision=new_revision,
-            domains=domains,
-            hours=hours,
+            rows=pontaj,
         )
         AttributionService(self.session).rebuild_for_month(
             month=month,
@@ -424,17 +443,6 @@ class CalendarService:
             },
         )
 
-        dates = [
-            date(month.year, month.month, day)
-            for day in range(1, monthrange(month.year, month.month)[1] + 1)
-        ]
-        participants = sorted(
-            month_participant_ids(
-                self.session,
-                tenant_id=tenant_id,
-                month=month,
-            )
-        )
         stores_all = sorted(
             {
                 store.id
@@ -446,14 +454,13 @@ class CalendarService:
                 ).scalars()
             }
         )
-        person_cal = derive_person_calendar(domains, participants, dates)
         return CalendarResult(
             month.id,
             new_revision,
             rows,
             person_cal,
             derive_store_coverage(domains, stores_all, dates),
-            derive_pontaj(person_cal, hours),
+            pontaj,
         )
 
     def _materialize_pontaj(
@@ -462,41 +469,40 @@ class CalendarService:
         tenant_id: str,
         month: Month,
         revision: int,
-        domains: list[SiteDayAssignment],
-        hours: HoursConfig,
+        rows: list[PontajDay],
     ) -> None:
-        """Persist the complete historical-participant/day Pontaj lattice."""
+        """Persist one complete immutable Pontaj revision efficiently."""
 
-        all_days = [
-            date(month.year, month.month, day)
-            for day in range(1, monthrange(month.year, month.month)[1] + 1)
+        values = [
+            {
+                "tenant_id": tenant_id,
+                "month_id": month.id,
+                "person_id": row.person_id,
+                "business_date": row.business_date,
+                "revision": revision,
+                "status": row.status.value,
+                "start_time": row.start,
+                "end_time": row.end,
+                "pause_minutes": row.pause_minutes,
+                "hours": row.hours,
+            }
+            for row in rows
         ]
-        participants = sorted(
-            month_participant_ids(
-                self.session,
-                tenant_id=tenant_id,
-                month=month,
+        if not values:
+            return
+
+        dialect_name = self.session.get_bind().dialect.name
+        if dialect_name == "sqlite":
+            # SQLite's in-process executemany path is substantially faster than
+            # compiling one very large multi-value statement for this lattice.
+            self.session.execute(insert(PontajProjection), values)
+            return
+
+        # PostgreSQL/production: ten bound columns per row. 3,000 rows stays
+        # below the parameter ceiling while the realistic 4,960-row lattice is
+        # persisted in two statements instead of thousands of driver executions.
+        chunk_size = 3000
+        for start in range(0, len(values), chunk_size):
+            self.session.execute(
+                insert(PontajProjection).values(values[start : start + chunk_size])
             )
-        )
-        rows = derive_pontaj(
-            derive_person_calendar(domains, participants, all_days),
-            hours,
-        )
-        self.session.execute(
-            insert(PontajProjection),
-            [
-                {
-                    "tenant_id": tenant_id,
-                    "month_id": month.id,
-                    "person_id": row.person_id,
-                    "business_date": row.business_date,
-                    "revision": revision,
-                    "status": row.status.value,
-                    "start_time": row.start,
-                    "end_time": row.end,
-                    "pause_minutes": row.pause_minutes,
-                    "hours": row.hours,
-                }
-                for row in rows
-            ],
-        )
