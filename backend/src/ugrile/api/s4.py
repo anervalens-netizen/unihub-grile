@@ -1,20 +1,8 @@
-"""S4 Manager UI read/write endpoints.
+"""Manager UI read/write endpoints.
 
-These endpoints power the manager UI pages (Overview, Program, Magazin,
-Agent, Exceptii, Close). They are designed to honour the S4 contract:
-
-* the Overview page reads one aggregate request (no per-store fan-out);
-* the Program page returns the full 31-day matrix in one response so the
-  client can virtualize rows;
-* the Exceptions page returns the typed list sorted by severity;
-* the Close page returns the close checklist (typed blockers + revision),
-  accepts the reopen with reason (admin-only, >= 4 chars) and exposes the
-  audit timeline;
-* job state (export/projection) is exposed via the existing worker API.
-
-All read endpoints stay inside the caller's tenant. The manager scope
-filter (``effective_store_ids``) is applied so out-of-scope stores never
-appear in the response.
+These endpoints power the standalone plugin-candidate manager pages: Overview,
+Program, Magazin, Agent, Excepții and Close. Resource visibility remains
+manager-scope aware and every route declares an operation capability explicitly.
 """
 
 from __future__ import annotations
@@ -50,23 +38,15 @@ from ..domain.enums import DayStatus, MonthState, WorkingKind
 from ..domain.errors import DomainError, ScopeError
 from ..repositories.models import Month, Person, PontajProjection, SiteDayAssignment
 from ..repositories.months import MonthRepository
-from ..services.auth import (
-    Principal,
-    assert_admin,
-    assert_manager_or_admin,
-    assert_same_tenant,
-    effective_store_ids,
-)
+from ..services.auth import Principal, assert_same_tenant, effective_store_ids
+from ..services.authorization import Capability, authorize
 from ..services.calendar import CalendarChange, CalendarService
-from ..services.close import CloseService, ReopenRequest
-from ..services.overview import (
-    CloseChecklistService,
-    ExceptionService,
-    OverviewService,
-    ProgramService,
-)
+from ..services.close import ReopenRequest
+from ..services.overview import ExceptionService, OverviewService, ProgramService
+from ..services.policy_checklist import PolicyCloseChecklistService
+from ..services.policy_close import PolicyCloseService
 
-router = APIRouter(prefix="/months", tags=["s4-manager-ui"])
+router = APIRouter(prefix="/months", tags=["manager-ui"])
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +81,7 @@ def get_overview(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> OverviewOut:
+    authorize(principal, Capability.SCHEDULE_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     report = OverviewService(session).month_overview(
@@ -127,7 +108,7 @@ def get_overview(
 
 
 # ---------------------------------------------------------------------------
-# Program (per magazine / per agenti)
+# Program (per magazine / per agenți)
 # ---------------------------------------------------------------------------
 
 
@@ -139,29 +120,51 @@ def get_program_choices(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> ProgramChoicesOut:
+    authorize(principal, Capability.SCHEDULE_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     if business_date.year != month.year or business_date.month != month.month:
-        raise ScopeError("business date is outside requested month", details={"business_date": business_date.isoformat()})
+        raise ScopeError(
+            "business date is outside requested month",
+            details={"business_date": business_date.isoformat()},
+        )
     allowed = effective_store_ids(session, principal, business_date)
     if store_id not in allowed:
-        raise ScopeError("requested store is outside manager scope", details={"store_id": store_id, "business_date": business_date.isoformat()})
-    people = list(session.execute(select(Person).where(
-        Person.tenant_id == principal.tenant_id,
-        Person.is_active.is_(True),
-        Person.home_store_id.in_(allowed),
-    ).order_by(Person.display_name)).scalars())
+        raise ScopeError(
+            "requested store is outside manager scope",
+            details={"store_id": store_id, "business_date": business_date.isoformat()},
+        )
+    people = list(
+        session.execute(
+            select(Person)
+            .where(
+                Person.tenant_id == principal.tenant_id,
+                Person.is_active.is_(True),
+                Person.home_store_id.in_(allowed),
+            )
+            .order_by(Person.display_name)
+        ).scalars()
+    )
     choices = [
         ProgramChoiceOut(
             person_id=person.id,
             display_name=person.display_name,
             home_store_id=person.home_store_id,
             allowed_store_ids=sorted(allowed),
-            working_kinds=[WorkingKind.NORMAL, WorkingKind.EXTRA_HOME, WorkingKind.EXTRA_OTHER],
+            working_kinds=[
+                WorkingKind.NORMAL,
+                WorkingKind.EXTRA_HOME,
+                WorkingKind.EXTRA_OTHER,
+            ],
         )
         for person in people
     ]
-    return ProgramChoicesOut(month_id=month.id, business_date=business_date, store_id=store_id, choices=choices)
+    return ProgramChoicesOut(
+        month_id=month.id,
+        business_date=business_date,
+        store_id=store_id,
+        choices=choices,
+    )
 
 
 @router.get("/{month_id}/program", response_model=ProgramGridOut)
@@ -171,6 +174,7 @@ def get_program(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> ProgramGridOut:
+    authorize(principal, Capability.SCHEDULE_READ)
     if perspective not in {"stores", "people"}:
         raise ScopeError("perspective must be 'stores' or 'people'")
     month = MonthRepository(session).get(month_id)
@@ -208,14 +212,9 @@ def post_program_cell(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> CalendarProjectionOut:
-    """Edit a single calendar cell (click-cell → choose agent + classification).
+    """Edit one calendar cell using the same CAS service as XLSX import."""
 
-    The atomic CAS is the same :class:`CalendarService` used by the XLSX
-    import; ``expected_revision`` keeps the manager UI aligned with the
-    server revision and produces a 409 on a stale client.
-    """
-
-    assert_manager_or_admin(principal)
+    authorize(principal, Capability.SCHEDULE_WRITE)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     if month.state == MonthState.CLOSED.value:
@@ -275,6 +274,7 @@ def get_exceptions(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> list[ExceptionOut]:
+    authorize(principal, Capability.SCHEDULE_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     entries = ExceptionService(session).month_exceptions(
@@ -296,10 +296,12 @@ def get_close_checklist(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> CloseChecklistOut:
+    authorize(principal, Capability.MONTH_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
-    checklist = CloseChecklistService(session).month_checklist(
-        tenant_id=principal.tenant_id, month=month
+    checklist = PolicyCloseChecklistService(session).month_checklist(
+        tenant_id=principal.tenant_id,
+        month=month,
     )
     return CloseChecklistOut(
         month_id=checklist.month_id,
@@ -320,17 +322,13 @@ def post_reopen(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> CloseChecklistOut:
-    """Admin-only reopen with a reason (>= 4 chars).
+    """Admin-only reopen with mandatory reason and refreshed policy checklist."""
 
-    Returns the new close checklist so the manager UI can refresh the
-    state and the blocker list in one round trip.
-    """
-
-    assert_admin(principal)
+    authorize(principal, Capability.MONTH_REOPEN)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     try:
-        CloseService(session).reopen_month(
+        PolicyCloseService(session).reopen_month(
             tenant_id=principal.tenant_id,
             month_id=month_id,
             request=ReopenRequest(
@@ -348,10 +346,10 @@ def post_reopen(
                 "details": exc.details,
             },
         ) from exc
-    # Refresh the locked month so the checklist reflects the new state.
     session.refresh(month)
-    checklist = CloseChecklistService(session).month_checklist(
-        tenant_id=principal.tenant_id, month=month
+    checklist = PolicyCloseChecklistService(session).month_checklist(
+        tenant_id=principal.tenant_id,
+        month=month,
     )
     return CloseChecklistOut(
         month_id=checklist.month_id,
@@ -376,13 +374,9 @@ def get_pontaj_totals(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> dict[str, object]:
-    """Per-person monthly Pontaj totals (hours + day counts).
+    """Per-person monthly Pontaj totals (hours + day counts)."""
 
-    The full per-day projection lives in
-    :func:`ugrile.api.schedule.get_pontaj`. The totals endpoint is the
-    summary used by the Magazin and Agent pages.
-    """
-
+    authorize(principal, Capability.SCHEDULE_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     allowed = _allowed_by_date(session, principal, month)
@@ -397,14 +391,18 @@ def get_pontaj_totals(
     )
     by_person: dict[str, dict[str, float | int]] = {}
     for row in rows:
-        person = session.execute(
-            select(SiteDayAssignment).where(
-                SiteDayAssignment.tenant_id == principal.tenant_id,
-                SiteDayAssignment.month_id == month.id,
-                SiteDayAssignment.person_id == row.person_id,
-                SiteDayAssignment.business_date == row.business_date,
+        person = (
+            session.execute(
+                select(SiteDayAssignment).where(
+                    SiteDayAssignment.tenant_id == principal.tenant_id,
+                    SiteDayAssignment.month_id == month.id,
+                    SiteDayAssignment.person_id == row.person_id,
+                    SiteDayAssignment.business_date == row.business_date,
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         home_store = person.store_id if person else None
         if home_store and home_store not in allowed.get(row.business_date, set()):
             continue
