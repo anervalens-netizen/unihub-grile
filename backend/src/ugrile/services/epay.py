@@ -12,11 +12,11 @@ Freshness contract
 ------------------
 
 Each successful call records an ``observed_at`` per ``(tenant, store,
-person, category)``. The close checklist surfaces
-``EPAY_FRESH_READBACK_REQUIRED`` when there is no observation in the
-month window for any agent/category that participates in the
-calculation. The actual readback authority stays with the S5a admin
-endpoint; S6 will replace it with the Google Sheet canary source.
+person, category)`` and a deterministic source discriminator bound to the
+requested payroll month. The close checklist surfaces
+``EPAY_FRESH_READBACK_REQUIRED`` when there is no observation in the freshness
+window for any month-bound agent/category that participates in the calculation.
+A recent readback from another month can never satisfy this check.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from ..domain.enums import EpayCategory
 from ..domain.errors import NotFoundError, ValidationError
+from ..repositories.epay import month_source
 from ..repositories.models import (
     EpayObservation,
     Person,
@@ -57,7 +58,6 @@ def _parse_quantity(raw: Any) -> tuple[int | None, str | None, bool]:
     if raw is None:
         return None, None, False
     if isinstance(raw, bool):
-        # bool is a subclass of int but never a valid E-pay input.
         return None, str(raw), False
     if isinstance(raw, int):
         value = raw
@@ -66,7 +66,6 @@ def _parse_quantity(raw: Any) -> tuple[int | None, str | None, bool]:
             return value, raw_text, True
         return None, raw_text, False
     if isinstance(raw, float):
-        # A fraction (e.g. 1.5) is invalid even though float is a number.
         raw_text = repr(raw)
         if raw.is_integer():
             value = int(raw)
@@ -88,8 +87,6 @@ def _parse_quantity(raw: Any) -> tuple[int | None, str | None, bool]:
 
 @dataclass(frozen=True, slots=True)
 class EpayReadbackItem:
-    """One parsed E-pay observation result."""
-
     person_id: str
     category: str
     value: int | None
@@ -99,13 +96,6 @@ class EpayReadbackItem:
 
 @dataclass(frozen=True, slots=True)
 class EpayReadbackResult:
-    """Outcome of one readback call.
-
-    The ``valid_count`` and ``invalid_count`` are exposed so the manager
-    UI can render the audit summary; ``observed_at`` is the canonical
-    timestamp used by the freshness check in the close checklist.
-    """
-
     store_id: str
     month_id: str
     observed_at: datetime
@@ -116,8 +106,6 @@ class EpayReadbackResult:
 
 @dataclass(frozen=True, slots=True)
 class EpayFreshnessReport:
-    """Summary used by the close checklist."""
-
     is_fresh: bool
     fresh_count: int
     expected_count: int
@@ -170,27 +158,16 @@ def record_readback(
     observations: list[dict[str, Any]],
     actor_id: str,
 ) -> EpayReadbackResult:
-    """Persist one readback call.
+    """Persist one month-bound readback call.
 
-    ``observations`` is a list of dicts ``{person_id, category, value}``.
-    ``category`` must be ``UNDER_50`` or ``AT_OR_OVER_50``; ``value`` is
-    the raw input (integer 0..10, blank, text, fraction, negative, or
-    >10). Invalid rows are persisted with ``is_valid=False`` and
-    ``raw_value`` preserved; only valid rows feed the grid engine via
-    :func:`ugrile.repositories.epay.latest_snapshot`.
-
-    AC-13 ``exact-four-cells`` contract:
-
-    * The list must contain exactly one entry per (person, category) pair
-      belonging to the store/month's WORKING agents — i.e. at most
-      ``len(working_agents) * 2`` entries and at least
-      ``len(working_agents) * 2`` entries when the store has any working
-      agent in the month.
-    * Every person must already have at least one WORKING assignment on
-      this ``store_id`` during ``month_id`` — i.e. the person belongs to
-      the store/month.
+    ``observations`` contains one entry per required ``(person, category)``
+    pair for agents that worked in this store/month. Invalid values remain
+    auditable but do not feed payroll. ``actor_id`` is accepted by the service
+    contract for audit correlation; the observation row itself stores the
+    immutable month discriminator in ``source``.
     """
 
+    _ = actor_id
     if not isinstance(observations, list):
         raise ValidationError(
             "observations must be a list",
@@ -201,9 +178,7 @@ def record_readback(
         session, tenant_id=tenant_id, month_id=month_id, store_id=store_id
     )
     expected_pairs: set[tuple[str, str]] = {
-        (pid, cat.value)
-        for pid in working_persons
-        for cat in EpayCategory
+        (pid, cat.value) for pid in working_persons for cat in EpayCategory
     }
     if not observations:
         raise ValidationError(
@@ -225,6 +200,7 @@ def record_readback(
     invalid_count = 0
     observed_at = _utcnow()
     seen: set[tuple[str, str]] = set()
+    source = month_source(month_id)
 
     for entry in observations:
         if not isinstance(entry, dict):
@@ -249,7 +225,6 @@ def record_readback(
                     "category": category,
                 },
             )
-        # AC-13 person belongs to store/month.
         if working_persons and (person_id, str(category)) not in expected_pairs:
             raise ValidationError(
                 "person/category must belong to this store/month's working agents",
@@ -295,7 +270,7 @@ def record_readback(
                 value=parsed_value,
                 raw_value=raw_text,
                 is_valid=is_valid,
-                source="EPAY_READBACK",
+                source=source,
                 observed_at=observed_at,
             )
         )
@@ -318,17 +293,12 @@ def freshness_for_month(
     month_id: str,
     fresh_window_hours: int = 24,
 ) -> EpayFreshnessReport:
-    """Return whether the readback for ``store_id`` is fresh.
-
-    The freshness window defaults to 24h; the caller (close checklist)
-    uses the report to decide whether to surface the
-    ``EPAY_FRESH_READBACK_REQUIRED`` blocker.
-    """
+    """Return whether the exact month's store readback is fresh and complete."""
 
     persons = _working_persons_for_store_month(
         session, tenant_id=tenant_id, month_id=month_id, store_id=store_id
     )
-    expected_count = len(persons) * len(EpayCategory.__members__.values())
+    expected_count = len(persons) * len(EpayCategory)
     if expected_count == 0:
         return EpayFreshnessReport(
             is_fresh=True,
@@ -343,14 +313,13 @@ def freshness_for_month(
                 EpayObservation.tenant_id == tenant_id,
                 EpayObservation.store_id == store_id,
                 EpayObservation.person_id.in_(persons),
+                EpayObservation.source == month_source(month_id),
                 EpayObservation.is_valid.is_(True),
                 EpayObservation.observed_at >= threshold,
             )
         ).scalars()
     )
-    fresh_pairs: set[tuple[str, str]] = set()
-    for row in rows:
-        fresh_pairs.add((row.person_id, row.category))
+    fresh_pairs = {(row.person_id, row.category) for row in rows}
     fresh_count = len(fresh_pairs)
     return EpayFreshnessReport(
         is_fresh=fresh_count >= expected_count,
