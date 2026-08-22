@@ -274,7 +274,7 @@ def get_close_checklist(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> CloseChecklistOut:
-    authorize(principal, Capability.MONTH_READ)
+    authorize(principal, Capability.MONTH_CLOSE_READ)
     month = MonthRepository(session).get(month_id)
     assert_same_tenant(principal, month.tenant_id)
     checklist = PolicyCloseChecklistService(session).month_checklist(
