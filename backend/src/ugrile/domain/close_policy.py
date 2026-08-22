@@ -30,12 +30,9 @@ class ClosePolicy:
     grid_anomalies: dict[GridAnomalyCode, BlockerDisposition]
 
     def disposition(self, code: CloseBlockerCode) -> BlockerDisposition:
-        # Unknown close codes fail closed. A newly introduced financial check
-        # cannot become informational merely because policy was not updated.
         return self.close_blockers.get(code, BlockerDisposition.BLOCKING)
 
     def grid_disposition(self, code: GridAnomalyCode) -> BlockerDisposition:
-        # Same fail-closed rule for calculation anomalies.
         return self.grid_anomalies.get(code, BlockerDisposition.BLOCKING)
 
     def is_blocking(self, code: CloseBlockerCode) -> bool:
@@ -49,9 +46,11 @@ def policy_for_rule_pack(pack: RulePackV1) -> ClosePolicy:
     """Build the current policy from rule-pack semantics.
 
     E-pay is financially relevant whenever either E-pay unit rate is non-zero,
-    therefore fresh complete readback is a hard close condition. Google Sheet
-    canary/reconciliation are operational/server-test evidence and do not alter
-    the PostgreSQL payroll truth, so they remain visible warnings.
+    therefore fresh complete month-bound readback is a hard close condition.
+    A final close also requires a grid snapshot for the exact current revision
+    and fails closed on every current payroll-significant grid anomaly. Google
+    Sheet canary/reconciliation are operational/server-test evidence and do not
+    alter PostgreSQL payroll truth, so they remain visible warnings.
     """
 
     epay_required = pack.epay_under_50_rate != 0 or pack.epay_at_or_over_50_rate != 0
@@ -66,12 +65,11 @@ def policy_for_rule_pack(pack: RulePackV1) -> ClosePolicy:
         CloseBlockerCode.EPAY_FRESH_READBACK_REQUIRED: (
             BlockerDisposition.BLOCKING if epay_required else BlockerDisposition.WARNING
         ),
+        CloseBlockerCode.GRID_CURRENT_REVISION_REQUIRED: BlockerDisposition.BLOCKING,
+        CloseBlockerCode.GRID_ANOMALY_BLOCKING: BlockerDisposition.BLOCKING,
         CloseBlockerCode.SHEET_CANARY_REQUIRED: BlockerDisposition.WARNING,
         CloseBlockerCode.EXTERNAL_RECONCILIATION_REQUIRED: BlockerDisposition.WARNING,
     }
-    # All current GridAnomalyCode values can affect money or the authoritative
-    # target/sales basis. They are acceptable in a preview, never unexplained at
-    # final close.
     grid_anomalies = {code: BlockerDisposition.BLOCKING for code in GridAnomalyCode}
     return ClosePolicy(
         version="close-policy-v1",
