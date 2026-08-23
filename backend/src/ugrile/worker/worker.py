@@ -40,7 +40,7 @@ from ..core.correlation import (
     current_correlation_id,
 )
 from ..core.database import session_scope
-from ..core.logging import get_logger
+from ..core.logging import get_logger, safe_exception_fields
 from ..domain.enums import JobKind
 from ..domain.errors import DomainError
 from ..repositories.models import OutboxJob
@@ -194,7 +194,7 @@ def _settle_failure(row: OutboxJob, exc: Exception, *, now: datetime) -> None:
             attempts=row.attempts,
             max_attempts=policy.max_attempts,
             retry_in_seconds=delay,
-            error=error,
+            **safe_exception_fields(exc),
         )
     else:
         row.status = "FAILED"
@@ -206,7 +206,7 @@ def _settle_failure(row: OutboxJob, exc: Exception, *, now: datetime) -> None:
             attempts=row.attempts,
             max_attempts=policy.max_attempts,
             retryable=retryable,
-            error=error,
+            **safe_exception_fields(exc),
         )
     row.locked_at = None
     row.locked_by = None
@@ -308,7 +308,7 @@ def run_once_safe() -> tuple[OutboxJob | None, JobResult | None]:
     try:
         return run_once()
     except Exception as exc:  # pragma: no cover - database/process guard
-        log.error("worker_iteration_crashed", error=repr(exc))
+        log.error("worker_iteration_crashed", **safe_exception_fields(exc))
         return None, None
 
 

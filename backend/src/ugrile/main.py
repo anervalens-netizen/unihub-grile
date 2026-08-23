@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Awaitable, Callable
+from time import perf_counter
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -16,6 +17,7 @@ from .api.catalog import router as catalog_router
 from .api.close import router as close_router
 from .api.error_contract import (
     domain_error_response,
+    error_content,
     http_error_response,
     validation_error_response,
 )
@@ -37,11 +39,19 @@ from .core.correlation import (
     bind_correlation_id,
     resolve_request_correlation_id,
 )
-from .core.logging import configure_logging, get_logger
+from .core.logging import configure_logging, get_logger, safe_exception_fields
 from .domain.errors import DomainError
 
 configure_logging()
 log = get_logger("ugrile.api")
+
+
+def _route_template(request: Request) -> str:
+    """Return the matched route template without logging concrete entity IDs."""
+
+    route = request.scope.get("route")
+    path = getattr(route, "path", None)
+    return path if isinstance(path, str) and path else "unmatched"
 
 
 def create_app() -> FastAPI:
@@ -62,9 +72,39 @@ def create_app() -> FastAPI:
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         correlation_id = resolve_request_correlation_id(request.headers.get(CORRELATION_HEADER))
+        started = perf_counter()
+        unhandled_failure = False
         with bind_correlation_id(correlation_id):
-            response = await call_next(request)
+            try:
+                response = await call_next(request)
+            except Exception as exc:
+                unhandled_failure = True
+                log.error(
+                    "http_request_failed",
+                    correlation_id=correlation_id,
+                    method=request.method,
+                    route=_route_template(request),
+                    status_code=500,
+                    duration_ms=round((perf_counter() - started) * 1000, 2),
+                    **safe_exception_fields(exc),
+                )
+                response = JSONResponse(
+                    status_code=500,
+                    content=error_content(
+                        code="INTERNAL_ERROR",
+                        message="internal server error",
+                    ),
+                )
             response.headers[CORRELATION_HEADER] = correlation_id
+            if not unhandled_failure:
+                log.info(
+                    "http_request_completed",
+                    correlation_id=correlation_id,
+                    method=request.method,
+                    route=_route_template(request),
+                    status_code=response.status_code,
+                    duration_ms=round((perf_counter() - started) * 1000, 2),
+                )
             return response
 
     @app.exception_handler(DomainError)
@@ -128,6 +168,7 @@ def main() -> None:
         host=host,
         port=port,
         log_level=get_settings().log_level.lower(),
+        access_log=False,
         reload=False,
     )
 
