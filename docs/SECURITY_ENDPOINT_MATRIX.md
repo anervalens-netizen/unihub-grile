@@ -16,7 +16,7 @@ Every authenticated UniHub Grile API route must have an explicit capability and 
 - `holiday.read` — read informational holiday markers.
 - `holiday.write` — mutate holiday calendars/overrides; admin-only.
 - `epay.read` — read E-pay freshness/readback state within store scope.
-- `epay.write` — record E-pay readback for an allowed store.
+- `epay.write` — record E-pay readback for an allowed store, including an authenticated Google Sheet read whose values are persisted locally.
 - `sheet.read` — read projection/canary/reconciliation state within store scope.
 - `sheet.sync` — enqueue Sheet projection for an allowed store.
 - `sheet.bind` — read/create/rebind the permanent store↔Google-Sheet identity; admin-only.
@@ -51,6 +51,7 @@ Admins are tenant-wide unless a more restrictive product rule applies. Managers 
 | reopen | `month.reopen` | tenant month | admin-only + reason |
 | E-pay freshness | `epay.read` | requested store | manager effective scope; admin tenant-wide |
 | E-pay readback | `epay.write` | requested store and submitted working agents | admin in current UI policy; resource scope still mandatory |
+| Google E-pay readback | `epay.write` | requested month + exact store + current binding/revision/working-person set | admin in current policy; authorization occurs before provider I/O; CLOSED month and post-read identity drift fail closed |
 | Sheet binding GET/PUT | `sheet.bind` | tenant + exact store; spreadsheet id globally unique | admin-only; rebind requires CAS identity + reason |
 | Sheet projection read | `sheet.read` | requested month + exact store; only a snapshot carrying matching `metadata.month_id` is eligible | manager effective scope; admin tenant-wide |
 | Sheet reconciliation read | `sheet.read` | requested month + exact store; legacy/unscoped snapshots fail closed | manager effective scope; admin tenant-wide |
@@ -82,6 +83,8 @@ Admins are tenant-wide unless a more restrictive product rule applies. Managers 
 15. Sheet projection jobs pin the binding identity seen at enqueue. A later rebind must make the older job fail terminally before provider I/O; it must never redirect that job to the replacement Sheet.
 16. Projection publication may advance `generation`, but live projection is never allowed to create/discover/rebind a Sheet identity as a side effect.
 17. Month-scoped Sheet projection/reconciliation reads must prove exact `metadata.month_id`; a successful snapshot for one month and historical snapshots without month identity are not valid evidence for another requested month.
+18. Google E-pay readback must authorize `epay.write` and exact store scope before any provider I/O, then revalidate binding identity, calendar-data revision and exact working-person set under locks before local persistence. Ambiguous/stale structure becomes invalid current evidence; it is never silently mapped to zero or accepted from another layout.
+19. The managed Google protection contract may expose only the exact current E-pay value cells; it must not delete unrelated external protections merely to make those cells editable.
 
 ## M1 re-attestation result
 
