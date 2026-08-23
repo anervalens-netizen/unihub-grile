@@ -35,6 +35,10 @@ class GoogleTerminalTransportError(DomainError):
 class GoogleSheetsTransport(Protocol):
     """Small transport seam used by the live provider and unit tests."""
 
+    def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
+        """Read one bounded values range from a spreadsheet."""
+        ...
+
     def existing_row_count(self, spreadsheet_id: str, range_a1: str) -> int:
         """Return the number of non-empty rows currently reported for a range."""
         ...
@@ -76,19 +80,22 @@ class GoogleSheetsApiTransport:
             ) from exc
         return cls(AuthorizedSession(credentials))  # type: ignore[no-untyped-call]
 
-    def existing_row_count(self, spreadsheet_id: str, range_a1: str) -> int:
+    def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
         url = (
             f"{SHEETS_API_BASE}/{quote(spreadsheet_id, safe='')}/values/"
             f"{quote(range_a1, safe='')}"
         )
         payload = self._request_json("GET", url)
         values = payload.get("values", [])
-        if not isinstance(values, list):
+        if not isinstance(values, list) or any(not isinstance(row, list) for row in values):
             raise GoogleRetryableTransportError(
                 "Google Sheets returned an invalid values payload",
                 details={"code": "GOOGLE_LIVE_RESPONSE_INVALID"},
             )
-        return len(values)
+        return [list(row) for row in values]
+
+    def existing_row_count(self, spreadsheet_id: str, range_a1: str) -> int:
+        return len(self.read_values(spreadsheet_id, range_a1))
 
     def batch_update_values(
         self,
