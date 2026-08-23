@@ -72,13 +72,16 @@ const PEOPLE_PROGRAM: ProgramGrid = {
   legend: [],
 };
 
-function makeApi({ failPeopleProgram = false }: { failPeopleProgram?: boolean } = {}): ApiClient {
+function makeApi({ failPeopleProgram = false, failStores = false }: { failPeopleProgram?: boolean; failStores?: boolean } = {}): ApiClient {
   return {
     healthz: vi.fn(),
     readyz: vi.fn(),
     get: vi.fn(async (path: string) => {
       if (path.startsWith(`/months/${MONTH.id}/overview`)) return REPORT;
-      if (path === "/catalog/stores") return STORES;
+      if (path === "/catalog/stores") {
+        if (failStores) throw new Error("catalog unavailable");
+        return STORES;
+      }
       if (path === `/months/${MONTH.id}/program?perspective=people`) {
         if (failPeopleProgram) throw new Error("people program unavailable");
         return PEOPLE_PROGRAM;
@@ -119,11 +122,23 @@ describe("Overview command center", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("surfaces API errors via the accessible alert role", async () => {
+  it("keeps overview KPIs and attention usable when the store catalog fails", async () => {
+    const api = makeApi({ failStores: true });
+    render(<Overview api={api} months={[MONTH]} monthsError={null} />);
+    expect(await screen.findByText("2/4")).toBeInTheDocument();
+    expect(screen.getByText("Magazin fără agent")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/Structura magazinelor este indisponibilă: catalog unavailable/);
+    expect(screen.queryByRole("button", { name: /Demo Store X/i })).not.toBeInTheDocument();
+  });
+
+  it("surfaces primary overview API errors via the accessible alert role", async () => {
     const api = {
       healthz: vi.fn(),
       readyz: vi.fn(),
-      get: vi.fn(async () => { throw new Error("boom"); }),
+      get: vi.fn(async (path: string) => {
+        if (path.includes("/overview")) throw new Error("boom");
+        return [];
+      }),
       post: vi.fn(),
     } as unknown as ApiClient;
     render(<Overview api={api} months={[MONTH]} monthsError={null} />);
