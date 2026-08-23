@@ -2,8 +2,9 @@
 
 The adapter/provider boundary is read-only. This service is Grile-owned and
 translates a validated snapshot into the established connector persistence
-contract. Data rows and the accepted-generation ImportRun are committed by the
-caller as one transaction; a failed attempt cannot displace last-good state.
+contract. Data rows, accepted-generation ledger and any current attribution
+projection are committed by the caller as one transaction; a failed attempt
+cannot displace last-good state.
 """
 
 from __future__ import annotations
@@ -16,13 +17,15 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..domain.enums import MonthState
 from ..domain.errors import ConflictError, ConnectorError
 from ..domain.identifiers import (
     make_person_id,
     make_store_id,
     tenant_slug_from_tenant_id,
 )
-from ..repositories.models import ImportRun, IncentiveInput, StoreTarget, Tenant
+from ..repositories.attribution import attribute_for_month, persist_attribution
+from ..repositories.models import ImportRun, IncentiveInput, Month, StoreTarget, Tenant
 from ..repositories.retail_generation import (
     AcceptedRetailGeneration,
     accepted_retail_generation,
@@ -312,6 +315,29 @@ def _incentive_version_ledger(
     ]
 
 
+def _lock_snapshot_month(session: Session, snapshot: RetailSnapshotV1) -> Month | None:
+    year_text, month_text = snapshot.period.split("-", 1)
+    month = session.execute(
+        select(Month)
+        .where(
+            Month.tenant_id == snapshot.tenant_id,
+            Month.year == int(year_text),
+            Month.month == int(month_text),
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if month is not None and month.state == MonthState.CLOSED.value:
+        raise ConflictError(
+            "Retail snapshot targets a closed financial period",
+            details={
+                "code": "MONTH_CLOSED",
+                "month_id": month.id,
+                "period": snapshot.period,
+            },
+        )
+    return month
+
+
 def _validate_transition(
     accepted: AcceptedRetailGeneration | None,
     snapshot: RetailSnapshotV1,
@@ -439,10 +465,10 @@ class RetailSnapshotIngestService:
         digest = snapshot_sha256(snapshot)
         generation_key = digest[:32]
 
-        # A tenant-row lock serializes accepted-head transitions. This avoids a
-        # stale writer validating against head N, waiting behind head N+1, then
-        # incorrectly publishing N again. It also serializes target/incentive
-        # version allocation for the tenant.
+        # Tenant + month locks serialize head transitions with both competing
+        # ingests and month close. The explicit month lock applies even to an
+        # all-empty financial snapshot, where the legacy connector would have
+        # no row-driven period to discover and lock on its own.
         with self.session.begin_nested():
             tenant = self.session.get(Tenant, snapshot.tenant_id)
             if tenant is None:
@@ -461,6 +487,7 @@ class RetailSnapshotIngestService:
                 .where(Tenant.id == snapshot.tenant_id)
                 .with_for_update()
             ).scalar_one()
+            locked_month = _lock_snapshot_month(self.session, snapshot)
             if tenant.timezone != snapshot.timezone:
                 raise ConnectorError(
                     "Retail snapshot timezone conflicts with the Grile tenant",
@@ -529,6 +556,23 @@ class RetailSnapshotIngestService:
             self.session.add(row)
             self.session.flush()
 
+            attribution_rows = 0
+            if locked_month is not None:
+                attributed, _ = attribute_for_month(
+                    self.session,
+                    tenant_id=snapshot.tenant_id,
+                    month_id=locked_month.id,
+                    year=locked_month.year,
+                    month=locked_month.month,
+                )
+                attribution_rows = persist_attribution(
+                    self.session,
+                    tenant_id=snapshot.tenant_id,
+                    month_id=locked_month.id,
+                    revision=locked_month.revision,
+                    attributed=attributed,
+                )
+
             return {
                 "status": "ACCEPTED",
                 "tenant_id": snapshot.tenant_id,
@@ -536,6 +580,7 @@ class RetailSnapshotIngestService:
                 "generation_key": generation_key,
                 "snapshot_sha256": digest,
                 "import_run_id": row.id,
+                "attribution_rows": attribution_rows,
                 "applied": applied,
             }
 
