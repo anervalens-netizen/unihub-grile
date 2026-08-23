@@ -96,6 +96,13 @@ live mutation.
 ## Live canary boundary
 
 No live canary is authorized by GS-001/GS-002 implementation work. The bounded
-canary procedure belongs to GS-010 and the later server-test phase. Until that
-separate gate is explicitly opened, CI evidence for the live transport uses
-injected/fake HTTP transports and performs zero external Google requests.
+GS-010 procedure is documented in `docs/operations/google-live-canary.md` and is
+reserved for a separately authorized server-test window.
+
+The runbook limits one canary to one non-production tenant/month/store/Sheet,
+at most two projection executions and at most one Google E-pay readback. Its
+existence does **not** enable `UGRILE_GOOGLE_LIVE_MUTATIONS_ENABLED`, authorize a
+provider request, or turn a passing canary into deployment/production approval.
+
+Until a separate live gate is explicitly opened, CI evidence for the transport
+uses injected/fake HTTP transports and performs zero external Google requests.
