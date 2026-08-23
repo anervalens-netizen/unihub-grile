@@ -22,6 +22,7 @@ from ..services.auth import (
     assert_same_tenant,
     effective_store_ids,
 )
+from ..services.authorization import Capability, authorize
 
 router = APIRouter(prefix="/catalog", tags=["catalog"])
 
@@ -41,6 +42,7 @@ def list_stores(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> list[StoreOut]:
+    authorize(principal, Capability.CATALOG_READ)
     if tenant_id is not None:
         assert_same_tenant(principal, tenant_id)
     else:
@@ -60,6 +62,7 @@ def list_people(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> list[PersonOut]:
+    authorize(principal, Capability.CATALOG_READ)
     if tenant_id is not None:
         assert_same_tenant(principal, tenant_id)
     else:
