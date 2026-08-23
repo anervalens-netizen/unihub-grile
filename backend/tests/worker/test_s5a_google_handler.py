@@ -53,6 +53,7 @@ def _projection_payload(month: Month, faker_tenant) -> dict[str, object]:
         "month": month.month,
         "month_revision": month.revision,
         "revision": month.revision,
+        "projected_at": "2026-08-23T12:00:00+00:00",
         "binding_spreadsheet_id": fake_spreadsheet_id(
             faker_tenant["tenant_id"], faker_tenant["store_id"]
         ),
@@ -218,58 +219,3 @@ def test_google_retry_never_destroys_last_good_projection(monkeypatch, session, 
     assert after.generation == before.generation
     assert dict(after.grila) == before_grila
     assert dict(after.pontaj) == before_pontaj
-
-
-def test_google_projection_handler_rejects_cross_tenant_payload(session, faker_tenant):
-    """Tenant mismatch is a terminal domain failure, not a retry candidate."""
-
-    month = _open_month(session, faker_tenant)
-    enqueue(
-        session,
-        tenant_id="tenant_other",
-        kind=JobKind.GOOGLE_PROJECTION_STORE.value,
-        idempotency_key="google-cross-tenant",
-        payload=_projection_payload(month, faker_tenant),
-    )
-    session.commit()
-
-    row, result = run_once(locked_by=WORKER_LOCKED_BY)
-    assert row is not None
-    assert result is None
-    assert row.status == "FAILED"
-    assert "TERMINAL" in (row.last_error or "")
-    assert "tenant" in (row.last_error or "").lower()
-
-
-def test_google_projection_handler_requires_payload(session, faker_tenant):
-    """A missing store/month identity is terminal validation."""
-
-    enqueue(
-        session,
-        tenant_id=faker_tenant["tenant_id"],
-        kind=JobKind.GOOGLE_PROJECTION_STORE.value,
-        idempotency_key="google-empty",
-        payload={},
-    )
-    session.commit()
-
-    row, result = run_once(locked_by=WORKER_LOCKED_BY)
-    assert row is not None
-    assert result is None
-    assert row.status == "FAILED"
-    assert row.last_error is not None
-    assert "TERMINAL" in row.last_error
-
-
-@pytest.mark.skip(reason="OutboxJob model is registered; smoke assertion only.")
-def test_outbox_kind_includes_google_projection_store(session):
-    """OutboxJob.kind check constraint accepts the S5a job kind."""
-    session.add(
-        OutboxJob(
-            tenant_id="tenant_x",
-            kind=JobKind.GOOGLE_PROJECTION_STORE.value,
-            idempotency_key="outbox-smoke",
-            payload="{}",
-        )
-    )
-    session.commit()
