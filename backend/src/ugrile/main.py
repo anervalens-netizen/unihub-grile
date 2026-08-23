@@ -158,6 +158,7 @@ def main() -> None:
         host=host,
         port=port,
         log_level=get_settings().log_level.lower(),
+        access_log=False,
         reload=False,
     )
 
