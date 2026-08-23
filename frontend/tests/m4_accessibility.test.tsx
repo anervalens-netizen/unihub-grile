@@ -9,6 +9,9 @@ import { Layout } from "../src/components/Layout";
 import { ProgramMatrix } from "../src/components/ProgramMatrix";
 import { Jobs } from "../src/pages/Jobs";
 
+const layoutSource = readFileSync(join(process.cwd(), "src/components/Layout.tsx"), "utf8");
+const accessibilityCss = readFileSync(join(process.cwd(), "src/styles/accessibility.css"), "utf8");
+
 function TabFixture() {
   const [active, setActive] = useState<"one" | "two" | "three">("one");
   return (
@@ -99,6 +102,15 @@ describe("FE-014 keyboard and accessibility pass", () => {
   it("declares Romanian as the document language", () => {
     const html = readFileSync(join(process.cwd(), "index.html"), "utf8");
     expect(html).toContain('<html lang="ro">');
+  });
+
+  it("loads the accessibility cascade last and keeps fieldset legends available to assistive tech", () => {
+    const responsiveImport = layoutSource.indexOf('import "../styles/responsive.css";');
+    const accessibilityImport = layoutSource.indexOf('import "../styles/accessibility.css";');
+    expect(accessibilityImport).toBeGreaterThan(responsiveImport);
+    expect(accessibilityCss).toContain(".perspective-switch legend");
+    expect(accessibilityCss).toContain("display: block !important;");
+    expect(accessibilityCss).toContain("clip: rect(0, 0, 0, 0) !important;");
   });
 
   it("provides roving tab stops, arrow/Home/End navigation and tabpanel linkage", async () => {
