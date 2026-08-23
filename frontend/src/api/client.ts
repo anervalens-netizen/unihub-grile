@@ -263,6 +263,24 @@ export interface SheetProjection {
   payload: { grila: Record<string, unknown>; pontaj: Record<string, unknown> } | null;
 }
 
+export interface SheetReconciliation {
+  store_id: string;
+  month_id: string;
+  available: boolean;
+  generation: string | null;
+  format_version: string | null;
+  revision: number | null;
+  rule_pack_version: string | null;
+  projected_at: string | null;
+  verification_mode: string | null;
+  verified: boolean;
+  grila_rows: number | null;
+  pontaj_rows: number | null;
+  grila_checksum_sha256: string | null;
+  pontaj_checksum_sha256: string | null;
+  projection_checksum_sha256: string | null;
+}
+
 export interface CloseOutcome {
   month_id: string;
   revision: number;
