@@ -278,6 +278,7 @@ class HolidayMarkerOut(BaseModel):
     label: str
     is_active: bool
     override_active: bool | None = None
+    override_reason: str | None = None
 
 
 class HolidayCalendarUpsertIn(BaseModel):
