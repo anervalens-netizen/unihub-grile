@@ -12,7 +12,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from ugrile.connectors.fixtures import FIXTURE_GENERATION
-from ugrile.connectors.google import is_provider_failing, read_store_projection
+from ugrile.connectors.google import (
+    fake_spreadsheet_id,
+    is_provider_failing,
+    read_store_projection,
+)
 from ugrile.domain.enums import DayStatus, JobKind, MonthState, WorkingKind
 from ugrile.repositories.models import Month, OutboxJob, SheetProjectionRun, SiteDayAssignment
 from ugrile.repositories.months import MonthRepository
@@ -49,6 +53,11 @@ def _projection_payload(month: Month, faker_tenant) -> dict[str, object]:
         "month": month.month,
         "month_revision": month.revision,
         "revision": month.revision,
+        "binding_spreadsheet_id": fake_spreadsheet_id(
+            faker_tenant["tenant_id"], faker_tenant["store_id"]
+        ),
+        "binding_sheet_name_grila": "Grila",
+        "binding_sheet_name_pontaj": "Pontaj",
     }
 
 
@@ -178,8 +187,6 @@ def test_google_retry_never_destroys_last_good_projection(monkeypatch, session, 
     assert retry_row is not None and retry_row.status == "PENDING"
     assert retry_result is None
 
-    # Force the scheduled retry due so consecutive provider failures are also
-    # proven to retain the original successful generation and exact payload.
     queued = session.get(OutboxJob, retry_row.id)
     assert queued is not None
     queued.run_after = datetime.now(tz=UTC) - timedelta(seconds=1)
