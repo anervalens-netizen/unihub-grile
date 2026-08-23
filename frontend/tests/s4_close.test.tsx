@@ -169,7 +169,7 @@ describe("Close page reopen reason validation", () => {
     render(<Close api={api} months={[MONTH]} monthsError={null} />);
     expect(await screen.findByRole("button", { name: /Pregătește închiderea/i })).toBeEnabled();
     expect(screen.getByRole("alert")).toHaveTextContent(/Istoricul audit este indisponibil: audit unavailable/);
-    expect(screen.getByText(/Nicio condiție blocantă detectată/)).toBeInTheDocument();
+    expect(screen.getByText("Nicio condiție blocantă.")).toBeInTheDocument();
   });
 
   it("blocks preparation while checklist blockers remain", async () => {

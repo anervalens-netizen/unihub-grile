@@ -9,6 +9,7 @@ import {
 import { hasCapability, type Capability } from "../capabilities";
 import { MonthSelector } from "../components/MonthSelector";
 import { ProgramMatrix } from "../components/ProgramMatrix";
+import { LoadingState, RequestError, requestErrorMessage } from "../components/RequestState";
 
 export interface ProgramProps {
   api: ApiClient;
@@ -30,6 +31,8 @@ export function Program({ api, months, monthsError, capabilities }: ProgramProps
   const [perspective, setPerspective] = useState<Perspective>("stores");
   const [grid, setGrid] = useState<ProgramGrid | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(480);
   const [people, setPeople] = useState<Array<{ id: string; label: string; homeStoreId: string }>>([]);
   const [stores, setStores] = useState<Array<{ id: string; label: string }>>([]);
@@ -68,22 +71,28 @@ export function Program({ api, months, monthsError, capabilities }: ProgramProps
     setSaveError(null);
     if (!monthId) {
       setGrid(null);
+      setLoading(false);
       return;
     }
     let cancelled = false;
+    setGrid(null);
     setError(null);
+    setLoading(true);
     api
       .get<ProgramGrid>(`/months/${monthId}/program?perspective=${perspective}`)
       .then((response) => {
         if (!cancelled) setGrid(response);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(requestErrorMessage(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [api, monthId, perspective]);
+  }, [api, monthId, perspective, reloadToken]);
 
   function targetStoreId(sourceGrid: ProgramGrid, rowId: string, cell: ProgramCell): string | null {
     const row = sourceGrid.rows.find((candidate) => candidate.row_id === rowId);
@@ -137,7 +146,7 @@ export function Program({ api, months, monthsError, capabilities }: ProgramProps
     } catch (e: unknown) {
       if (requestId === choiceRequestId.current) {
         setEditing(null);
-        setSaveError(e instanceof Error ? e.message : String(e));
+        setSaveError(requestErrorMessage(e));
       }
     } finally {
       if (requestId === choiceRequestId.current) setChoiceLoading(false);
@@ -160,7 +169,7 @@ export function Program({ api, months, monthsError, capabilities }: ProgramProps
       await configureEditor(freshGrid, activeEditing.rowId, cell, draft);
       setSaveError(`Programul s-a schimbat între timp. Am încărcat revizia ${freshGrid.revision}; verifică valorile păstrate și salvează din nou.`);
     } catch (e: unknown) {
-      setSaveError(`Programul s-a schimbat între timp, iar reîncărcarea reviziei curente a eșuat: ${e instanceof Error ? e.message : String(e)}`);
+      setSaveError(`Programul s-a schimbat între timp, iar reîncărcarea reviziei curente a eșuat: ${requestErrorMessage(e)}`);
     } finally {
       setChoiceLoading(false);
     }
@@ -195,7 +204,7 @@ export function Program({ api, months, monthsError, capabilities }: ProgramProps
           // The typed close error remains authoritative even if the refresh fails.
         }
       } else {
-        setSaveError(e instanceof Error ? e.message : String(e));
+        setSaveError(requestErrorMessage(e));
       }
     } finally {
       setSaving(false);
@@ -239,10 +248,14 @@ export function Program({ api, months, monthsError, capabilities }: ProgramProps
         </div>
       </header>
       {!canEditSchedule && <p className="muted">Programul este disponibil doar pentru vizualizare în sesiunea curentă.</p>}
-      {error && <p className="error" role="alert">{error}</p>}
+      {error && <RequestError message={error} onRetry={() => setReloadToken((value) => value + 1)} />}
       {saveError && <p className="error" role="alert">Salvarea nu a reușit: {saveError}</p>}
       {choiceLoading && <p className="muted" role="status">Actualizez opțiunile de editare…</p>}
-      {grid && (
+      {loading && <LoadingState>Încarc programul…</LoadingState>}
+      {!loading && !error && grid && grid.rows.length === 0 && (
+        <div className="empty-state"><strong>Programul este gol.</strong><span>Nu există rânduri pentru perspectiva și luna selectate.</span></div>
+      )}
+      {!loading && !error && grid && grid.rows.length > 0 && (
         <ProgramMatrix
           grid={grid}
           viewportHeight={viewportHeight}
