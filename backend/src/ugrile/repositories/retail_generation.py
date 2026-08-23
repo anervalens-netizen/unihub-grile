@@ -5,8 +5,12 @@ same caller transaction. The newest DONE run for a tenant/period is therefore
 the accepted head; failed/rolled-back attempts cannot displace last-good state.
 
 The ledger pins exact catalog membership plus target/incentive row versions for
-the accepted snapshot. A newer complete snapshot can therefore deactivate
-removed Retail catalog members and can never fall back to old financial rows.
+the accepted snapshot. A newer complete snapshot can therefore never fall back
+to old financial rows.
+
+Hot read paths may embed :func:`accepted_retail_generation_summary_subquery`
+inside their existing SELECT. This preserves accepted-head filtering without an
+extra SQL round-trip and keeps the calibrated M3 query-count budgets unchanged.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.selectable import ScalarSelect
 
 from ..domain.errors import ConnectorError
 from .models import ImportRun
@@ -208,6 +213,33 @@ def _decode_run(row: ImportRun) -> AcceptedRetailGeneration:
     )
 
 
+def accepted_retail_generation_summary_subquery(
+    *,
+    tenant_id: str,
+    period: str,
+) -> ScalarSelect[str]:
+    """Return the accepted-head summary as an embeddable scalar subquery.
+
+    A missing row evaluates to SQL ``NULL``. Callers can therefore preserve
+    legacy all-generation semantics with ``OR summary IS NULL`` while pinning a
+    Retail-backed period to the generation marker inside the canonical summary.
+    This is deliberately a scalar subquery rather than a separate repository
+    read so hot paths do not gain another SELECT round-trip.
+    """
+
+    return (
+        select(ImportRun.summary)
+        .where(
+            ImportRun.tenant_id == tenant_id,
+            ImportRun.kind == retail_import_kind(period),
+            ImportRun.status == "DONE",
+        )
+        .order_by(ImportRun.id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+
+
 def accepted_retail_generation(
     session: Session,
     *,
@@ -261,5 +293,6 @@ __all__ = [
     "RETAIL_IMPORT_KIND",
     "accepted_retail_generation",
     "accepted_retail_generation_key",
+    "accepted_retail_generation_summary_subquery",
     "retail_import_kind",
 ]
