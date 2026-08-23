@@ -1,13 +1,13 @@
 /**
- * S4 Exceptions page test.
+ * S4 Exceptions page tests.
  *
- * Verifies that the typed exception list renders in API order (sorted by
- * severity). The Exceptions endpoint is responsible for sorting; the page
- * preserves the order without re-sorting.
+ * The API owns severity ordering. The frontend preserves that order, exposes
+ * resolution context, and only renders drill-down actions backed by real
+ * resource identifiers returned by the server.
  */
 
-import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { Exceptions } from "../src/pages/Exceptions";
 import type {
@@ -74,23 +74,51 @@ function makeApi(): ApiClient {
   } as unknown as ApiClient;
 }
 
-describe("Exceptions page severity sort", () => {
-  it("renders the typed list and preserves API-side severity order", async () => {
-    const api = makeApi();
-    render(<Exceptions api={api} months={[MONTH]} monthsError={null} />);
-    const titles = await screen.findAllByRole("listitem");
-    expect(titles).toHaveLength(3);
-    const texts = titles.map((node) => node.textContent ?? "");
-    // Severity 1 first, 2 second, 3 last — preserved from API sort.
+beforeEach(() => {
+  window.location.hash = "";
+});
+
+describe("Exceptions resolution workflow", () => {
+  it("preserves API severity order and renders operational summary", async () => {
+    render(<Exceptions api={makeApi()} months={[MONTH]} monthsError={null} />);
+    const items = await screen.findAllByRole("listitem");
+    expect(items).toHaveLength(3);
+    const texts = items.map((node) => node.textContent ?? "");
     expect(texts[0]).toMatch(/Magazin fără agent/);
     expect(texts[1]).toMatch(/Clasificare invalidă/);
     expect(texts[2]).toMatch(/Canary Sheet nesincronizat/);
+    expect(screen.getByText("2", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.getByText("05.08.2026")).toBeInTheDocument();
+    expect(screen.getByText("Cod: STORE_DAY_UNCOVERED")).toBeInTheDocument();
   });
 
-  it("renders an action hint for every blocker", async () => {
-    const api = makeApi();
-    render(<Exceptions api={api} months={[MONTH]} monthsError={null} />);
-    expect(await screen.findByText(/Deschide Magazin/)).toBeTruthy();
-    expect(screen.getByText(/Verifică home\/other/)).toBeTruthy();
+  it("keeps resolution hints and drills down only through server-provided resource ids", async () => {
+    render(<Exceptions api={makeApi()} months={[MONTH]} monthsError={null} />);
+    const items = await screen.findAllByRole("listitem");
+
+    const uncovered = within(items[0]!);
+    expect(uncovered.getByText(/Deschide Magazin/)).toBeInTheDocument();
+    fireEvent.click(uncovered.getByRole("button", { name: "Deschide magazin" }));
+    expect(window.location.hash).toBe("#/store/store_x");
+
+    const invalidKind = within(items[1]!);
+    expect(invalidKind.getByText(/Verifică home\/other/)).toBeInTheDocument();
+    fireEvent.click(invalidKind.getByRole("button", { name: "Deschide agent" }));
+    expect(window.location.hash).toBe("#/agent/person_a");
+
+    const sheetCanary = within(items[2]!);
+    expect(sheetCanary.getByText(/Așteaptă sincronizarea Sheet/)).toBeInTheDocument();
+    expect(sheetCanary.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("filters to blocking exceptions without changing their API order", async () => {
+    render(<Exceptions api={makeApi()} months={[MONTH]} monthsError={null} />);
+    await screen.findByText("Canary Sheet nesincronizat");
+    fireEvent.click(screen.getByLabelText("Doar blocante"));
+    const items = screen.getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("Magazin fără agent");
+    expect(items[1]).toHaveTextContent("Clasificare invalidă");
+    expect(screen.queryByText("Canary Sheet nesincronizat")).not.toBeInTheDocument();
   });
 });
