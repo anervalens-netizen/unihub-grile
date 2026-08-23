@@ -4,6 +4,11 @@ Reads immutable ``SalesStoreDay`` rows for a tenant/month, writes
 ``SalesPersonDayProjection`` rows per calendar revision. All writes happen
 inside the calendar CAS transaction so the projection never gets out of sync
 with the calendar.
+
+When M6 Retail snapshots exist for a period, reads are pinned to the last
+accepted Retail generation. Historical generations remain stored for audit but
+cannot be summed into current attribution. Legacy/fixture periods without an
+accepted Retail head preserve the existing all-generation behavior.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from .models import (
     SalesStoreDay,
     SiteDayAssignment,
 )
+from .retail_generation import accepted_retail_generation_key
 
 
 def store_sales_for_month(
@@ -35,22 +41,31 @@ def store_sales_for_month(
     year: int,
     month: int,
 ) -> list[StoreDaySale]:
-    """Return every ``SalesStoreDay`` row for the tenant in the month."""
+    """Return authoritative store/day sales for the tenant/month.
+
+    Retail-backed periods consume exactly one accepted generation. Periods that
+    predate the M6 accepted-generation ledger keep legacy fixture semantics so
+    this change does not reinterpret historical fixture data.
+    """
 
     first = date(year, month, 1)
     last = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
-    stmt = (
-        select(SalesStoreDay)
-        .where(
-            SalesStoreDay.tenant_id == tenant_id,
-            SalesStoreDay.business_date >= first,
-            SalesStoreDay.business_date < last,
-        )
-        .order_by(
-            SalesStoreDay.store_id,
-            SalesStoreDay.business_date,
-            SalesStoreDay.generation,
-        )
+    accepted_generation = accepted_retail_generation_key(
+        session,
+        tenant_id=tenant_id,
+        period=f"{year:04d}-{month:02d}",
+    )
+    stmt = select(SalesStoreDay).where(
+        SalesStoreDay.tenant_id == tenant_id,
+        SalesStoreDay.business_date >= first,
+        SalesStoreDay.business_date < last,
+    )
+    if accepted_generation is not None:
+        stmt = stmt.where(SalesStoreDay.generation == accepted_generation)
+    stmt = stmt.order_by(
+        SalesStoreDay.store_id,
+        SalesStoreDay.business_date,
+        SalesStoreDay.generation,
     )
     rows = list(session.execute(stmt).scalars())
     return [
