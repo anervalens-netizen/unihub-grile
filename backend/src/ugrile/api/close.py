@@ -17,6 +17,7 @@ from ..api.schemas import (
     CloseOutcomeOut,
     ReopenIn,
 )
+from ..core.metrics import observe_close_blockers
 from ..domain.enums import MonthState
 from ..repositories.close import MonthCloseEventRepository
 from ..repositories.months import MonthRepository
@@ -58,6 +59,7 @@ def close_month(
         )
         for b in outcome.validation.blockers
     ]
+    observe_close_blockers(len(blockers))
     return CloseOutcomeOut(
         month_id=outcome.month_id,
         revision=outcome.revision,
