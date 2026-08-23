@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 import pytest
 
-from ugrile.connectors.google import GoogleAdapterError, read_store_projection
+from ugrile.connectors.google import (
+    GoogleAdapterError,
+    StoreProjection,
+    read_store_projection,
+)
 from ugrile.connectors.google_provider import (
     FakeGoogleProjectionProvider,
     build_google_projection_provider,
 )
 from ugrile.core.config import Settings
+from ugrile.services.google import GoogleProjectionService
 
 GOOGLE_ENV_KEYS = (
     "UGRILE_GOOGLE_PROVIDER",
@@ -130,3 +138,59 @@ def test_fake_provider_preserves_existing_projection_semantics(
     assert persisted is not None
     assert persisted.grila["revision"] == 7
     assert persisted.pontaj["revision"] == 7
+
+
+def test_projection_service_uses_injected_provider_seam(session, faker_tenant) -> None:
+    class RecordingProvider:
+        name = "recording"
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def write_store_projection(
+            self,
+            session,
+            *,
+            tenant_id: str,
+            store_id: str,
+            generation: str,
+            payload: Mapping[str, Any],
+        ) -> StoreProjection:
+            self.calls.append(
+                {
+                    "tenant_id": tenant_id,
+                    "store_id": store_id,
+                    "generation": generation,
+                    "payload": payload,
+                }
+            )
+            grila = payload["grila"]
+            pontaj = payload["pontaj"]
+            assert isinstance(grila, Mapping)
+            assert isinstance(pontaj, Mapping)
+            return StoreProjection(
+                store_id=store_id,
+                generation=generation,
+                grila=grila,
+                pontaj=pontaj,
+                last_success_generation=generation,
+            )
+
+    provider = RecordingProvider()
+    service = GoogleProjectionService(session, provider=provider)
+
+    outcome = service.project_store_for_month(
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        month_id="month_provider_seam",
+        year=2026,
+        month=8,
+        revision=3,
+        generation="PROVIDER_SEAM_V1",
+    )
+
+    assert outcome.generation == "PROVIDER_SEAM_V1"
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["tenant_id"] == faker_tenant["tenant_id"]
+    assert provider.calls[0]["store_id"] == faker_tenant["store_id"]
+    assert provider.calls[0]["generation"] == "PROVIDER_SEAM_V1"
