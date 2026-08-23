@@ -73,10 +73,12 @@ def create_app() -> FastAPI:
     ) -> Response:
         correlation_id = resolve_request_correlation_id(request.headers.get(CORRELATION_HEADER))
         started = perf_counter()
+        unhandled_failure = False
         with bind_correlation_id(correlation_id):
             try:
                 response = await call_next(request)
             except Exception as exc:
+                unhandled_failure = True
                 log.error(
                     "http_request_failed",
                     correlation_id=correlation_id,
@@ -94,7 +96,7 @@ def create_app() -> FastAPI:
                     ),
                 )
             response.headers[CORRELATION_HEADER] = correlation_id
-            if response.status_code < 500:
+            if not unhandled_failure:
                 log.info(
                     "http_request_completed",
                     correlation_id=correlation_id,
