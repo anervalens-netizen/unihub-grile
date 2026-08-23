@@ -246,67 +246,78 @@ class RetailSnapshotV1(BaseModel):
         if self.generation.cutoff_date.strftime("%Y-%m") != self.period:
             raise ValueError("generation cutoff_date must fall inside snapshot period")
 
-        store_ids = [row.external_store_id for row in self.stores]
+        store_ids = [store.external_store_id for store in self.stores]
         if not store_ids:
             raise ValueError("snapshot requires at least one store")
         if len(store_ids) != len(set(store_ids)):
             raise ValueError("duplicate store identity")
         known_stores = set(store_ids)
 
-        person_ids = [row.external_person_id for row in self.people]
+        person_ids = [person.external_person_id for person in self.people]
         if len(person_ids) != len(set(person_ids)):
             raise ValueError("duplicate person identity")
         known_people = set(person_ids)
-        for row in self.people:
-            if row.home_store_external_id not in known_stores:
+        for person in self.people:
+            if person.home_store_external_id not in known_stores:
                 raise ValueError("person references an unknown home store")
 
-        sales_keys = [(row.external_store_id, row.business_date) for row in self.sales_store_day]
+        sales_keys = [
+            (sales.external_store_id, sales.business_date)
+            for sales in self.sales_store_day
+        ]
         if len(sales_keys) != len(set(sales_keys)):
             raise ValueError("duplicate store/day sales row")
-        for row in self.sales_store_day:
-            if row.external_store_id not in known_stores:
+        for sales in self.sales_store_day:
+            if sales.external_store_id not in known_stores:
                 raise ValueError("sales row references an unknown store")
-            if row.business_date.strftime("%Y-%m") != self.period:
+            if sales.business_date.strftime("%Y-%m") != self.period:
                 raise ValueError("sales row falls outside snapshot period")
-            if row.business_date > self.generation.cutoff_date:
+            if sales.business_date > self.generation.cutoff_date:
                 raise ValueError("sales row exceeds accepted cutoff_date")
 
         scope_keys = [
-            (row.manager_key, row.store_external_id, row.valid_from_month, row.valid_to_month)
-            for row in self.manager_scopes
+            (
+                scope.manager_key,
+                scope.store_external_id,
+                scope.valid_from_month,
+                scope.valid_to_month,
+            )
+            for scope in self.manager_scopes
         ]
         if len(scope_keys) != len(set(scope_keys)):
             raise ValueError("duplicate manager scope row")
-        for row in self.manager_scopes:
-            if row.store_external_id not in known_stores:
+        for scope in self.manager_scopes:
+            if scope.store_external_id not in known_stores:
                 raise ValueError("manager scope references an unknown store")
 
-        target_keys = [(row.external_store_id, row.kind) for row in self.targets]
+        target_keys = [(target.external_store_id, target.kind) for target in self.targets]
         if len(target_keys) != len(set(target_keys)):
             raise ValueError("duplicate target identity")
-        for row in self.targets:
-            if row.external_store_id not in known_stores:
+        for target in self.targets:
+            if target.external_store_id not in known_stores:
                 raise ValueError("target references an unknown store")
-            if f"{row.year:04d}-{row.month:02d}" != self.period:
+            if f"{target.year:04d}-{target.month:02d}" != self.period:
                 raise ValueError("target falls outside snapshot period")
 
-        incentive_keys = [row.external_person_id for row in self.incentives]
+        incentive_keys = [incentive.external_person_id for incentive in self.incentives]
         if len(incentive_keys) != len(set(incentive_keys)):
             raise ValueError("duplicate incentive identity")
-        for row in self.incentives:
-            if row.external_person_id not in known_people:
+        for incentive in self.incentives:
+            if incentive.external_person_id not in known_people:
                 raise ValueError("incentive references an unknown person")
-            if f"{row.year:04d}-{row.month:02d}" != self.period:
+            if f"{incentive.year:04d}-{incentive.month:02d}" != self.period:
                 raise ValueError("incentive falls outside snapshot period")
 
-        payroll_keys = [(row.external_person_id, row.input_kind) for row in self.payroll_inputs]
+        payroll_keys = [
+            (payroll.external_person_id, payroll.input_kind)
+            for payroll in self.payroll_inputs
+        ]
         if len(payroll_keys) != len(set(payroll_keys)):
             raise ValueError("duplicate payroll input identity")
-        for row in self.payroll_inputs:
-            if row.external_person_id not in known_people:
+        for payroll in self.payroll_inputs:
+            if payroll.external_person_id not in known_people:
                 raise ValueError("payroll input references an unknown person")
-            if f"{row.year:04d}-{row.month:02d}" != self.period:
+            if f"{payroll.year:04d}-{payroll.month:02d}" != self.period:
                 raise ValueError("payroll input falls outside snapshot period")
 
         return self
