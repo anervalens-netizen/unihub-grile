@@ -208,6 +208,6 @@ def test_known_closed_month_rejects_before_google_read(
     )
 
     assert response.status_code == 409, response.text
-    assert response.json()["code"] == "CONFLICT"
+    assert response.json()["code"] == "MONTH_CLOSED"
     assert response.json()["details"]["code"] == "MONTH_CLOSED"
     assert reader.calls == []
