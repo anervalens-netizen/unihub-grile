@@ -1,5 +1,6 @@
 export type QueueState = "QUEUED" | "RETRY" | "RUNNING" | "FAILED" | "DONE";
 export type StatusDotTone = "online" | "checking" | "offline";
+export type SemanticTone = "ok" | "warn" | "err";
 
 export function monthStateLabel(state: string): string {
   const labels: Record<string, string> = {
@@ -33,6 +34,12 @@ export function queueStateTone(state: QueueState): StatusDotTone {
   if (state === "FAILED") return "offline";
   if (state === "DONE") return "online";
   return "checking";
+}
+
+export function queueSemanticTone(state: QueueState): SemanticTone {
+  if (state === "FAILED") return "err";
+  if (state === "DONE") return "ok";
+  return "warn";
 }
 
 export function dataFreshnessLabel(isFresh: boolean): string {
