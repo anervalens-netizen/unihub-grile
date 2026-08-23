@@ -2,21 +2,17 @@
 
 The contract is explicit:
 
-* The fake adapter is the **only** projection writer during S5a. It must
-  not mutate Google Sheets. The real copied canary belongs to S5b once
-  the Google canary authority is granted.
-* It exposes ``write_store_projection(store_id, generation, payload)``
-  and ``read_store_projection(store_id)`` so the manager UI / canary
-  readback can verify the structural shape of a Grila + Pontaj
-  projection without touching any Google API.
-* The adapter persists projections in the local DB
-  (``sheet_projection_runs`` / ``sheet_bindings``) and records
-  ``last_error`` / ``last_success_generation`` / ``last_run_at`` so the
-  last-good projection can survive a provider failure.
-* Provider failure is simulated via the environment flag
-  ``UGR_S5_GOOGLE_FAIL=1``. When set, every write raises
-  ``GoogleAdapterError`` and the caller falls back to the last-good
-  payload. When unset, writes succeed deterministically.
+* The fake adapter never mutates Google Sheets; it persists structural
+  projections locally so tests/dev can exercise the same provider seam.
+* A missing local binding may be bootstrapped to the deterministic fake Sheet
+  identity, but an existing binding is never re-pointed as a projection side
+  effect. Projection may only advance its generation.
+* It exposes ``write_store_projection(store_id, generation, payload)`` and
+  ``read_store_projection(store_id)`` so the manager UI / canary readback can
+  verify the structural shape of a Grila + Pontaj projection without touching
+  any Google API.
+* Provider failure is simulated via ``UGR_S5_GOOGLE_FAIL=1`` while last-good
+  projection state remains readable.
 
 The adapter only depends on the local DB; no network I/O happens.
 """
@@ -37,24 +33,12 @@ from ..repositories.models import SheetBinding, SheetProjectionRun
 
 
 class GoogleAdapterError(DomainError):
-    """A provider failure raised by the fake Google adapter.
-
-    The caller is responsible for keeping the last-good projection alive
-    in the DB when this exception is raised; the adapter never mutates
-    state on failure.
-    """
+    """Retryable provider failure raised by the fake Google adapter."""
 
 
 @dataclass(frozen=True, slots=True)
 class StoreProjection:
-    """A deterministic structural projection for one store.
-
-    ``grila`` and ``pontaj`` are versioned dicts the manager UI / canary
-    readback can introspect. The adapter never writes these to a Google
-    Sheet during S5a; it only persists them in
-    ``sheet_projection_runs.payload`` so the structural readback can
-    match the expected lattice.
-    """
+    """A deterministic structural projection for one store."""
 
     store_id: str
     generation: str
@@ -81,12 +65,14 @@ def _json_loads(value: str | None) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
-def is_provider_failing() -> bool:
-    """Return ``True`` when the fake provider is configured to fail.
+def fake_spreadsheet_id(tenant_id: str, store_id: str) -> str:
+    """Return the stable no-network Sheet identity used by the fake provider."""
 
-    The flag is read from ``UGR_S5_GOOGLE_FAIL``. Production deployments
-    keep the flag unset; tests flip it on to simulate outages.
-    """
+    return f"fake-sheet-{tenant_id}-{store_id}"
+
+
+def is_provider_failing() -> bool:
+    """Return ``True`` when the fake provider is configured to fail."""
 
     value = os.environ.get("UGR_S5_GOOGLE_FAIL", "")
     return value.strip() in {"1", "true", "TRUE", "yes", "on"}
@@ -132,7 +118,11 @@ def _ensure_binding(
     generation: str,
     spreadsheet_id: str,
 ) -> SheetBinding:
-    """Upsert the canonical ``sheet_bindings`` row for the store."""
+    """Create a missing fake binding or advance an existing binding generation.
+
+    Existing Sheet identity is immutable here. Explicit rebind belongs only to
+    the administrative Sheet-binding lifecycle service.
+    """
 
     binding = _binding_for(session, tenant_id=tenant_id, store_id=store_id)
     now = _now_utc()
@@ -146,12 +136,20 @@ def _ensure_binding(
             generation=generation,
         )
         session.add(binding)
-    else:
-        binding.spreadsheet_id = spreadsheet_id
-        binding.sheet_name_grila = binding.sheet_name_grila or "Grila"
-        binding.sheet_name_pontaj = binding.sheet_name_pontaj or "Pontaj"
-        binding.generation = generation
-        binding.updated_at = now
+        return binding
+
+    if binding.spreadsheet_id != spreadsheet_id:
+        raise DomainError(
+            "projection cannot change an existing Sheet binding",
+            details={
+                "code": "SHEET_BINDING_STALE",
+                "store_id": store_id,
+            },
+        )
+    binding.sheet_name_grila = binding.sheet_name_grila or "Grila"
+    binding.sheet_name_pontaj = binding.sheet_name_pontaj or "Pontaj"
+    binding.generation = generation
+    binding.updated_at = now
     return binding
 
 
@@ -164,13 +162,7 @@ def write_store_projection(
     payload: Mapping[str, Any],
     spreadsheet_id: str | None = None,
 ) -> StoreProjection:
-    """Persist the structural projection for one store.
-
-    The adapter only writes the local DB rows (``sheet_projection_runs``
-    + ``sheet_bindings``). When ``UGR_S5_GOOGLE_FAIL=1`` is set, the
-    function raises :class:`GoogleAdapterError` and the caller is
-    responsible for keeping the last-good payload alive.
-    """
+    """Persist the structural projection for one store without network I/O."""
 
     if not store_id:
         raise GoogleAdapterError(
@@ -196,10 +188,22 @@ def write_store_projection(
             details={"tenant_id": tenant_id, "store_id": store_id},
         )
 
+    existing_binding = _binding_for(session, tenant_id=tenant_id, store_id=store_id)
+    resolved_spreadsheet_id = spreadsheet_id or (
+        existing_binding.spreadsheet_id
+        if existing_binding is not None
+        else fake_spreadsheet_id(tenant_id, store_id)
+    )
+    if (
+        existing_binding is not None
+        and existing_binding.spreadsheet_id != resolved_spreadsheet_id
+    ):
+        raise DomainError(
+            "projection cannot change an existing Sheet binding",
+            details={"code": "SHEET_BINDING_STALE", "store_id": store_id},
+        )
+
     if is_provider_failing():
-        # Append a NEW FAILED row alongside prior DONE rows. The authoritative
-        # last-good payload remains the newest successful row, even after
-        # multiple consecutive provider failures.
         last_good = _last_successful_run_for(session, tenant_id=tenant_id, store_id=store_id)
         last_success = last_good.last_success_generation if last_good is not None else None
         now = _now_utc()
@@ -210,8 +214,9 @@ def write_store_projection(
                 status="FAILED",
                 last_error=(
                     "fake provider is failing (UGR_S5_GOOGLE_FAIL=1); "
-                    "last-good projection retained" if last_success else
-                    "fake provider is failing (UGR_S5_GOOGLE_FAIL=1); "
+                    "last-good projection retained"
+                    if last_success
+                    else "fake provider is failing (UGR_S5_GOOGLE_FAIL=1); "
                     "no prior good projection to retain"
                 ),
                 last_success_generation=last_success,
@@ -231,13 +236,12 @@ def write_store_projection(
             },
         )
 
-    spreadsheet_id = spreadsheet_id or f"fake-sheet-{tenant_id}-{store_id}"
     _ensure_binding(
         session,
         tenant_id=tenant_id,
         store_id=store_id,
         generation=generation,
-        spreadsheet_id=spreadsheet_id,
+        spreadsheet_id=resolved_spreadsheet_id,
     )
     now = _now_utc()
     run = SheetProjectionRun(
@@ -272,12 +276,7 @@ def read_store_projection(
     tenant_id: str,
     store_id: str,
 ) -> StoreProjection | None:
-    """Return the last-good projection for one store, or ``None``.
-
-    Failed attempts are diagnostic rows only. Readback always returns the
-    newest successful payload and therefore cannot expose an attempted-but-not-
-    persisted provider projection as if it were last-good state.
-    """
+    """Return the last-good projection for one store, or ``None``."""
 
     row = _last_successful_run_for(session, tenant_id=tenant_id, store_id=store_id)
     if row is None or row.last_success_generation is None:
@@ -331,6 +330,7 @@ __all__ = [
     "GoogleAdapterError",
     "StoreProjection",
     "binding_for",
+    "fake_spreadsheet_id",
     "is_provider_failing",
     "last_error",
     "last_run_at",
