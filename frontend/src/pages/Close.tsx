@@ -6,6 +6,7 @@ import {
   type CloseOutcome,
   type MonthSummary,
 } from "../api/client";
+import { isolatedRead } from "../api/isolatedRead";
 import { MonthSelector } from "../components/MonthSelector";
 
 export interface CloseProps {
@@ -40,6 +41,7 @@ interface AuditBlocker {
 interface CloseState {
   checklist: CloseChecklist;
   timeline: CloseEventOut[];
+  timelineError: string | null;
 }
 
 function errorMessage(error: unknown): string {
@@ -52,11 +54,16 @@ function isStaleRevision(error: unknown): boolean {
   return candidate.status === 409 && candidate.code === "STALE_REVISION";
 }
 
-function loadCloseState(api: ApiClient, monthId: string): Promise<CloseState> {
-  return Promise.all([
+async function loadCloseState(api: ApiClient, monthId: string): Promise<CloseState> {
+  const [checklist, timelineRead] = await Promise.all([
     api.get<CloseChecklist>(`/months/${monthId}/close-checklist`),
-    api.get<CloseEventOut[]>(`/months/${monthId}/close-events`),
-  ]).then(([checklist, timeline]) => ({ checklist, timeline }));
+    isolatedRead(api.get<CloseEventOut[]>(`/months/${monthId}/close-events`)),
+  ]);
+  return {
+    checklist,
+    timeline: timelineRead.value ?? [],
+    timelineError: timelineRead.error,
+  };
 }
 
 function parseAuditBlockers(raw: string): AuditBlocker[] {
@@ -81,6 +88,7 @@ export function Close({ api, months, monthsError }: CloseProps) {
   const [monthId, setMonthId] = useState<string | null>(months[0]?.id ?? null);
   const [checklist, setChecklist] = useState<CloseChecklist | null>(null);
   const [timeline, setTimeline] = useState<CloseEventOut[]>([]);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [reopenError, setReopenError] = useState<string | null>(null);
@@ -96,10 +104,12 @@ export function Close({ api, months, monthsError }: CloseProps) {
     if (!monthId) {
       setChecklist(null);
       setTimeline([]);
+      setTimelineError(null);
       return;
     }
     let cancelled = false;
     setError(null);
+    setTimelineError(null);
     setCloseError(null);
     setReopenError(null);
     setConfirmClose(false);
@@ -108,6 +118,7 @@ export function Close({ api, months, monthsError }: CloseProps) {
         if (cancelled) return;
         setChecklist(state.checklist);
         setTimeline(state.timeline);
+        setTimelineError(state.timelineError);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(errorMessage(e));
@@ -123,6 +134,12 @@ export function Close({ api, months, monthsError }: CloseProps) {
   const advisoryCount = checklist?.blockers.length ? checklist.blockers.length - blockingCount : 0;
   const canReopen = checklist?.state === "CLOSED";
 
+  function applyCloseState(state: CloseState) {
+    setChecklist(state.checklist);
+    setTimeline(state.timeline);
+    setTimelineError(state.timelineError);
+  }
+
   async function handleClose() {
     if (!monthId || !checklist || checklist.blockers.some((item) => item.blocking)) return;
     setClosing(true);
@@ -132,15 +149,13 @@ export function Close({ api, months, monthsError }: CloseProps) {
         expected_revision: checklist.expected_revision,
       });
       const state = await loadCloseState(api, monthId);
-      setChecklist(state.checklist);
-      setTimeline(state.timeline);
+      applyCloseState(state);
       setConfirmClose(false);
     } catch (e: unknown) {
       if (isStaleRevision(e)) {
         try {
           const state = await loadCloseState(api, monthId);
-          setChecklist(state.checklist);
-          setTimeline(state.timeline);
+          applyCloseState(state);
           setConfirmClose(false);
           setCloseError(
             `Revizia s-a schimbat. Checklist-ul a fost reîncărcat la revizia ${state.checklist.expected_revision}; verifică din nou înainte de închidere.`,
@@ -167,8 +182,9 @@ export function Close({ api, months, monthsError }: CloseProps) {
       });
       setChecklist(response);
       setReason("");
-      const events = await api.get<CloseEventOut[]>(`/months/${monthId}/close-events`);
-      setTimeline(events);
+      const timelineRead = await isolatedRead(api.get<CloseEventOut[]>(`/months/${monthId}/close-events`));
+      setTimeline(timelineRead.value ?? []);
+      setTimelineError(timelineRead.error);
     } catch (e: unknown) {
       setReopenError(errorMessage(e));
     }
@@ -272,7 +288,8 @@ export function Close({ api, months, monthsError }: CloseProps) {
           </section>
           <section className="close-timeline" aria-label="Audit">
             <h3>Audit timeline</h3>
-            {timeline.length === 0 ? (
+            {timelineError && <p className="error-text compact-error" role="alert">Istoricul audit este indisponibil: {timelineError}</p>}
+            {!timelineError && timeline.length === 0 ? (
               <p className="muted">Niciun eveniment de close/reopen încă.</p>
             ) : (
               <ol className="audit-timeline">
