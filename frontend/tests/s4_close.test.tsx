@@ -157,6 +157,21 @@ describe("Close page reopen reason validation", () => {
     expect(screen.getByText(/Lanț audit:/)).toHaveTextContent(/digest-prev.*digest-current/);
   });
 
+  it("keeps checklist and close controls usable when audit history fails", async () => {
+    const api = {
+      healthz: vi.fn(), readyz: vi.fn(), post: vi.fn(),
+      get: vi.fn(async (path: string) => {
+        if (path.endsWith("/close-checklist")) return CLEAR_CHECKLIST;
+        if (path.endsWith("/close-events")) throw new Error("audit unavailable");
+        throw new Error(`unexpected GET ${path}`);
+      }),
+    } as unknown as ApiClient;
+    render(<Close api={api} months={[MONTH]} monthsError={null} />);
+    expect(await screen.findByRole("button", { name: /Pregătește închiderea/i })).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/Istoricul audit este indisponibil: audit unavailable/);
+    expect(screen.getByText(/Nicio condiție blocantă detectată/)).toBeInTheDocument();
+  });
+
   it("blocks preparation while checklist blockers remain", async () => {
     const api = makeApi();
     render(<Close api={api} months={[MONTH]} monthsError={null} />);
