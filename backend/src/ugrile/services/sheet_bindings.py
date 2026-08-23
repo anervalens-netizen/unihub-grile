@@ -76,7 +76,9 @@ def configure_sheet_binding(
     """Create or explicitly rebind one store under a row lock.
 
     Initial creation is idempotent. Changing an existing identity requires a
-    compare-and-swap value (`expected_current_spreadsheet_id`) plus a reason.
+    compare-and-swap value (``expected_current_spreadsheet_id``) plus a reason.
+    An exact replay of an already-applied identity is also idempotent, even if
+    the caller still carries the previous CAS value after losing the response.
     A Google spreadsheet may belong to only one store globally.
     """
 
@@ -166,14 +168,6 @@ def configure_sheet_binding(
     )
     requested_identity = (spreadsheet_id, sheet_name_grila, sheet_name_pontaj)
     if current_identity == requested_identity:
-        if (
-            expected_current_spreadsheet_id is not None
-            and expected_current_spreadsheet_id != binding.spreadsheet_id
-        ):
-            raise ConflictError(
-                "sheet binding changed since it was read",
-                details={"code": "SHEET_BINDING_STALE"},
-            )
         return SheetBindingChange(binding=binding, created=False, changed=False)
 
     if expected_current_spreadsheet_id != binding.spreadsheet_id:
