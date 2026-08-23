@@ -49,40 +49,62 @@ def _expected_schema_version() -> str:
 def _dependency_report(session: Session) -> HealthReport:
     settings = get_settings()
     expected = _expected_schema_version()
-    database = False
-    schema_version: str | None = None
-    stale_running_jobs: int | None = None
-
     try:
         session.execute(text("SELECT 1"))
-        database = True
+    except Exception:
+        return HealthReport(
+            status="down",
+            database=False,
+            schema_version=None,
+            expected_schema_version=expected,
+            schema_current=False,
+            worker_enabled=settings.worker_enabled,
+            stale_running_jobs=None,
+            app_version=APP_VERSION,
+        )
+
+    schema_version: str | None = None
+    try:
         row = session.execute(text("SELECT version_num FROM alembic_version")).first()
         if row is not None:
             schema_version = str(row[0])
+    except Exception:
+        # A missing/broken migration table can abort a PostgreSQL transaction.
+        # The diagnostic probe is read-only, so rollback restores the session
+        # before returning the fail-closed schema result.
+        session.rollback()
+
+    schema_current = schema_version == expected
+    stale_running_jobs: int | None = None
+    if schema_current:
         if settings.worker_enabled:
-            cutoff = datetime.now(tz=UTC) - timedelta(seconds=settings.worker_lease_seconds)
-            stale_running_jobs = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(OutboxJob)
-                    .where(
-                        OutboxJob.status == "RUNNING",
-                        or_(OutboxJob.locked_at.is_(None), OutboxJob.locked_at <= cutoff),
+            try:
+                cutoff = datetime.now(tz=UTC) - timedelta(seconds=settings.worker_lease_seconds)
+                stale_running_jobs = int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(OutboxJob)
+                        .where(
+                            OutboxJob.status == "RUNNING",
+                            or_(
+                                OutboxJob.locked_at.is_(None),
+                                OutboxJob.locked_at <= cutoff,
+                            ),
+                        )
                     )
+                    or 0
                 )
-                or 0
-            )
+            except Exception:
+                session.rollback()
+                stale_running_jobs = None
         else:
             stale_running_jobs = 0
-    except Exception:
-        database = False
 
-    schema_current = database and schema_version == expected
     worker_ready = not settings.worker_enabled or stale_running_jobs == 0
-    ready = database and schema_current and worker_ready
+    ready = schema_current and worker_ready
     return HealthReport(
         status="ok" if ready else "down",
-        database=database,
+        database=True,
         schema_version=schema_version,
         expected_schema_version=expected,
         schema_current=schema_current,
