@@ -125,7 +125,7 @@ def test_epay_preservation_is_month_bound_and_rejects_ambiguous_identity() -> No
     }
     assert preserved_epay_values(same_month, month_id="month_sep") == {}
 
-    duplicate = same_month + [["person_a", 9, 9]]
+    duplicate = [*same_month, ["person_a", 9, 9]]
     assert preserved_epay_values(duplicate, month_id="month_aug") == {}
 
 
@@ -158,7 +158,7 @@ def test_epay_readback_requires_exact_marker_revision_and_person_set() -> None:
     assert "EPAY_LAYOUT_REVISION_MISMATCH" in failed.structural_errors
     assert all(item["value"] is None for item in failed.observations)
 
-    extra_person = valid + [["person_c", 1, 1]]
+    extra_person = [*valid, ["person_c", 1, 1]]
     failed_set = parse_epay_readback(
         extra_person,
         month_id="month_aug",
