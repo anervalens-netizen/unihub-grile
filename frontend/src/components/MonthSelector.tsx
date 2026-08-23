@@ -1,4 +1,5 @@
 import type { MonthSummary } from "../api/client";
+import { monthStateLabel } from "../operationalStatus";
 
 export interface MonthSelectorProps {
   months: MonthSummary[];
@@ -18,8 +19,7 @@ export function MonthSelector({ months, value, onChange, error }: MonthSelectorP
   if (months.length === 0) {
     return (
       <p className="muted">
-        Nicio lună disponibilă pentru tenant. Folosește POST /ingest/fixture
-        pentru a popula luna curentă.
+        Nu există luni disponibile pentru organizația curentă.
       </p>
     );
   }
@@ -33,7 +33,7 @@ export function MonthSelector({ months, value, onChange, error }: MonthSelectorP
       >
         {months.map((month) => (
           <option key={month.id} value={month.id}>
-            {month.year}-{String(month.month).padStart(2, "0")} · {month.state} · rev {month.revision}
+            {month.year}-{String(month.month).padStart(2, "0")} · {monthStateLabel(month.state)} · rev. {month.revision}
           </option>
         ))}
       </select>
