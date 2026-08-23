@@ -17,6 +17,7 @@ from .api.catalog import router as catalog_router
 from .api.close import router as close_router
 from .api.error_contract import (
     domain_error_response,
+    error_content,
     http_error_response,
     validation_error_response,
 )
@@ -85,16 +86,23 @@ def create_app() -> FastAPI:
                     duration_ms=round((perf_counter() - started) * 1000, 2),
                     **safe_exception_fields(exc),
                 )
-                raise
+                response = JSONResponse(
+                    status_code=500,
+                    content=error_content(
+                        code="INTERNAL_ERROR",
+                        message="internal server error",
+                    ),
+                )
             response.headers[CORRELATION_HEADER] = correlation_id
-            log.info(
-                "http_request_completed",
-                correlation_id=correlation_id,
-                method=request.method,
-                route=_route_template(request),
-                status_code=response.status_code,
-                duration_ms=round((perf_counter() - started) * 1000, 2),
-            )
+            if response.status_code < 500:
+                log.info(
+                    "http_request_completed",
+                    correlation_id=correlation_id,
+                    method=request.method,
+                    route=_route_template(request),
+                    status_code=response.status_code,
+                    duration_ms=round((perf_counter() - started) * 1000, 2),
+                )
             return response
 
     @app.exception_handler(DomainError)
