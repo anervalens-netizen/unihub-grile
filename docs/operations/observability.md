@@ -3,9 +3,10 @@
 Status: server-test candidate contract  
 Tracker: issue #4 (`OPS-001`)
 
-UniHub Grile uses JSON structured logs for operational diagnosis. Logs are a
-**metadata channel**, not a business-data export. The implementation is
-fail-closed: only an explicit scalar allowlist may reach stdout.
+UniHub Grile uses JSON structured application events for operational diagnosis.
+Those events are a **metadata channel**, not a business-data export. The
+application event pipeline is fail-closed: only an explicit scalar allowlist may
+reach its JSON output.
 
 ## Correlation lifecycle
 
@@ -37,7 +38,9 @@ The API emits one structured completion event per handled request:
 
 Unhandled middleware failures use `http_request_failed` with the same safe
 metadata plus an exception class and, when available, a conservative typed error
-code.
+code. The client receives the canonical generic `INTERNAL_ERROR` envelope and
+the correlation header; the arbitrary exception message is neither reflected to
+the client nor re-thrown into Uvicorn's traceback logger.
 
 The concrete URL, path parameters and query string are deliberately not logged.
 An unmatched route is recorded as `route=unmatched` rather than echoing the
@@ -55,11 +58,12 @@ Worker retry/failure events may contain only operational queue metadata such as:
 - lease/status metadata;
 - exception **type** and safe typed code.
 
-Arbitrary exception messages are not emitted to stdout. Richer failure text may
-remain in the existing durable `last_error`/provider diagnostic state, where API
-scope/redaction and operator workflows already govern access.
+Arbitrary exception messages are not emitted by Grile worker structured events.
+Richer failure text may remain in the existing durable `last_error`/provider
+diagnostic state, where API scope/redaction and operator workflows already
+govern access.
 
-## Explicitly forbidden in stdout logs
+## Explicitly forbidden in Grile application events
 
 Do not log any of the following, even at debug level:
 
@@ -79,10 +83,10 @@ accident.
 
 ## Safe-field policy
 
-`core/logging.py` owns the stdout allowlist. Unknown keys are dropped rather than
-heuristically scrubbed. Only bounded strings, numbers, booleans and `null` are
-retained. Collections/objects are discarded even if attached to an allowlisted
-key.
+`core/logging.py` owns the Grile application-event allowlist. Unknown keys are
+dropped rather than heuristically scrubbed. Only bounded strings, numbers,
+booleans and `null` are retained. Collections/objects are discarded even if
+attached to an allowlisted key.
 
 This is intentional: a future developer writing
 `log.info("x", payload=request.json())` must not create a data leak merely
@@ -114,7 +118,7 @@ When troubleshooting:
 2. search API structured logs by that ID;
 3. if the action enqueued work, search worker logs by the same ID;
 4. use the scoped Joburi/API diagnostic surface for controlled failure detail;
-5. use audit records for business-mutation evidence rather than stdout logs.
+5. use audit records for business-mutation evidence rather than application logs.
 
 Do not solve missing observability by temporarily logging raw payloads in a
 server-test or production-capable environment.
