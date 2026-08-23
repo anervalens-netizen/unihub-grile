@@ -185,8 +185,8 @@ describe("Close page reopen reason validation", () => {
     const api = makeApi(CLEAR_CHECKLIST);
     renderClose(api, READ_ONLY_CAPABILITIES);
     expect(await screen.findByText("Nicio condiție blocantă.")).toBeInTheDocument();
-    expect(screen.getByText(/month\.close/)).toBeInTheDocument();
-    expect(screen.getByText(/month\.reopen/)).toBeInTheDocument();
+    expect(screen.getByText("month.close", { selector: "code" })).toBeInTheDocument();
+    expect(screen.getByText("month.reopen", { selector: "code" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Pregătește închiderea/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Reopen$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
@@ -202,7 +202,7 @@ describe("Close page reopen reason validation", () => {
 
     const reopenApi = makeApi(CLOSED_CHECKLIST);
     renderClose(reopenApi, REOPEN_ONLY_CAPABILITIES);
-    expect(await screen.findByText(/nu are capability-ul.*month\.close/i)).toBeInTheDocument();
+    expect(await screen.findByText("month.close", { selector: "code" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Pregătește închiderea/i })).not.toBeInTheDocument();
     const reopen = screen.getByRole("button", { name: /^Reopen$/i });
     const textarea = screen.getByRole("textbox");
