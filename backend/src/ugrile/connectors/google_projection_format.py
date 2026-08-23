@@ -198,7 +198,21 @@ def matrices_match(
     *,
     width: int,
 ) -> bool:
-    return normalize_matrix(expected, width=width) == normalize_matrix(actual, width=width)
+    """Compare a bounded write/readback while tolerating omitted blank tail rows.
+
+    Sheets Values GET may omit trailing rows that are entirely blank. Those
+    omissions are semantically equivalent to the explicit blank padding we
+    write to clear stale rows. Any returned non-blank stale row still causes a
+    mismatch because the read range is bounded to the exact padded write size.
+    """
+
+    expected_matrix = normalize_matrix(expected, width=width)
+    actual_matrix = normalize_matrix(actual, width=width)
+    if len(actual_matrix) > len(expected_matrix):
+        return False
+    blank_row = [""] * width
+    actual_matrix.extend([list(blank_row) for _ in range(len(expected_matrix) - len(actual_matrix))])
+    return expected_matrix == actual_matrix
 
 
 def _required_block(payload: Mapping[str, Any], key: str) -> Mapping[str, Any]:
