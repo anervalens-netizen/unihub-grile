@@ -28,6 +28,7 @@ from .api.s5b import router as s5b_router
 from .api.schedule import router as schedule_router
 from .api.session import router as session_router
 from .api.sheet_bindings import router as sheet_bindings_router
+from .api.sheet_reconciliation import router as sheet_reconciliation_router
 from .api.worker_api import router as worker_router
 from .core.config import get_settings
 from .core.correlation import (
@@ -105,6 +106,7 @@ def create_app() -> FastAPI:
     app.include_router(s5a_router)
     app.include_router(s5b_router)
     app.include_router(sheet_bindings_router)
+    app.include_router(sheet_reconciliation_router)
     app.include_router(worker_router)
     return app
 
