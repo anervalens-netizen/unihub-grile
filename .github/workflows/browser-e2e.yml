@@ -78,7 +78,7 @@ jobs:
 
       - name: Seed realistic browser dataset
         working-directory: backend
-        run: python tests/fixtures/seed_browser_e2e.py
+        run: python -m tests.fixtures.seed_browser_e2e
 
       - name: Start local API and frontend
         run: |
