@@ -11,9 +11,7 @@ it changes selection semantics, not the approved workbook layout.
 
 from __future__ import annotations
 
-import io
 import json
-import zipfile
 from collections.abc import Iterable
 from datetime import date
 from decimal import Decimal
@@ -33,6 +31,7 @@ from ..repositories.models import (
     SiteDayAssignment,
     Store,
 )
+from .xlsx_artifacts import deterministic_zip, save_workbook_deterministic
 from .xlsx_export import (
     SCHEMA,
     ExportEnvelope,
@@ -233,9 +232,7 @@ def render_store_export_at_revision(
         month_year=month.year,
         month_month=month.month,
     )
-    buffer = io.BytesIO()
-    workbook.save(buffer)
-    payload = buffer.getvalue()
+    payload = save_workbook_deterministic(workbook)
     filename = _safe_filename(store.internal_code, month_view, "grila_pontaj")
     checksum = _checksum(payload)
     return ExportEnvelope(
@@ -321,9 +318,7 @@ def render_pontaj_only_export_at_revision(
         month_year=month.year,
         month_month=month.month,
     )
-    buffer = io.BytesIO()
-    workbook.save(buffer)
-    payload = buffer.getvalue()
+    payload = save_workbook_deterministic(workbook)
     suffix = "pontaj_all" if len(selected) != 1 else "pontaj_1"
     filename = f"ugrile_{month.year:04d}-{month.month:02d}_{suffix}.xlsx"
     checksum = _checksum(payload)
@@ -379,48 +374,54 @@ def render_bulk_export_at_revision(
     )
 
     entries: list[dict[str, object]] = []
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for store_id in selected:
-            envelope = render_store_export_at_revision(
-                session,
-                tenant_id=tenant_id,
-                month=month,
-                store_id=store_id,
-                revision=revision,
-            )
-            store = stores[store_id]
-            archive.writestr(envelope.filename, envelope.bytes_)
-            entries.append(
-                {
-                    "store_id": store.id,
-                    "internal_code": store.internal_code,
-                    "filename": envelope.filename,
-                    "checksum_sha256": envelope.checksum,
-                    "size_bytes": len(envelope.bytes_),
-                    "kind": "EXPORT_XLSX_STORE",
-                }
-            )
-        from ..domain.rule_pack import RULE_PACK_VERSION
-
-        manifest = {
-            "schema": SCHEMA,
-            "tenant_id": tenant_id,
-            "month_id": month.id,
-            "year": month.year,
-            "month": month.month,
-            "revision": revision,
-            "rule_pack_version": RULE_PACK_VERSION,
-            "generation": generation,
-            "store_count": len(entries),
-            "entries": entries,
-        }
-        archive.writestr(
-            "manifest.json",
-            json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2),
+    archive_entries: list[tuple[str, bytes]] = []
+    for store_id in selected:
+        envelope = render_store_export_at_revision(
+            session,
+            tenant_id=tenant_id,
+            month=month,
+            store_id=store_id,
+            revision=revision,
+        )
+        store = stores[store_id]
+        archive_entries.append((envelope.filename, envelope.bytes_))
+        entries.append(
+            {
+                "store_id": store.id,
+                "internal_code": store.internal_code,
+                "filename": envelope.filename,
+                "checksum_sha256": envelope.checksum,
+                "size_bytes": len(envelope.bytes_),
+                "kind": "EXPORT_XLSX_STORE",
+            }
         )
 
-    payload = buffer.getvalue()
+    from ..domain.rule_pack import RULE_PACK_VERSION
+
+    manifest = {
+        "schema": SCHEMA,
+        "tenant_id": tenant_id,
+        "month_id": month.id,
+        "year": month.year,
+        "month": month.month,
+        "revision": revision,
+        "rule_pack_version": RULE_PACK_VERSION,
+        "generation": generation,
+        "store_count": len(entries),
+        "entries": entries,
+    }
+    archive_entries.append(
+        (
+            "manifest.json",
+            json.dumps(
+                manifest,
+                sort_keys=True,
+                ensure_ascii=False,
+                indent=2,
+            ).encode("utf-8"),
+        )
+    )
+    payload = deterministic_zip(archive_entries)
     filename = f"ugrile_{month.year:04d}-{month.month:02d}_bulk.zip"
     checksum = _checksum(payload)
     return ExportEnvelope(
