@@ -10,6 +10,7 @@ import { isolatedRead } from "../api/isolatedRead";
 import { hasCapability, type Capability } from "../capabilities";
 import { MonthSelector } from "../components/MonthSelector";
 import { LoadingState, RequestError, requestErrorMessage } from "../components/RequestState";
+import { auditActionLabel, monthStateLabel } from "../operationalStatus";
 
 export interface CloseProps {
   api: ApiClient;
@@ -169,11 +170,11 @@ export function Close({ api, months, monthsError, capabilities }: CloseProps) {
           applyCloseState(state);
           setConfirmClose(false);
           setCloseError(
-            `Revizia s-a schimbat. Checklist-ul a fost reîncărcat la revizia ${state.checklist.expected_revision}; verifică din nou înainte de închidere.`,
+            `Revizia s-a schimbat. Validările au fost reîncărcate la revizia ${state.checklist.expected_revision}; verifică din nou înainte de închidere.`,
           );
         } catch (refreshError: unknown) {
           setCloseError(
-            `Revizia s-a schimbat, iar reîncărcarea checklist-ului a eșuat: ${requestErrorMessage(refreshError)}`,
+            `Revizia s-a schimbat, iar reîncărcarea validărilor a eșuat: ${requestErrorMessage(refreshError)}`,
           );
         }
       } else {
@@ -202,9 +203,9 @@ export function Close({ api, months, monthsError, capabilities }: CloseProps) {
   }
 
   return (
-    <section className="card" aria-label="Close">
+    <section className="card" aria-label="Management lună">
       <header className="card-header">
-        <h2>Close</h2>
+        <h2>Management lună</h2>
         <MonthSelector
           months={months}
           value={monthId}
@@ -213,21 +214,19 @@ export function Close({ api, months, monthsError, capabilities }: CloseProps) {
         />
       </header>
       {error && <RequestError message={error} onRetry={retry} />}
-      {loading && <LoadingState>Încarc checklist-ul și istoricul de management…</LoadingState>}
+      {loading && <LoadingState>Încarc validările și istoricul de management…</LoadingState>}
       {!loading && !error && checklist && (
         <div className="close-grid">
-          <section className="close-checklist" aria-label="Checklist">
-            <h3>Checklist</h3>
+          <section className="close-checklist" aria-label="Validări">
+            <h3>Validări</h3>
             <p className="muted">
-              Stare: <strong>{checklist.state}</strong> · rev{" "}
-              <strong>{checklist.revision}</strong> · expected_revision{" "}
-              <strong>{checklist.expected_revision}</strong>
+              Stare: <strong>{monthStateLabel(checklist.state)}</strong> · rev. <strong>{checklist.revision}</strong> · revizia așteptată <strong>{checklist.expected_revision}</strong>
             </p>
             <p className="muted">
               Condiții blocante: <strong>{blockingCount}</strong> · avertismente: <strong>{advisoryCount}</strong>
             </p>
             {checklist.blockers.length === 0 ? (
-              <div className="empty-state"><strong>Nicio condiție blocantă.</strong><span>Checklist-ul curent nu conține blockers sau avertismente.</span></div>
+              <div className="empty-state"><strong>Nicio condiție blocantă.</strong><span>Validările curente nu conțin condiții blocante sau avertismente.</span></div>
             ) : (
               <ul>
                 {checklist.blockers.map((item, index) => (
@@ -239,10 +238,10 @@ export function Close({ api, months, monthsError, capabilities }: CloseProps) {
           <section className="close-action" aria-label="Închidere lună">
             <h3>Închidere lună</h3>
             {!canCloseAction ? (
-              <p className="muted">Sesiunea curentă poate consulta starea de close, dar nu are capability-ul <code>month.close</code>.</p>
+              <p className="muted">Sesiunea curentă este doar pentru consultare; închiderea lunii nu este permisă.</p>
             ) : (
               <>
-                <p className="muted">Confirmă explicit după verificarea checklist-ului. Revizia trimisă este {checklist.expected_revision}.</p>
+                <p className="muted">Confirmă explicit după verificarea validărilor. Revizia trimisă este {checklist.expected_revision}.</p>
                 {checklist.blockers.some((item) => item.blocking) && <p className="error-text">Închiderea este blocată până la rezolvarea tuturor condițiilor blocante.</p>}
                 {!confirmClose ? (
                   <button type="button" className="primary" disabled={checklist.blockers.some((item) => item.blocking) || checklist.state === "CLOSED"} onClick={() => setConfirmClose(true)}>Pregătește închiderea</button>
@@ -257,15 +256,15 @@ export function Close({ api, months, monthsError, capabilities }: CloseProps) {
               </>
             )}
           </section>
-          <section className="close-reopen" aria-label="Reopen admin">
-            <h3>Reopen</h3>
+          <section className="close-reopen" aria-label="Redeschidere lună">
+            <h3>Redeschidere lună</h3>
             {!canReopenAction ? (
-              <p className="muted">Sesiunea curentă nu are capability-ul <code>month.reopen</code>; istoricul rămâne disponibil doar pentru citire.</p>
+              <p className="muted">Sesiunea curentă este doar pentru consultare; redeschiderea lunii nu este permisă.</p>
             ) : (
               <>
                 <p className="muted">
-                  Reopen este disponibil numai pentru o lună CLOSED și necesită un motiv de minim 4 caractere.
-                  Tranziția este jurnalizată în audit-ul imuabil.
+                  Redeschiderea este disponibilă numai pentru o lună închisă și necesită un motiv de minim 4 caractere.
+                  Tranziția este jurnalizată în istoricul de audit.
                 </p>
                 <label>
                   <span className="muted">Motiv</span>
@@ -283,7 +282,7 @@ export function Close({ api, months, monthsError, capabilities }: CloseProps) {
                   className={reasonValid || reason.length === 0 || !canReopenCurrentMonth ? "muted" : "error-text"}
                 >
                   {checklist.state !== "CLOSED"
-                    ? "Reopen devine disponibil când luna este CLOSED."
+                    ? "Redeschiderea devine disponibilă când luna este închisă."
                     : reason.length === 0
                       ? "Scrie motivul."
                       : reasonValid
@@ -296,7 +295,7 @@ export function Close({ api, months, monthsError, capabilities }: CloseProps) {
                   disabled={!canReopenCurrentMonth || !reasonValid}
                   onClick={handleReopen}
                 >
-                  Reopen
+                  Redeschide
                 </button>
                 {reopenError && (
                   <p className="error" role="alert">
@@ -306,24 +305,23 @@ export function Close({ api, months, monthsError, capabilities }: CloseProps) {
               </>
             )}
           </section>
-          <section className="close-timeline" aria-label="Audit">
-            <h3>Audit timeline</h3>
+          <section className="close-timeline" aria-label="Istoric audit">
+            <h3>Istoric audit</h3>
             {timelineError && <RequestError message={`Istoricul audit este indisponibil: ${timelineError}`} onRetry={retry} />}
             {!timelineError && timeline.length === 0 ? (
-              <div className="empty-state"><strong>Fără evenimente de audit.</strong><span>Nu există încă evenimente close/reopen pentru luna selectată.</span></div>
+              <div className="empty-state"><strong>Fără evenimente de audit.</strong><span>Nu există încă evenimente de închidere sau redeschidere pentru luna selectată.</span></div>
             ) : (
               <ol className="audit-timeline">
                 {timeline.map((event) => {
                   const auditBlockers = parseAuditBlockers(event.blockers);
                   return (
                     <li key={event.id}>
-                      <strong>{event.action}</strong>{" "}
-                      <span className="muted">#{event.id}</span> · {event.previous_state} → {event.new_state} · rev{" "}
-                      {event.revision_before} → {event.revision_after} · {event.actor_id}
+                      <strong>{auditActionLabel(event.action)}</strong>{" "}
+                      <span className="muted">#{event.id}</span> · {monthStateLabel(event.previous_state)} → {monthStateLabel(event.new_state)} · rev. {event.revision_before} → {event.revision_after} · {event.actor_id}
                       {event.reason && <> · motiv: {event.reason}</>}
                       {auditBlockers.length > 0 ? (
                         <details>
-                          <summary>Snapshot validare ({auditBlockers.length})</summary>
+                          <summary>Validări la momentul acțiunii ({auditBlockers.length})</summary>
                           <ul>
                             {auditBlockers.map((blocker, index) => (
                               <li key={`${event.id}-${blocker.code}-${index}`}>
@@ -336,7 +334,7 @@ export function Close({ api, months, monthsError, capabilities }: CloseProps) {
                           </ul>
                         </details>
                       ) : (
-                        <p className="muted">Snapshot validare: fără blockers.</p>
+                        <p className="muted">Validări la momentul acțiunii: fără condiții.</p>
                       )}
                       <p className="muted">
                         Lanț audit: precedent <code>{event.previous_event_digest ?? "GENESIS"}</code> → curent <code>{event.event_digest}</code>
