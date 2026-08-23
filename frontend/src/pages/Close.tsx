@@ -8,6 +8,7 @@ import {
 } from "../api/client";
 import { isolatedRead } from "../api/isolatedRead";
 import { MonthSelector } from "../components/MonthSelector";
+import { LoadingState, RequestError, requestErrorMessage } from "../components/RequestState";
 
 export interface CloseProps {
   api: ApiClient;
@@ -42,10 +43,6 @@ interface CloseState {
   checklist: CloseChecklist;
   timeline: CloseEventOut[];
   timelineError: string | null;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function isStaleRevision(error: unknown): boolean {
@@ -90,6 +87,8 @@ export function Close({ api, months, monthsError }: CloseProps) {
   const [timeline, setTimeline] = useState<CloseEventOut[]>([]);
   const [timelineError, setTimelineError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
   const [reason, setReason] = useState("");
   const [reopenError, setReopenError] = useState<string | null>(null);
   const [closeError, setCloseError] = useState<string | null>(null);
@@ -105,14 +104,18 @@ export function Close({ api, months, monthsError }: CloseProps) {
       setChecklist(null);
       setTimeline([]);
       setTimelineError(null);
+      setLoading(false);
       return;
     }
     let cancelled = false;
+    setChecklist(null);
+    setTimeline([]);
     setError(null);
     setTimelineError(null);
     setCloseError(null);
     setReopenError(null);
     setConfirmClose(false);
+    setLoading(true);
     loadCloseState(api, monthId)
       .then((state) => {
         if (cancelled) return;
@@ -121,13 +124,17 @@ export function Close({ api, months, monthsError }: CloseProps) {
         setTimelineError(state.timelineError);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(errorMessage(e));
+        if (!cancelled) setError(requestErrorMessage(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [api, monthId]);
+  }, [api, monthId, reloadToken]);
 
+  const retry = () => setReloadToken((value) => value + 1);
   const trimmedReason = reason.trim();
   const reasonValid = trimmedReason.length >= 4;
   const blockingCount = checklist?.blockers.filter((item) => item.blocking).length ?? 0;
@@ -162,11 +169,11 @@ export function Close({ api, months, monthsError }: CloseProps) {
           );
         } catch (refreshError: unknown) {
           setCloseError(
-            `Revizia s-a schimbat, iar reîncărcarea checklist-ului a eșuat: ${errorMessage(refreshError)}`,
+            `Revizia s-a schimbat, iar reîncărcarea checklist-ului a eșuat: ${requestErrorMessage(refreshError)}`,
           );
         }
       } else {
-        setCloseError(errorMessage(e));
+        setCloseError(requestErrorMessage(e));
       }
     } finally {
       setClosing(false);
@@ -186,7 +193,7 @@ export function Close({ api, months, monthsError }: CloseProps) {
       setTimeline(timelineRead.value ?? []);
       setTimelineError(timelineRead.error);
     } catch (e: unknown) {
-      setReopenError(errorMessage(e));
+      setReopenError(requestErrorMessage(e));
     }
   }
 
@@ -201,12 +208,9 @@ export function Close({ api, months, monthsError }: CloseProps) {
           error={monthsError}
         />
       </header>
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
-      {checklist && (
+      {error && <RequestError message={error} onRetry={retry} />}
+      {loading && <LoadingState>Încarc checklist-ul și istoricul de management…</LoadingState>}
+      {!loading && !error && checklist && (
         <div className="close-grid">
           <section className="close-checklist" aria-label="Checklist">
             <h3>Checklist</h3>
@@ -219,7 +223,7 @@ export function Close({ api, months, monthsError }: CloseProps) {
               Condiții blocante: <strong>{blockingCount}</strong> · avertismente: <strong>{advisoryCount}</strong>
             </p>
             {checklist.blockers.length === 0 ? (
-              <p className="muted">Nicio condiție blocantă detectată.</p>
+              <div className="empty-state"><strong>Nicio condiție blocantă.</strong><span>Checklist-ul curent nu conține blockers sau avertismente.</span></div>
             ) : (
               <ul>
                 {checklist.blockers.map((item, index) => (
@@ -288,9 +292,9 @@ export function Close({ api, months, monthsError }: CloseProps) {
           </section>
           <section className="close-timeline" aria-label="Audit">
             <h3>Audit timeline</h3>
-            {timelineError && <p className="error-text compact-error" role="alert">Istoricul audit este indisponibil: {timelineError}</p>}
+            {timelineError && <RequestError message={`Istoricul audit este indisponibil: ${timelineError}`} onRetry={retry} />}
             {!timelineError && timeline.length === 0 ? (
-              <p className="muted">Niciun eveniment de close/reopen încă.</p>
+              <div className="empty-state"><strong>Fără evenimente de audit.</strong><span>Nu există încă evenimente close/reopen pentru luna selectată.</span></div>
             ) : (
               <ol className="audit-timeline">
                 {timeline.map((event) => {
