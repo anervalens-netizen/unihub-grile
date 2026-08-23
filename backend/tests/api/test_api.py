@@ -44,20 +44,33 @@ def worker_runner(engine):
 HEADERS = {"X-Ugrile-Identity": "user_admin", "X-Ugrile-Tenant": "tenant_acme"}
 
 
-def test_health(client):
+def test_livez_is_process_only(client):
+    r = client.get("/livez")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "app_version": "0.2.0"}
+
+
+def test_health_is_diagnostic_even_when_schema_is_not_bootstrapped(client):
     r = client.get("/healthz")
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] == "ok"
+    assert body["status"] == "degraded"
     assert body["database"] is True
+    assert body["schema_version"] is None
+    assert body["schema_current"] is False
+    assert body["expected_schema_version"] != "missing"
+    assert body["worker_enabled"] is True
+    assert body["stale_running_jobs"] is None
 
 
-def test_ready(client):
+def test_ready_fails_closed_when_schema_is_not_at_head(client):
     r = client.get("/readyz")
-    # SQLite has no alembic_version; readyz surfaces that.
-    assert r.status_code == 200
+    assert r.status_code == 503
     body = r.json()
-    assert body["schema_version"] == "missing"
+    assert body["status"] == "down"
+    assert body["database"] is True
+    assert body["schema_version"] is None
+    assert body["schema_current"] is False
 
 
 def test_program_cell_create_and_conflict(client, faker_tenant):
