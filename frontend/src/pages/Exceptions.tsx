@@ -5,6 +5,7 @@ import {
   type MonthSummary,
 } from "../api/client";
 import { MonthSelector } from "../components/MonthSelector";
+import { LoadingState, RequestError, requestErrorMessage } from "../components/RequestState";
 import { navigate } from "../router";
 
 export interface ExceptionsProps {
@@ -19,6 +20,8 @@ export function Exceptions({ api, months, monthsError }: ExceptionsProps) {
   const [monthId, setMonthId] = useState<string | null>(months[0]?.id ?? null);
   const [entries, setEntries] = useState<ExceptionEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
   const [filter, setFilter] = useState<Filter>("all");
 
   useEffect(() => {
@@ -28,22 +31,28 @@ export function Exceptions({ api, months, monthsError }: ExceptionsProps) {
   useEffect(() => {
     if (!monthId) {
       setEntries([]);
+      setLoading(false);
       return;
     }
     let cancelled = false;
+    setEntries([]);
     setError(null);
+    setLoading(true);
     api
       .get<ExceptionEntry[]>(`/months/${monthId}/exceptions`)
       .then((response) => {
         if (!cancelled) setEntries(response);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(requestErrorMessage(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [api, monthId]);
+  }, [api, monthId, reloadToken]);
 
   const visible = useMemo(() => {
     return filter === "all"
@@ -97,28 +106,25 @@ export function Exceptions({ api, months, monthsError }: ExceptionsProps) {
       </header>
 
       <section className="kpi-strip" aria-label="Sumar excepții">
-        <Metric label="Total" value={String(summary.total)} detail="în luna selectată" />
-        <Metric label="Blocante" value={String(summary.blocking)} detail="opresc închiderea" />
-        <Metric label="Magazine" value={String(summary.stores)} detail="cu excepții contextualizate" />
-        <Metric label="Agenți" value={String(summary.people)} detail="cu excepții contextualizate" />
+        <Metric label="Total" value={loading || error ? "—" : String(summary.total)} detail="în luna selectată" />
+        <Metric label="Blocante" value={loading || error ? "—" : String(summary.blocking)} detail="opresc închiderea" />
+        <Metric label="Magazine" value={loading || error ? "—" : String(summary.stores)} detail="cu excepții contextualizate" />
+        <Metric label="Agenți" value={loading || error ? "—" : String(summary.people)} detail="cu excepții contextualizate" />
       </section>
 
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
-      {!error && entries.length === 0 ? (
+      {error && <RequestError message={error} onRetry={() => setReloadToken((value) => value + 1)} />}
+      {loading && <LoadingState>Încarc excepțiile…</LoadingState>}
+      {!loading && !error && entries.length === 0 ? (
         <div className="empty-state">
           <strong>Nicio excepție deschisă.</strong>
           <span>Serverul nu raportează situații care necesită intervenție pentru luna selectată.</span>
         </div>
-      ) : visible.length === 0 ? (
+      ) : !loading && !error && visible.length === 0 ? (
         <div className="empty-state">
           <strong>Nicio excepție pentru filtrul curent.</strong>
           <span>Există excepții în lună, dar niciuna nu corespunde filtrului selectat.</span>
         </div>
-      ) : (
+      ) : !loading && !error ? (
         <ul className="exception-list">
           {visible.map((entry, index) => (
             <li key={`${entry.code}-${entry.business_date}-${index}`}>
@@ -172,7 +178,7 @@ export function Exceptions({ api, months, monthsError }: ExceptionsProps) {
             </li>
           ))}
         </ul>
-      )}
+      ) : null}
     </section>
   );
 }
