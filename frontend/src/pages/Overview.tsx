@@ -3,6 +3,7 @@ import {
   type ApiClient,
   type MonthSummary,
   type OverviewReport,
+  type ProgramGrid,
   type StoreSummary,
 } from "../api/client";
 import { MonthSelector } from "../components/MonthSelector";
@@ -18,6 +19,7 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
   const [monthId, setMonthId] = useState<string | null>(months[0]?.id ?? null);
   const [report, setReport] = useState<OverviewReport | null>(null);
   const [stores, setStores] = useState<StoreSummary[]>([]);
+  const [peopleTotal, setPeopleTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -27,18 +29,22 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
   useEffect(() => {
     if (!monthId) {
       setReport(null);
+      setPeopleTotal(null);
       return;
     }
     let cancelled = false;
     setError(null);
+    setPeopleTotal(null);
     Promise.all([
       api.get<OverviewReport>(`/months/${monthId}/overview`),
       api.get<StoreSummary[]>("/catalog/stores"),
+      api.get<ProgramGrid>(`/months/${monthId}/program?perspective=people`).catch(() => null),
     ])
-      .then(([overview, storeList]) => {
+      .then(([overview, storeList, peopleProgram]) => {
         if (cancelled) return;
         setReport(overview);
         setStores(storeList.filter((store) => store.is_active));
+        setPeopleTotal(peopleProgram?.rows.length ?? null);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -61,6 +67,20 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
     return map;
   }, [report]);
 
+  const operational = useMemo(() => {
+    if (!report) return null;
+    const daysInMonth = new Date(Date.UTC(report.year, report.month, 0)).getUTCDate();
+    const totalStoreDays = report.kpis.stores_total * daysInMonth;
+    const completedStoreDays = Math.max(0, totalStoreDays - report.kpis.days_uncovered);
+    const calendarCompletion = totalStoreDays === 0
+      ? 0
+      : Math.round((completedStoreDays / totalStoreDays) * 100);
+    const targetAnomalies = report.needs_attention.filter(
+      (item) => item.code === "TARGET_ZERO_FOR_WORKED_STORE",
+    ).length;
+    return { calendarCompletion, targetAnomalies };
+  }, [report]);
+
   return (
     <div className="command-page">
       <section className="command-hero">
@@ -79,12 +99,17 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
       {error && <p className="error" role="alert">{error}</p>}
       {!report && !error && <div className="loading-panel">Încarc situația operațională…</div>}
 
-      {report && (
+      {report && operational && (
         <>
           <section className="kpi-strip" aria-label="Indicatori principali">
             <Metric label="Magazine" value={`${report.kpis.stores_covered}/${report.kpis.stores_total}`} detail="cu program acoperit" tone={report.kpis.stores_covered === report.kpis.stores_total ? "ok" : "warn"} />
-            <Metric label="Zile neacoperite" value={String(report.kpis.days_uncovered)} detail="necesită completare" tone={report.kpis.days_uncovered === 0 ? "ok" : "err"} />
+            <Metric label="Persoane" value={peopleTotal === null ? "—" : String(peopleTotal)} detail={peopleTotal === null ? "scope indisponibil" : "în scope-ul lunii"} tone="neutral" />
+            <Metric label="Calendar" value={`${operational.calendarCompletion}%`} detail={`${report.kpis.days_uncovered} zile neacoperite`} tone={operational.calendarCompletion === 100 ? "ok" : "warn"} />
             <Metric label="Conflicte" value={String(report.kpis.conflicts)} detail="agent / zi" tone={report.kpis.conflicts === 0 ? "ok" : "err"} />
+            <Metric label="Targeturi" value={String(operational.targetAnomalies)} detail="lipsă / zero pe zile lucrate" tone={operational.targetAnomalies === 0 ? "ok" : "warn"} />
+            <Metric label="E-pay" value={report.kpis.epay_fresh && report.kpis.epay_invalid === 0 ? "OK" : "Atenție"} detail={`${report.kpis.epay_invalid} valori invalide`} tone={report.kpis.epay_fresh && report.kpis.epay_invalid === 0 ? "ok" : "err"} />
+            <Metric label="Sync / export" value={report.kpis.sheet_sync_stale > 0 ? `${report.kpis.sheet_sync_stale} în lucru` : "La zi"} detail={`${report.kpis.sheet_sync_error} eșuate · ${report.kpis.sheet_sync_total} total`} tone={report.kpis.sheet_sync_error > 0 ? "err" : report.kpis.sheet_sync_stale > 0 ? "warn" : "ok"} />
+            <Metric label="Zile neacoperite" value={String(report.kpis.days_uncovered)} detail="necesită completare" tone={report.kpis.days_uncovered === 0 ? "ok" : "err"} />
             <Metric label="Suplimentare" value={String(report.kpis.extra_home_days + report.kpis.extra_other_days)} detail={`${report.kpis.extra_home_days} aici · ${report.kpis.extra_other_days} extern`} tone="neutral" />
             <Metric label="Vânzări neatribuite" value={String(report.kpis.sales_unattributed)} detail="reconciliere" tone={report.kpis.sales_unattributed === 0 ? "ok" : "warn"} />
           </section>
