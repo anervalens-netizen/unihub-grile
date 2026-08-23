@@ -1,6 +1,7 @@
 """Month-scoped E-pay readback from the bound Google Sheet.
 
-Network I/O happens before the month/binding write locks. Before any local
+Network I/O normally happens before the month/binding write locks. A month
+already known CLOSED is rejected before provider I/O. Before any local
 observation is persisted, the service revalidates the calendar revision,
 working-person set and complete Sheet binding identity under locks. Drift is
 recorded as an invalid latest attempt, so an older valid snapshot cannot make
@@ -17,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..connectors.google_epay_layout import epay_read_range, parse_epay_readback
+from ..domain.enums import MonthState
 from ..domain.errors import NotFoundError
 from ..repositories.models import Person, SiteDayAssignment
 from ..repositories.months import MonthRepository
@@ -114,6 +116,12 @@ def read_epay_from_google_sheet(
         raise NotFoundError(
             "month not found",
             details={"tenant_id": tenant_id, "month_id": month_id},
+        )
+    if initial_month.state == MonthState.CLOSED.value:
+        lock_month_for_financial_write(
+            session,
+            tenant_id=tenant_id,
+            month_id=month_id,
         )
     initial_binding = require_sheet_binding(
         session,
