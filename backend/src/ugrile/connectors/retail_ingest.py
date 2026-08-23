@@ -17,7 +17,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..domain.errors import ConflictError, ConnectorError
-from ..domain.identifiers import tenant_slug_from_tenant_id
+from ..domain.identifiers import (
+    make_person_id,
+    make_store_id,
+    tenant_slug_from_tenant_id,
+)
 from ..repositories.models import ImportRun, IncentiveInput, StoreTarget, Tenant
 from ..repositories.retail_generation import (
     RETAIL_IMPORT_KIND,
@@ -243,12 +247,41 @@ def _connector_payload(
     )
 
 
+def _target_version_ledger(
+    snapshot: RetailSnapshotV1,
+    payload: ConnectorV1Payload,
+) -> list[dict[str, object]]:
+    tenant_token = tenant_slug_from_tenant_id(snapshot.tenant_id)
+    return [
+        {
+            "store_id": make_store_id(tenant_token, record.store_internal_code),
+            "kind": record.kind,
+            "version": record.version,
+        }
+        for record in payload.targets
+    ]
+
+
+def _incentive_version_ledger(
+    snapshot: RetailSnapshotV1,
+    payload: ConnectorV1Payload,
+) -> list[dict[str, object]]:
+    tenant_token = tenant_slug_from_tenant_id(snapshot.tenant_id)
+    return [
+        {
+            "person_id": make_person_id(tenant_token, record.person_internal_code),
+            "version": record.version,
+        }
+        for record in payload.incentives
+    ]
+
+
 def _validate_transition(
     accepted: AcceptedRetailGeneration | None,
     snapshot: RetailSnapshotV1,
     digest: str,
 ) -> bool:
-    """Return True for an exact replay; reject source-head regression."""
+    """Return True for an exact replay; reject source-head regression/conflict."""
 
     if accepted is None:
         return False
@@ -273,6 +306,15 @@ def _validate_transition(
                 "received_campaign_revision": incoming.campaign_revision,
             },
         )
+    if incoming.cutoff_date.isoformat() < accepted.cutoff_date:
+        raise ConflictError(
+            "Retail cutoff date is older than the accepted head",
+            details={
+                "code": "RETAIL_GENERATION_STALE",
+                "accepted_cutoff_date": accepted.cutoff_date,
+                "received_cutoff_date": incoming.cutoff_date.isoformat(),
+            },
+        )
     if (
         incoming.sales_revision == accepted.sales_revision
         and incoming.sales_hash != accepted.sales_hash
@@ -282,6 +324,18 @@ def _validate_transition(
             details={
                 "code": "RETAIL_GENERATION_CONFLICT",
                 "sales_revision": incoming.sales_revision,
+            },
+        )
+    if (
+        incoming.sales_revision == accepted.sales_revision
+        and incoming.campaign_revision == accepted.campaign_revision
+    ):
+        raise ConflictError(
+            "Retail snapshot changed without any generation revision advance",
+            details={
+                "code": "RETAIL_GENERATION_CONFLICT",
+                "sales_revision": incoming.sales_revision,
+                "campaign_revision": incoming.campaign_revision,
             },
         )
     return False
@@ -301,13 +355,18 @@ class RetailSnapshotIngestService:
         period: str,
     ) -> dict[str, object]:
         snapshot = adapter.load_snapshot(tenant_id=tenant_id, period=period)
-        return self.apply_snapshot(snapshot, expected_tenant_id=tenant_id)
+        return self.apply_snapshot(
+            snapshot,
+            expected_tenant_id=tenant_id,
+            expected_period=period,
+        )
 
     def apply_snapshot(
         self,
         snapshot: RetailSnapshotV1,
         *,
         expected_tenant_id: str,
+        expected_period: str,
     ) -> dict[str, object]:
         if snapshot.tenant_id != expected_tenant_id:
             raise ConnectorError(
@@ -316,6 +375,15 @@ class RetailSnapshotIngestService:
                     "code": "RETAIL_TENANT_MISMATCH",
                     "expected": expected_tenant_id,
                     "received": snapshot.tenant_id,
+                },
+            )
+        if snapshot.period != expected_period:
+            raise ConnectorError(
+                "Retail snapshot period does not match requested period",
+                details={
+                    "code": "RETAIL_PERIOD_MISMATCH",
+                    "expected": expected_period,
+                    "received": snapshot.period,
                 },
             )
         if snapshot.manager_scopes:
@@ -334,34 +402,30 @@ class RetailSnapshotIngestService:
 
         digest = snapshot_sha256(snapshot)
         generation_key = digest[:32]
-        accepted = accepted_retail_generation(
-            self.session,
-            tenant_id=snapshot.tenant_id,
-            period=snapshot.period,
-        )
-        if _validate_transition(accepted, snapshot, digest):
-            assert accepted is not None
-            return {
-                "status": "REPLAYED",
-                "tenant_id": snapshot.tenant_id,
-                "period": snapshot.period,
-                "generation_key": accepted.generation_key,
-                "snapshot_sha256": accepted.snapshot_sha256,
-                "import_run_id": accepted.import_run_id,
-            }
 
+        # A tenant-row lock serializes accepted-head transitions. This avoids a
+        # stale writer validating against head N, waiting behind head N+1, then
+        # incorrectly publishing N again. It also serializes target/incentive
+        # version allocation for the tenant.
         with self.session.begin_nested():
             tenant = self.session.get(Tenant, snapshot.tenant_id)
             if tenant is None:
                 tenant = Tenant(
                     id=snapshot.tenant_id,
-                    name=tenant_slug_from_tenant_id(snapshot.tenant_id).replace("_", " ").title(),
+                    name=tenant_slug_from_tenant_id(snapshot.tenant_id)
+                    .replace("_", " ")
+                    .title(),
                     timezone=snapshot.timezone,
                     is_active=True,
                 )
                 self.session.add(tenant)
                 self.session.flush()
-            elif tenant.timezone != snapshot.timezone:
+            tenant = self.session.execute(
+                select(Tenant)
+                .where(Tenant.id == snapshot.tenant_id)
+                .with_for_update()
+            ).scalar_one()
+            if tenant.timezone != snapshot.timezone:
                 raise ConnectorError(
                     "Retail snapshot timezone conflicts with the Grile tenant",
                     details={
@@ -371,6 +435,22 @@ class RetailSnapshotIngestService:
                         "received": snapshot.timezone,
                     },
                 )
+
+            accepted = accepted_retail_generation(
+                self.session,
+                tenant_id=snapshot.tenant_id,
+                period=snapshot.period,
+            )
+            if _validate_transition(accepted, snapshot, digest):
+                assert accepted is not None
+                return {
+                    "status": "REPLAYED",
+                    "tenant_id": snapshot.tenant_id,
+                    "period": snapshot.period,
+                    "generation_key": accepted.generation_key,
+                    "snapshot_sha256": accepted.snapshot_sha256,
+                    "import_run_id": accepted.import_run_id,
+                }
 
             connector_payload = _connector_payload(
                 self.session,
@@ -387,6 +467,11 @@ class RetailSnapshotIngestService:
                 "sales_revision": snapshot.generation.sales_revision,
                 "campaign_revision": snapshot.generation.campaign_revision,
                 "cutoff_date": snapshot.generation.cutoff_date.isoformat(),
+                "target_versions": _target_version_ledger(snapshot, connector_payload),
+                "incentive_versions": _incentive_version_ledger(
+                    snapshot,
+                    connector_payload,
+                ),
                 "counts": {
                     "stores": len(snapshot.stores),
                     "people": len(snapshot.people),
@@ -405,15 +490,15 @@ class RetailSnapshotIngestService:
             self.session.add(row)
             self.session.flush()
 
-        return {
-            "status": "ACCEPTED",
-            "tenant_id": snapshot.tenant_id,
-            "period": snapshot.period,
-            "generation_key": generation_key,
-            "snapshot_sha256": digest,
-            "import_run_id": row.id,
-            "applied": applied,
-        }
+            return {
+                "status": "ACCEPTED",
+                "tenant_id": snapshot.tenant_id,
+                "period": snapshot.period,
+                "generation_key": generation_key,
+                "snapshot_sha256": digest,
+                "import_run_id": row.id,
+                "applied": applied,
+            }
 
 
 __all__ = [
