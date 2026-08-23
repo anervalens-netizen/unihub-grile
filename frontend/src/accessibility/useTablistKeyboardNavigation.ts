@@ -10,14 +10,38 @@ export function useTablistKeyboardNavigation() {
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
+    let lastFocused: HTMLElement | null = null;
 
     const syncTabStops = () => {
-      root.querySelectorAll<HTMLElement>('[role="tablist"]').forEach((tablist) => {
+      root.querySelectorAll<HTMLElement>('[role="tablist"]').forEach((tablist, tablistIndex) => {
         const tabs = Array.from(tablist.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
-        for (const tab of tabs) {
-          tab.tabIndex = tab.getAttribute("aria-selected") === "true" ? 0 : -1;
+        const selectedTab = tabs.find((tab) => tab.getAttribute("aria-selected") === "true") ?? tabs[0];
+        for (const [tabIndex, tab] of tabs.entries()) {
+          tab.tabIndex = tab === selectedTab ? 0 : -1;
+          if (!tab.id) tab.id = `a11y-tab-${tablistIndex}-${tabIndex}`;
+          tab.removeAttribute("aria-controls");
+        }
+
+        const panel = tablist.nextElementSibling instanceof HTMLElement
+          ? tablist.nextElementSibling
+          : null;
+        if (panel && selectedTab) {
+          if (!panel.id) panel.id = `a11y-tabpanel-${tablistIndex}`;
+          panel.setAttribute("role", "tabpanel");
+          panel.setAttribute("tabindex", "0");
+          panel.setAttribute("aria-labelledby", selectedTab.id);
+          selectedTab.setAttribute("aria-controls", panel.id);
+
+          if (lastFocused && !lastFocused.isConnected) {
+            selectedTab.focus();
+            lastFocused = selectedTab;
+          }
         }
       });
+    };
+
+    const onFocusIn = (event: FocusEvent) => {
+      if (event.target instanceof HTMLElement) lastFocused = event.target;
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -51,10 +75,12 @@ export function useTablistKeyboardNavigation() {
       attributes: true,
       attributeFilter: ["aria-selected"],
     });
+    root.addEventListener("focusin", onFocusIn);
     root.addEventListener("keydown", onKeyDown);
 
     return () => {
       observer.disconnect();
+      root.removeEventListener("focusin", onFocusIn);
       root.removeEventListener("keydown", onKeyDown);
     };
   }, []);
