@@ -52,6 +52,8 @@ def exercise_desktop(page: Page) -> None:
     expect(page.get_by_role("heading", name="Performance Store 000", level=2)).to_be_visible()
     control_tab = page.get_by_role("tab", name="Control")
     expect(control_tab).to_have_attribute("aria-selected", "true")
+    expect(page.get_by_text("Verificare Sheet", exact=True)).to_be_visible()
+    assert_no_request_error(page)
     control_tab.focus()
     control_tab.press("ArrowRight")
     calendar_tab = page.get_by_role("tab", name="Calendar")
