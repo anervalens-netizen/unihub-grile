@@ -1,6 +1,6 @@
 # M3 performance baseline
 
-This document is the reproducible performance contract for `BE-003`, `BE-004`, `BE-005`, `BE-006`, and the profiled read-path work in `BE-007`. It records both the original calibration and the accepted optimized state.
+This document is the reproducible performance contract for `BE-003`, `BE-004`, `BE-005`, `BE-006`, and the profiled read-path work in `BE-007`. It records both the original calibration and the accepted optimized state, plus later mounted-screen changes that must continue to honor the same anti-N+1 guardrail.
 
 ## Dataset
 
@@ -20,19 +20,25 @@ Fixture construction is outside the measured latency window.
 
 ## Measured reads
 
-The CI step `M3 performance contract` runs `tests/integration/test_m3_performance.py` on PostgreSQL 17 and prints `M3_PERF` samples. The Store screen sample deliberately measures the eight GETs currently composed by `frontend/src/pages/Magazin.tsx` as one screen-level budget.
+The CI step `M3 performance contract` runs `tests/integration/test_m3_performance.py` on PostgreSQL 17 and prints `M3_PERF` samples. The Store screen sample deliberately measures the GETs currently mounted by `frontend/src/pages/Magazin.tsx` as one screen-level budget.
 
 Original calibration: Backend CI run `32584789529` on head `8d1c69a16bbbac6ddb0bc45e3f1f9ed6072b4bcf`.
-Final calibration before contract freeze: Backend CI run `32589115250` on head `911ae5b6256caa940dcd794695f5fc6cfa94b6b8`.
+Final M3 calibration before contract freeze: Backend CI run `32589115250` on head `911ae5b6256caa940dcd794695f5fc6cfa94b6b8`.
 
-| Read path | Baseline SELECTs | Final SELECTs | Baseline latency | Final observed latency | Accepted query budget | CI latency ceiling |
+| Read path | Baseline SELECTs | Final M3 SELECTs | Baseline latency | Final M3 observed latency | Current query budget | CI latency ceiling |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Overview | 21 | 21 | 204.48 ms | 260.91 ms | 21 | 2,000 ms |
 | Program, stores perspective | 6 | 6 | 776.92 ms | 155.36 ms | 6 | 4,000 ms |
 | Grid | 35 | 5 | 20.91 ms | 14.46 ms | 5 | 1,000 ms |
-| Store screen, 8-request bundle | 163 | 43 | 1,823.23 ms | 575.99 ms | 43 | 8,000 ms |
+| Store screen | 163 | 43 (8 reads) | 1,823.23 ms | 575.99 ms | 45 (9 reads) | 8,000 ms |
 
 Query counts are the deterministic regression contract: an additional SQL round-trip fails CI. Latency is also checked with deliberately wide shared-runner headroom; individual observed latency values are evidence rather than a microbenchmark promise.
+
+### M4 Store screen extension
+
+FE-005 adds the already-authorized durable job diagnostics read to Store Detail so Sheet/export state is visible locally. The mounted ADMIN Store screen therefore grows from eight to nine GETs. The diagnostics route performs exactly two bounded SQL reads for ADMIN (`active` queue rows + bounded terminal history) and does not perform per-job resource lookups. The deterministic Store-screen budget is consequently `43 + 2 = 45 SELECTs`; this is a product-visible read addition, not a relaxation for unexplained regression.
+
+The diagnostics request is loaded separately and fail-soft in the frontend. A diagnostics/provider-status failure therefore does not invalidate the original eight-read core Store Detail bundle.
 
 ## Accepted BE-007 improvements
 
@@ -48,7 +54,7 @@ Across calibration runs, Program fell from the original 776.92 ms to roughly 82â
 
 `month_store_ids()` previously evaluated `effective_store_ids()` once for every day of the month. For ADMIN, that executed the same tenant-wide store query 31 times although admin scope is date-independent. ADMIN read paths now resolve tenant-wide scope once; MANAGER continues to evaluate the full effective-dated daily union unchanged.
 
-This reduced Grid from 35 to 5 SELECTs. The later BE-006 write-path sweep found the same repeated ADMIN lookup in the manager UI month-date helper and collapsed it there as well. With both semantics-preserving fast paths in place, the complete Store-screen bundle is 43 SELECTs versus 163 at baseline.
+This reduced Grid from 35 to 5 SELECTs. The later BE-006 write-path sweep found the same repeated ADMIN lookup in the manager UI month-date helper and collapsed it there as well. With both semantics-preserving fast paths in place, the original eight-read Store-screen bundle is 43 SELECTs versus 163 at baseline.
 
 ## Accepted BE-006 calendar-save result
 
@@ -70,7 +76,7 @@ The deterministic improvement is the removal of database round-trip fan-out: 5,0
 
 ## Remaining performance questions
 
-The Store screen still composes eight HTTP reads and remains the largest query bundle. Some endpoints return tenant/month-wide data that the frontend then filters to a store. Further payload or endpoint consolidation should only be implemented if new profiling shows sufficient benefit and scope semantics remain explicit.
+The Store screen now composes nine HTTP reads for ADMIN, with job diagnostics loaded independently from the eight core reads. Some core endpoints return tenant/month-wide data that the frontend then filters to a store. Further payload or endpoint consolidation should only be implemented if new profiling shows sufficient benefit and scope semantics remain explicit.
 
 ## Guardrails for optimization
 
