@@ -100,21 +100,26 @@ export function Jobs({ api }: JobsProps) {
             {diagnostics.jobs.length === 0 ? (
               <div className="empty-state"><strong>Nicio activitate recentă.</strong><span>Nu există joburi vizibile în aria curentă.</span></div>
             ) : (
-              <div className="retail-overview-table">
-                <div className="retail-overview-row head">
-                  <span>Job</span><span>Stare</span><span>Arie</span><span>Încercări</span><span>Programare</span><span>Eroare</span>
+              <div className="retail-overview-table" role="table" aria-label="Istoric joburi asincrone">
+                <div className="retail-overview-row head" role="row">
+                  <span role="columnheader">Job</span>
+                  <span role="columnheader">Stare</span>
+                  <span role="columnheader">Arie</span>
+                  <span role="columnheader">Încercări</span>
+                  <span role="columnheader">Programare</span>
+                  <span role="columnheader">Eroare</span>
                 </div>
                 {diagnostics.jobs.map((job) => (
-                  <div className="retail-overview-row" key={job.id}>
-                    <span><strong>#{job.id}</strong><br /><small>{friendlyKind(job.kind)}</small></span>
-                    <span className="retail-status">
-                      <span className={`status-dot status-${queueStateTone(job.state)}`} />
+                  <div className="retail-overview-row" role="row" key={job.id}>
+                    <span role="cell"><strong>#{job.id}</strong><br /><small>{friendlyKind(job.kind)}</small></span>
+                    <span className="retail-status" role="cell">
+                      <span className={`status-dot status-${queueStateTone(job.state)}`} aria-hidden="true" />
                       {queueStateLabel(job.state)}
                     </span>
-                    <span title={job.store_ids.join(", ")}>{scopeLabel(job)}</span>
-                    <span>{job.attempts}/{job.max_attempts}</span>
-                    <span>{scheduleLabel(job)}</span>
-                    <span title={job.last_error ?? ""}>{job.last_error ? truncate(job.last_error, 42) : "—"}</span>
+                    <span role="cell" title={job.store_ids.join(", ")}>{scopeLabel(job)}</span>
+                    <span role="cell">{job.attempts}/{job.max_attempts}</span>
+                    <span role="cell">{scheduleLabel(job)}</span>
+                    <span role="cell" title={job.last_error ?? ""}>{job.last_error ? truncate(job.last_error, 42) : "—"}</span>
                   </div>
                 ))}
               </div>

@@ -21,6 +21,11 @@ interface RowRange {
   end: number;
 }
 
+interface EditingCell {
+  rowId: string;
+  businessDate: string;
+}
+
 export function ProgramMatrix({
   grid,
   viewportHeight = 480,
@@ -36,6 +41,8 @@ export function ProgramMatrix({
   saving = false,
 }: ProgramMatrixProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const editorFirstControlRef = useRef<HTMLSelectElement | null>(null);
+  const previousEditingRef = useRef<EditingCell | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [range, setRange] = useState<RowRange>({ start: 0, end: 0 });
   const interactive = Boolean(onCellClick);
@@ -47,6 +54,22 @@ export function ProgramMatrix({
     const end = Math.min(total, start + visible);
     setRange({ start, end });
   }, [scrollTop, viewportHeight, rowHeight, grid.rows.length]);
+
+  useEffect(() => {
+    const previous = previousEditingRef.current;
+    if (editing) {
+      if (!previous || previous.rowId !== editing.rowId || previous.businessDate !== editing.businessDate) {
+        editorFirstControlRef.current?.focus();
+      }
+    } else if (previous) {
+      const cells = containerRef.current?.querySelectorAll<HTMLButtonElement>("button[data-program-cell]") ?? [];
+      const previousCell = Array.from(cells).find((cell) =>
+        cell.dataset.rowId === previous.rowId && cell.dataset.businessDate === previous.businessDate,
+      );
+      previousCell?.focus();
+    }
+    previousEditingRef.current = editing ? { ...editing } : null;
+  }, [editing]);
 
   const total = grid.rows.length;
   const totalHeight = total * rowHeight;
@@ -74,7 +97,16 @@ export function ProgramMatrix({
       </div>
 
       {editingContext && editValue && onEditChange && (
-        <section className="program-cell-editor-panel" aria-label="Editor program">
+        <section
+          className="program-cell-editor-panel"
+          aria-label="Editor program"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && onCancelEdit) {
+              event.preventDefault();
+              onCancelEdit();
+            }
+          }}
+        >
           <div className="editor-context">
             <span className="eyebrow">EDITARE PROGRAM</span>
             <strong>{editingContext.row.label}</strong>
@@ -82,7 +114,11 @@ export function ProgramMatrix({
           </div>
           <label>
             <span>Agent</span>
-            <select value={editValue.personId} onChange={(event) => onEditChange({ ...editValue, personId: event.target.value })}>
+            <select
+              ref={editorFirstControlRef}
+              value={editValue.personId}
+              onChange={(event) => onEditChange({ ...editValue, personId: event.target.value })}
+            >
               {people.map((person) => <option key={person.id} value={person.id}>{person.label}</option>)}
             </select>
           </label>
@@ -121,6 +157,7 @@ export function ProgramMatrix({
         style={{ height: viewportHeight }}
         onScroll={(event) => setScrollTop((event.target as HTMLDivElement).scrollTop)}
         role="grid"
+        aria-label="Calendar program lunar"
         aria-rowcount={total}
         aria-colcount={grid.dates.length + 1}
       >
@@ -173,9 +210,12 @@ function ProgramMatrixRow({ row, rowHeight, gridColumns, onCellClick, editing, i
           <button
             key={cell.business_date}
             type="button"
+            data-program-cell="true"
+            data-row-id={row.row_id}
+            data-business-date={cell.business_date}
             className={`program-matrix-cell matrix-day badge-${cell.badge ?? "UNCOVERED"} ${cell.locked ? "locked" : ""} ${selected ? "selected" : ""}`}
             disabled={cell.locked || !interactive}
-            aria-label={`${row.label} pe ${cell.business_date}: ${cell.badge ?? "fără acoperire"}`}
+            aria-label={`${row.label} pe ${cell.business_date}: ${cell.badge ?? "fără acoperire"}${cell.locked ? ", blocat" : interactive ? ", activează pentru editare" : ", doar citire"}`}
             title={`${row.label} pe ${cell.business_date}: ${cell.display_name ?? "fără agent"} (${cell.badge ?? "UNCOVERED"})${cell.locked ? " · BLOCAT" : !interactive ? " · DOAR CITIRE" : ""}`}
             onClick={() => onCellClick?.(row.row_id, cell)}
           >

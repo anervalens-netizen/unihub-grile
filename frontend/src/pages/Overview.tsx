@@ -145,24 +145,29 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
                 <div className="empty-state"><strong>Niciun magazin activ.</strong><span>Catalogul nu conține magazine active în aria curentă.</span></div>
               )}
               {!storesError && stores.length > 0 && (
-                <div className="retail-overview-table">
-                  <div className="retail-overview-row head">
-                    <span>Magazin</span><span>Cod</span><span>Firmă</span><span>Stare</span><span>Excepții</span><span></span>
+                <div className="retail-overview-table" role="table" aria-label="Magazine și stare operațională">
+                  <div className="retail-overview-row head" role="row">
+                    <span role="columnheader">Magazin</span>
+                    <span role="columnheader">Cod</span>
+                    <span role="columnheader">Firmă</span>
+                    <span role="columnheader">Stare</span>
+                    <span role="columnheader">Excepții</span>
+                    <span role="columnheader"><span className="sr-only">Acțiune</span></span>
                   </div>
                   {stores.map((store) => {
                     const issue = issuesByStore.get(store.id);
                     const status = !issue ? "ok" : issue.severity >= 2 ? "err" : "warn";
                     return (
-                      <div className="retail-overview-row" key={store.id}>
-                        <button type="button" className="retail-store-link" onClick={() => navigate("store", store.id)}>{store.name}</button>
-                        <span>{store.internal_code}</span>
-                        <span>{store.company_code || "—"}</span>
-                        <span className="retail-status">
-                          <span className={`status-dot status-${status === "ok" ? "online" : status === "warn" ? "checking" : "offline"}`} />
+                      <div className="retail-overview-row" role="row" key={store.id}>
+                        <span role="cell"><button type="button" className="retail-store-link" onClick={() => navigate("store", store.id)}>{store.name}</button></span>
+                        <span role="cell">{store.internal_code}</span>
+                        <span role="cell">{store.company_code || "—"}</span>
+                        <span className="retail-status" role="cell">
+                          <span className={`status-dot status-${status === "ok" ? "online" : status === "warn" ? "checking" : "offline"}`} aria-hidden="true" />
                           {status === "ok" ? "OK" : status === "warn" ? "Atenție" : "Intervenție"}
                         </span>
-                        <span>{issue?.count ?? 0}</span>
-                        <button type="button" className="retail-store-link retail-open" onClick={() => navigate("store", store.id)}>Deschide</button>
+                        <span role="cell">{issue?.count ?? 0}</span>
+                        <span role="cell"><button type="button" className="retail-store-link retail-open" onClick={() => navigate("store", store.id)}>Deschide</button></span>
                       </div>
                     );
                   })}
@@ -186,7 +191,7 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
                       key={`${item.code}-${item.business_date ?? "none"}-${index}`}
                       onClick={() => item.store_id ? navigate("store", item.store_id) : navigate("exceptions")}
                     >
-                      <span className={`severity-rail severity-${item.severity}`} />
+                      <span className={`severity-rail severity-${item.severity}`} aria-hidden="true" />
                       <span className="attention-copy"><strong>{item.title}</strong><small>{item.detail}</small></span>
                       <span className="attention-date">{item.business_date?.slice(8, 10) ?? "—"}</span>
                     </button>
