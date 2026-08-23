@@ -24,9 +24,9 @@ from ..domain.identifiers import (
 )
 from ..repositories.models import ImportRun, IncentiveInput, StoreTarget, Tenant
 from ..repositories.retail_generation import (
-    RETAIL_IMPORT_KIND,
     AcceptedRetailGeneration,
     accepted_retail_generation,
+    retail_import_kind,
 )
 from .ingest import FixtureConnector
 from .retail_adapter import RetailSnapshotAdapter
@@ -45,8 +45,6 @@ from .v1_types import (
 def _canonical_snapshot_payload(snapshot: RetailSnapshotV1) -> dict[str, Any]:
     payload = snapshot.model_dump(mode="json")
     generation = dict(payload["generation"])
-    # Fetch time is diagnostic, not semantic source identity. Excluding it makes
-    # a repeat fetch of the same accepted source data a true idempotent replay.
     generation.pop("generated_at", None)
     payload["generation"] = generation
     return payload
@@ -228,9 +226,6 @@ def _connector_payload(
         )
         for row in snapshot.incentives
     ]
-    # ConnectorHeader's legacy validator is intentionally fixture-only. The
-    # internal bridge is constructing an already validated M6 snapshot, so it
-    # uses model_construct rather than weakening the historical public contract.
     header = ConnectorHeader.model_construct(
         schema_name="grile.connector.v1",
         generation=generation_key,
@@ -387,9 +382,6 @@ class RetailSnapshotIngestService:
                 },
             )
         if snapshot.manager_scopes:
-            # Manager keys cannot become User foreign keys before INT-012
-            # defines the identity translation. Ignoring them would silently
-            # weaken effective authorization, so fail closed instead.
             raise ConnectorError(
                 "Retail manager scopes require the identity adapter contract",
                 details={"code": "RETAIL_MANAGER_IDENTITY_UNRESOLVED"},
@@ -403,10 +395,6 @@ class RetailSnapshotIngestService:
         digest = snapshot_sha256(snapshot)
         generation_key = digest[:32]
 
-        # A tenant-row lock serializes accepted-head transitions. This avoids a
-        # stale writer validating against head N, waiting behind head N+1, then
-        # incorrectly publishing N again. It also serializes target/incentive
-        # version allocation for the tenant.
         with self.session.begin_nested():
             tenant = self.session.get(Tenant, snapshot.tenant_id)
             if tenant is None:
@@ -482,7 +470,7 @@ class RetailSnapshotIngestService:
             }
             row = ImportRun(
                 tenant_id=snapshot.tenant_id,
-                kind=RETAIL_IMPORT_KIND,
+                kind=retail_import_kind(snapshot.period),
                 status="DONE",
                 summary=json.dumps(ledger, sort_keys=True, separators=(",", ":")),
                 errors="[]",
