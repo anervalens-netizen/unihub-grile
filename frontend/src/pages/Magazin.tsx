@@ -18,6 +18,13 @@ import { hasCapability, type Capability } from "../capabilities";
 import { MonthSelector } from "../components/MonthSelector";
 import { ProgramMatrix } from "../components/ProgramMatrix";
 import { LoadingState, RequestError, requestErrorMessage } from "../components/RequestState";
+import {
+  dataFreshnessLabel,
+  monthStateLabel,
+  queueSemanticTone,
+  queueStateLabel,
+  type QueueState,
+} from "../operationalStatus";
 import { navigate } from "../router";
 
 export interface MagazinProps {
@@ -31,7 +38,6 @@ export interface MagazinProps {
 type StoreTab = "control" | "calendar" | "payroll";
 type EditValue = { personId: string; storeId: string; status: string; workingKind: string };
 type Editing = { rowId: string; businessDate: string };
-type QueueState = "QUEUED" | "RETRY" | "RUNNING" | "FAILED" | "DONE";
 
 interface JobDiagnostic {
   id: number;
@@ -263,7 +269,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
       `/months/${monthId}/program/choices?business_date=${encodeURIComponent(cell.business_date)}&store_id=${encodeURIComponent(storeId)}`,
     );
     if (choices.choices.length === 0) {
-      throw new Error("Nu există agenți eligibili pentru această zi și acest scope.");
+      throw new Error("Nu există agenți eligibili pentru această zi și această arie.");
     }
     const personChoice = choices.choices.find((choice) => choice.person_id === preferred?.personId)
       ?? choices.choices.find((choice) => choice.person_id === cell.person_id)
@@ -372,17 +378,17 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
     <div className="store-page">
       <section className="store-hero">
         <div className="store-hero-main">
-          <button type="button" className="back-button" onClick={() => navigate("overview")} aria-label="Înapoi la Command Center">←</button>
+          <button type="button" className="back-button" onClick={() => navigate("overview")} aria-label="Înapoi la situația generală">←</button>
           <div>
-            <span className="eyebrow">STORE COMMAND</span>
+            <span className="eyebrow">COMANDĂ MAGAZIN</span>
             <h2>{store?.name ?? "Magazin"}</h2>
             <p>{store?.internal_code ?? storeId} · {store?.company_code ?? "fără firmă"}</p>
           </div>
         </div>
         <div className="store-hero-actions">
           <MonthSelector months={months} value={monthId} onChange={setMonthId} error={monthsError} />
-          {currentMonth && <span className="context-pill">{currentMonth.state} · rev {grid?.revision ?? currentMonth.revision}</span>}
-          {!loading && <span className={`operational-chip ${freshness?.is_fresh ? "ok" : "warn"}`}>{freshness?.is_fresh ? "Date actualizate" : "Verifică E-pay"}</span>}
+          {currentMonth && <span className="context-pill">{monthStateLabel(currentMonth.state)} · rev. {grid?.revision ?? currentMonth.revision}</span>}
+          {!loading && <span className={`operational-chip ${freshness?.is_fresh ? "ok" : "warn"}`}>{freshness ? `E-pay ${dataFreshnessLabel(freshness.is_fresh).toLocaleLowerCase("ro-RO")}` : "E-pay indisponibil"}</span>}
         </div>
       </section>
 
@@ -399,7 +405,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
             <Metric label="Pontaj" value={`${storeHours.toFixed(1)} h`} detail={`${storeWorkingDays} zile lucrate`} />
             <Metric label="Grile calculate" value={String(gridRows.length)} detail={`revizia ${grid?.revision ?? "—"}`} />
             <Metric label="Anomalii" value={String(gridAnomalyCount + storeAttributionAnomalies.length)} detail={`${gridAnomalyCount} grilă · ${storeAttributionAnomalies.length} atribuire`} />
-            <Metric label="E-pay" value={freshness ? `${freshness.fresh_count}/${freshness.expected_count}` : "—"} detail={freshness ? (freshness.is_fresh ? "proaspăt" : "necesită sync") : "indisponibil"} />
+            <Metric label="E-pay" value={freshness ? `${freshness.fresh_count}/${freshness.expected_count}` : "—"} detail={freshness ? dataFreshnessLabel(freshness.is_fresh).toLocaleLowerCase("ro-RO") : "indisponibil"} />
           </section>
 
           <div className="segmented-tabs" role="tablist" aria-label="Secțiuni magazin">
@@ -453,18 +459,18 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
               </section>
 
               <section className="panel sync-panel">
-                <div className="panel-heading"><div><span className="eyebrow">INTEGRITATE DATE</span><h3>Sync & export</h3></div></div>
-                <div className="sync-status-row"><span>E-pay</span><strong className={freshness?.is_fresh ? "text-ok" : "text-warn"}>{freshness ? (freshness.is_fresh ? "Proaspăt" : "Stale") : "Indisponibil"}</strong></div>
-                <div className="sync-status-row"><span>Sheet projection</span><strong>{projection?.last_success_generation ?? "—"}</strong></div>
+                <div className="panel-heading"><div><span className="eyebrow">INTEGRITATE DATE</span><h3>Sincronizare & export</h3></div></div>
+                <div className="sync-status-row"><span>E-pay</span><strong className={freshness?.is_fresh ? "text-ok" : "text-warn"}>{freshness ? dataFreshnessLabel(freshness.is_fresh) : "Indisponibil"}</strong></div>
+                <div className="sync-status-row"><span>Proiecție Sheet</span><strong>{projection?.last_success_generation ?? "—"}</strong></div>
                 <div className="sync-status-row"><span>Erori Sheet</span><strong className={projection?.last_error ? "text-err" : "text-ok"}>{projection?.last_error ? "Există" : projection ? "0" : "—"}</strong></div>
                 {projection?.last_error && <p className="error-text compact-error">{projection.last_error}</p>}
-                {jobsError && <RequestError message={`Statusul joburilor este indisponibil: ${jobsError}`} onRetry={retry} />}
-                {canReadJobs && !jobsError && storeJobs.length === 0 && <div className="sync-status-row"><span>Joburi sync/export</span><strong>Fără activitate recentă</strong></div>}
+                {jobsError && <RequestError message={`Starea joburilor este indisponibilă: ${jobsError}`} onRetry={retry} />}
+                {canReadJobs && !jobsError && storeJobs.length === 0 && <div className="sync-status-row"><span>Joburi sincronizare/export</span><strong>Fără activitate recentă</strong></div>}
                 {storeJobs.map((job) => (
                   <div className="sync-status-row" key={job.id} title={job.last_error ?? ""}>
                     <span>{jobKindLabel(job.kind)} #{job.id}</span>
-                    <strong className={job.state === "FAILED" ? "text-err" : job.state === "DONE" ? "text-ok" : "text-warn"}>
-                      {jobStateLabel(job.state)} · {job.attempts}/{job.max_attempts}
+                    <strong className={`text-${queueSemanticTone(job.state)}`}>
+                      {queueStateLabel(job.state)} · {job.attempts}/{job.max_attempts}
                     </strong>
                   </div>
                 ))}
@@ -476,7 +482,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
             <section className="panel calendar-panel">
               <div className="panel-heading">
                 <div><span className="eyebrow">PROGRAM LUNAR</span><h3>Calendar magazin</h3></div>
-                <span className="context-pill">{canEditSchedule ? "click pe o zi pentru editare" : "doar citire"}</span>
+                <span className="context-pill">{canEditSchedule ? "selectează o zi pentru editare" : "doar citire"}</span>
               </div>
               {choiceLoading && <p className="muted" role="status">Actualizez opțiunile de editare…</p>}
               {grid ? (
@@ -500,7 +506,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
                   />
                 ) : <div className="empty-state"><strong>Calendar gol.</strong><span>Nu există rânduri de program pentru acest magazin în luna selectată.</span></div>
               ) : (
-                <div className="empty-state"><strong>Calendar indisponibil.</strong><span>Read-ul de Program a eșuat. Folosește „Reîncearcă” din mesajul de eroare de mai sus.</span></div>
+                <div className="empty-state"><strong>Calendar indisponibil.</strong><span>Încărcarea programului a eșuat. Folosește „Reîncearcă” din mesajul de eroare de mai sus.</span></div>
               )}
             </section>
           )}
@@ -538,13 +544,13 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
                         <div><span>Total grilă</span><strong>{moneyComponent(detail, "total_salary")}</strong></div>
                         <div><span>Comision principal</span><strong>{moneyComponent(detail, "main_commission")}</strong></div>
                         <div><span>Comision E-pay</span><strong>{moneyComponent(detail, "epay_commission")}</strong></div>
-                        <div><span>E-pay input</span><strong>{epay ? `${numericValue(epay.under_50)} / ${numericValue(epay.at_or_over_50)}` : "—"}</strong></div>
+                        <div><span>Date E-pay</span><strong>{epay ? `${numericValue(epay.under_50)} / ${numericValue(epay.at_or_over_50)}` : "—"}</strong></div>
                         <div><span>Anomalii</span><strong className={(detail?.anomalies.length ?? 0) > 0 ? "text-warn" : "text-ok"}>{detail ? detail.anomalies.length : "—"}</strong></div>
-                        <small>{detail?.anomalies.length ? detail.anomalies.map((item) => String(item.code ?? "ANOMALY")).join(" · ") : `rev ${row.revision} · ${row.rule_pack_version}`}</small>
+                        <small>{detail?.anomalies.length ? detail.anomalies.map((item) => String(item.code ?? "ANOMALY")).join(" · ") : `rev. ${row.revision} · ${row.rule_pack_version}`}</small>
                       </article>
                     );
                   })}
-                  {gridRows.length === 0 && <div className="empty-state"><strong>Fără calcul disponibil.</strong><span>Grila server-side nu are rezultate disponibile pentru revizia curentă.</span></div>}
+                  {gridRows.length === 0 && <div className="empty-state"><strong>Fără calcul disponibil.</strong><span>Grila calculată pe server nu are rezultate disponibile pentru revizia curentă.</span></div>}
                 </div>
               </section>
             </div>
@@ -615,17 +621,6 @@ function jobKindLabel(kind: string): string {
   if (kind === "GOOGLE_PROJECTION_STORE") return "Sheet";
   if (kind === "EXPORT_XLSX_STORE") return "Export XLSX";
   return kind.replaceAll("_", " ");
-}
-
-function jobStateLabel(state: QueueState): string {
-  const labels: Record<QueueState, string> = {
-    QUEUED: "În așteptare",
-    RETRY: "Retry",
-    RUNNING: "Rulează",
-    FAILED: "Eșuat",
-    DONE: "Finalizat",
-  };
-  return labels[state];
 }
 
 function formatMoney(value: number): string {
