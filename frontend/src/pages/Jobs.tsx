@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ApiClient } from "../api/client";
+import { LoadingState, RequestError, requestErrorMessage } from "../components/RequestState";
 
 type QueueState = "QUEUED" | "RETRY" | "RUNNING" | "FAILED" | "DONE";
 
@@ -52,7 +53,7 @@ export function Jobs({ api }: JobsProps) {
         setRefreshedAt(new Date());
       })
       .catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(requestErrorMessage(e));
       })
       .finally(() => setLoading(false));
   }, [api]);
@@ -77,8 +78,9 @@ export function Jobs({ api }: JobsProps) {
         </div>
       </section>
 
-      {error && <p className="error" role="alert">{error}</p>}
-      {!diagnostics && loading && <div className="loading-panel">Încarc starea joburilor…</div>}
+      {error && <RequestError message={error} onRetry={() => void load()} />}
+      {error && diagnostics && <p className="muted">Datele afișate sunt ultima stare încărcată cu succes.</p>}
+      {!diagnostics && loading && <LoadingState>Încarc starea joburilor…</LoadingState>}
 
       {diagnostics && (
         <>
