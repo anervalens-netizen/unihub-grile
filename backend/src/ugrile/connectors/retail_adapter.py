@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import ValidationError as PydanticValidationError
@@ -132,7 +133,9 @@ class FixtureRetailAdapter:
                     external_person_id=person.internal_code,
                     year=2026,
                     month=8,
-                    amount=incentive.amount if incentive is not None else 0,
+                    amount=(
+                        incentive.amount if incentive is not None else Decimal("0")
+                    ),
                     currency=incentive.currency if incentive is not None else "RON",
                     authority_status=(
                         "fixture" if incentive is not None else "fixture-explicit-zero"
