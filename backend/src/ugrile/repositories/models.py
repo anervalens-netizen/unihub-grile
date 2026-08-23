@@ -176,9 +176,6 @@ class Store(Base, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "internal_code", name="uq_stores_tenant_internal"),
-        # The composite key (tenant_id, id) is unique because id is the PK;
-        # declaring it explicitly lets other tables reference it via
-        # composite FK.
         UniqueConstraint("tenant_id", "id", name="uq_stores_tenant_id"),
     )
 
@@ -199,8 +196,6 @@ class Person(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("tenant_id", "internal_code", name="uq_people_tenant_internal"),
         UniqueConstraint("tenant_id", "id", name="uq_people_tenant_id"),
-        # Composite FK: a person with tenant_id=X can only point at a store
-        # that also belongs to tenant_id=X. DB-enforced tenant integrity.
         ForeignKeyConstraint(
             ["tenant_id", "home_store_id"],
             ["stores.tenant_id", "stores.id"],
@@ -246,6 +241,7 @@ class StoreAssignment(Base, TimestampMixin):
         ),
     )
 
+
 class Month(Base, TimestampMixin):
     __tablename__ = "months"
 
@@ -268,12 +264,7 @@ class Month(Base, TimestampMixin):
 
 
 class SiteDayAssignment(Base, TimestampMixin):
-    """One working assignment per store-day (or OFF/LEAVE row).
-
-    Rows whose ``status`` is ``WORKING`` participate in the AC-02 partial
-    unique indexes. OFF and LEAVE rows are still useful for the calendar view
-    and audit history but must not collide on the working invariants.
-    """
+    """One working assignment per store-day (or OFF/LEAVE row)."""
 
     __tablename__ = "site_day_assignments"
 
@@ -293,7 +284,6 @@ class SiteDayAssignment(Base, TimestampMixin):
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="MANAGER_UI")
 
     __table_args__ = (
-        # AC-02 partial unique index #1: one working agent per store-day.
         Index(
             "uq_site_day_one_working",
             "tenant_id",
@@ -303,7 +293,6 @@ class SiteDayAssignment(Base, TimestampMixin):
             sqlite_where=text("status = 'WORKING'"),
             postgresql_where=text("status = 'WORKING'"),
         ),
-        # AC-02 partial unique index #2: one working store per agent-day.
         Index(
             "uq_person_day_one_working",
             "tenant_id",
@@ -433,9 +422,7 @@ class SalesStoreDay(Base, TimestampMixin):
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="RON")
     source_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    sim_quantity: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
+    sim_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     __table_args__ = (
         UniqueConstraint(
@@ -495,17 +482,7 @@ class SalesPersonDay(Base, TimestampMixin):
 
 
 class EpayObservation(Base, TimestampMixin):
-    """A single read of an E-pay quantity from Google Sheets.
-
-    Valid observations are 0..10 (integers). Invalid observations are kept in
-    the audit log for forensics, but the engine only consumes the latest valid
-    row per ``(tenant_id, store_id, person_id, category, generation)``.
-
-    S5a readback path: the readback endpoint records one row per call, with
-    ``is_valid=True`` only for ``0..10`` integers in the bounded E-pay
-    categories. Invalid inputs (blank, text, fraction, negative, >10) keep
-    ``is_valid=False`` and preserve the original raw_value verbatim.
-    """
+    """A single read of an E-pay quantity from Google Sheets."""
 
     __tablename__ = "epay_observations"
 
@@ -547,12 +524,7 @@ class EpayObservation(Base, TimestampMixin):
 
 
 class GridCalculation(Base, TimestampMixin):
-    """Snapshot of grid inputs and outputs for a store/person/month.
-
-    The actual formula is filled in S3 (Mobiup rule pack). At S1 only the row
-    shape exists so subsequent stages can plug in deterministic rules without
-    a schema change.
-    """
+    """Snapshot of grid inputs and outputs for a store/person/month."""
 
     __tablename__ = "grid_calculations"
 
@@ -611,6 +583,7 @@ class SheetBinding(Base, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "store_id", name="uq_sheet_binding_tenant_store"),
+        UniqueConstraint("spreadsheet_id", name="uq_sheet_binding_spreadsheet_id"),
         ForeignKeyConstraint(
             ["tenant_id", "store_id"],
             ["stores.tenant_id", "stores.id"],
@@ -620,16 +593,7 @@ class SheetBinding(Base, TimestampMixin):
 
 
 class SheetProjectionRun(Base, TimestampMixin):
-    """Status of a Google projection run (idempotent worker job output).
-
-    S5a extension: ``payload`` stores the structural projection the fake
-    adapter wrote for the store (a deterministic JSON snapshot of the
-    Grila + Pontaj lattice). ``generation`` carries the connector
-    generation used by the projection; ``failures`` is the monotonic
-    counter of consecutive provider failures since the last success.
-    Together they let the readback path verify the structural shape
-    matches the expected lattice without touching a live Google Sheet.
-    """
+    """Status of a Google projection run (idempotent worker job output)."""
 
     __tablename__ = "sheet_projection_runs"
 
@@ -642,7 +606,6 @@ class SheetProjectionRun(Base, TimestampMixin):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_success_generation: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # S5a additions: structural payload + generation fingerprint + failure counter.
     payload: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     generation: Mapped[str | None] = mapped_column(String(32), nullable=True)
     failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -657,14 +620,10 @@ class SheetProjectionRun(Base, TimestampMixin):
 
 
 class ImportRun(Base, TimestampMixin):
-    """Excel/connector import run record."""
-
     __tablename__ = "import_runs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tenants.id"), nullable=False, index=True
-    )
+    tenant_id: Mapped[str] = mapped_column(String(64), ForeignKey("tenants.id"), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
@@ -672,14 +631,10 @@ class ImportRun(Base, TimestampMixin):
 
 
 class ExportRun(Base, TimestampMixin):
-    """Excel export run record."""
-
     __tablename__ = "export_runs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tenants.id"), nullable=False, index=True
-    )
+    tenant_id: Mapped[str] = mapped_column(String(64), ForeignKey("tenants.id"), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
@@ -687,94 +642,52 @@ class ExportRun(Base, TimestampMixin):
 
 
 class AuditEvent(Base):
-    """Append-only audit log for business and administrative changes."""
-
     __tablename__ = "audit_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tenants.id"), nullable=False, index=True
-    )
+    tenant_id: Mapped[str] = mapped_column(String(64), ForeignKey("tenants.id"), nullable=False, index=True)
     actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     action: Mapped[str] = mapped_column(String(64), nullable=False)
     entity: Mapped[str] = mapped_column(String(64), nullable=False)
     entity_id: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (Index("ix_audit_tenant_entity", "tenant_id", "entity", "entity_id"),)
 
 
 class OutboxJob(Base, TimestampMixin):
-    """Typed job row consumed by the single durable worker.
-
-    The payload is JSON; ``kind`` selects the handler. ``idempotency_key`` lets
-    the worker safely retry without producing duplicates inside one tenant and
-    job kind while allowing unrelated tenants/kinds to reuse human-readable keys.
-    """
-
     __tablename__ = "outbox_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tenants.id"), nullable=False, index=True
-    )
+    tenant_id: Mapped[str] = mapped_column(String(64), ForeignKey("tenants.id"), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     payload: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    run_after: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     locked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id",
-            "kind",
-            "idempotency_key",
-            name="uq_outbox_tenant_kind_idempotency",
-        ),
+        UniqueConstraint("tenant_id", "kind", "idempotency_key", name="uq_outbox_tenant_kind_idempotency"),
         CheckConstraint(
             "kind IN ('FIXTURE_INGEST', 'TENANT_BOOTSTRAP', 'NOOP', "
             "'FIXTURE_INGEST_BY_TENANT', 'EXPORT_XLSX_STORE', 'EXPORT_XLSX_BULK', "
             "'EXPORT_PONTAJ_ONLY', 'GOOGLE_PROJECTION_STORE')",
             name="outbox_kind_enum",
         ),
-        CheckConstraint(
-            "status IN ('PENDING', 'RUNNING', 'DONE', 'FAILED')",
-            name="outbox_status_enum",
-        ),
+        CheckConstraint("status IN ('PENDING', 'RUNNING', 'DONE', 'FAILED')", name="outbox_status_enum"),
     )
 
 
 class StoreTarget(Base, TimestampMixin):
-    """Versioned target input for a store/month.
-
-    Targets are part of the v1 connector contract and are the only versioned
-    business input that is not derived from a calendar or a sales record.
-    The version lets a later reconciliation replace a stale target without
-    losing history.
-
-    ``sales_days`` is the connector-authoritative selling-day count for the
-    store in the month (``zile_vanzare_magazin``). The grid divides the
-    monthly target by this count per docs/MOBIUP_RULE_PACK.md §2; ``None``
-    means the connector did not provide it and the grid raises an explicit
-    ``SALES_DAY_COUNT_MISSING`` marker (with a deterministic calendar-length
-    fallback) instead of silently assuming a divisor.
-    """
-
     __tablename__ = "store_targets"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tenants.id"), nullable=False, index=True
-    )
+    tenant_id: Mapped[str] = mapped_column(String(64), ForeignKey("tenants.id"), nullable=False, index=True)
     store_id: Mapped[str] = mapped_column(String(64), nullable=False)
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     month: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -786,49 +699,18 @@ class StoreTarget(Base, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint("month BETWEEN 1 AND 12", name="store_target_month_in_range"),
-        CheckConstraint(
-            "kind IN ('MONTHLY_SALES', 'MONTHLY_UNITS', 'MONTHLY_ATTACH')",
-            name="store_target_kind_enum",
-        ),
-        CheckConstraint(
-            "sales_days IS NULL OR sales_days >= 1",
-            name="store_target_sales_days_positive",
-        ),
-        UniqueConstraint(
-            "tenant_id",
-            "store_id",
-            "year",
-            "month",
-            "kind",
-            "version",
-            name="uq_store_target_window_version",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "store_id"],
-            ["stores.tenant_id", "stores.id"],
-            name="fk_store_targets_tenant_store",
-        ),
+        CheckConstraint("kind IN ('MONTHLY_SALES', 'MONTHLY_UNITS', 'MONTHLY_ATTACH')", name="store_target_kind_enum"),
+        CheckConstraint("sales_days IS NULL OR sales_days >= 1", name="store_target_sales_days_positive"),
+        UniqueConstraint("tenant_id", "store_id", "year", "month", "kind", "version", name="uq_store_target_window_version"),
+        ForeignKeyConstraint(["tenant_id", "store_id"], ["stores.tenant_id", "stores.id"], name="fk_store_targets_tenant_store"),
     )
 
 
 class SalaryMaster(Base, TimestampMixin):
-    """Effective-dated salary + ticket input sourced from HR/payroll master.
-
-    Per docs/PRODUCT_CONTRACT.md §11 and docs/MOBIUP_RULE_PACK.md §9 the
-    master is the only authority for salary and tickets. The grid engine
-    never edits these rows; it only reads them by effective date.
-
-    The row is composite-keyed on ``(tenant_id, person_id, effective_from)``
-    so multiple revisions can be stored in history without losing the
-    previous value.
-    """
-
     __tablename__ = "salary_master"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tenants.id"), nullable=False, index=True
-    )
+    tenant_id: Mapped[str] = mapped_column(String(64), ForeignKey("tenants.id"), nullable=False, index=True)
     person_id: Mapped[str] = mapped_column(String(64), nullable=False)
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -839,46 +721,18 @@ class SalaryMaster(Base, TimestampMixin):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id",
-            "person_id",
-            "effective_from",
-            name="uq_salary_master_window",
-        ),
-        CheckConstraint(
-            "effective_to IS NULL OR effective_to >= effective_from",
-            name="salary_master_dates_valid",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "person_id"],
-            ["people.tenant_id", "people.id"],
-            name="fk_salary_master_tenant_person",
-        ),
-        Index(
-            "ix_salary_master_tenant_person_dates",
-            "tenant_id",
-            "person_id",
-            "effective_from",
-        ),
+        UniqueConstraint("tenant_id", "person_id", "effective_from", name="uq_salary_master_window"),
+        CheckConstraint("effective_to IS NULL OR effective_to >= effective_from", name="salary_master_dates_valid"),
+        ForeignKeyConstraint(["tenant_id", "person_id"], ["people.tenant_id", "people.id"], name="fk_salary_master_tenant_person"),
+        Index("ix_salary_master_tenant_person_dates", "tenant_id", "person_id", "effective_from"),
     )
 
 
 class IncentiveInput(Base, TimestampMixin):
-    """Versioned monthly per-person incentive from Campaigns/connector.
-
-    Per docs/MOBIUP_RULE_PACK.md §5 the monthly incentive is the
-    authoritative value received from the connector — never recalculated
-    from the grid. Versioned like ``store_targets`` so a supersede stays
-    auditable; the grid consumes the latest version for the person/month
-    and defaults to zero (no campaign) without a marker.
-    """
-
     __tablename__ = "incentive_inputs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tenants.id"), nullable=False, index=True
-    )
+    tenant_id: Mapped[str] = mapped_column(String(64), ForeignKey("tenants.id"), nullable=False, index=True)
     person_id: Mapped[str] = mapped_column(String(64), nullable=False)
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     month: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -889,66 +743,31 @@ class IncentiveInput(Base, TimestampMixin):
     __table_args__ = (
         CheckConstraint("month BETWEEN 1 AND 12", name="incentive_month_in_range"),
         CheckConstraint("version >= 1", name="incentive_version_positive"),
-        UniqueConstraint(
-            "tenant_id",
-            "person_id",
-            "year",
-            "month",
-            "version",
-            name="uq_incentive_person_month_version",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "person_id"],
-            ["people.tenant_id", "people.id"],
-            name="fk_incentive_inputs_tenant_person",
-        ),
+        UniqueConstraint("tenant_id", "person_id", "year", "month", "version", name="uq_incentive_person_month_version"),
+        ForeignKeyConstraint(["tenant_id", "person_id"], ["people.tenant_id", "people.id"], name="fk_incentive_inputs_tenant_person"),
     )
 
 
 class HolidayCalendar(Base, TimestampMixin):
-    """Versioned Romanian legal holiday calendar.
-
-    Each row pins a single calendar version (e.g. ``rom-legal-2026``) to a
-    set of business dates. In S3 the engine only reads the row for the
-    tenant's active version; it does not modify schedule, Pontaj, target or
-    pay. Admin overrides are tracked separately in :class:`HolidayOverride`.
-    """
-
     __tablename__ = "holiday_calendars"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tenants.id"), nullable=False, index=True
-    )
+    tenant_id: Mapped[str] = mapped_column(String(64), ForeignKey("tenants.id"), nullable=False, index=True)
     version: Mapped[str] = mapped_column(String(64), nullable=False)
     business_date: Mapped[date] = mapped_column(Date, nullable=False)
     label: Mapped[str] = mapped_column(String(128), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id",
-            "version",
-            "business_date",
-            name="uq_holiday_calendar_version_date",
-        ),
+        UniqueConstraint("tenant_id", "version", "business_date", name="uq_holiday_calendar_version_date"),
     )
 
 
 class HolidayOverride(Base, TimestampMixin):
-    """Admin override on a specific holiday calendar date.
-
-    Allows turning a holiday on/off per tenant; the row carries the admin
-    user id and reason for audit. The grid engine reads the override but
-    still treats the date as a marker — it does not adjust salary or Pontaj.
-    """
-
     __tablename__ = "holiday_overrides"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tenants.id"), nullable=False, index=True
-    )
+    tenant_id: Mapped[str] = mapped_column(String(64), ForeignKey("tenants.id"), nullable=False, index=True)
     version: Mapped[str] = mapped_column(String(64), nullable=False)
     business_date: Mapped[date] = mapped_column(Date, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -956,38 +775,16 @@ class HolidayOverride(Base, TimestampMixin):
     actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id",
-            "version",
-            "business_date",
-            name="uq_holiday_override_version_date",
-        ),
+        UniqueConstraint("tenant_id", "version", "business_date", name="uq_holiday_override_version_date"),
     )
 
 
 class MonthCloseEvent(Base):
-    """Append-only audit chain for month close/reopen (AC-15).
-
-    Every successful close or reopen appends one row. The chain carries the
-    previous ``state`` so a future read can reconstruct the full history
-    without touching the ``Month`` row (which is mutated in place).
-
-    Chain integrity: ``event_digest`` is the deterministic SHA-256 of the
-    row's persisted fields plus ``previous_event_digest`` (the digest of the
-    previous event in the month's chain, ``None`` for the first event). A
-    verifier can recompute the whole chain; any overwrite or deletion breaks
-    a link. See ``ugrile.domain.close`` for the digest scheme.
-    """
-
     __tablename__ = "month_close_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tenants.id"), nullable=False, index=True
-    )
-    month_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("months.id"), nullable=False, index=True
-    )
+    tenant_id: Mapped[str] = mapped_column(String(64), ForeignKey("tenants.id"), nullable=False, index=True)
+    month_id: Mapped[str] = mapped_column(String(64), ForeignKey("months.id"), nullable=False, index=True)
     action: Mapped[str] = mapped_column(String(16), nullable=False)
     previous_state: Mapped[str] = mapped_column(String(16), nullable=False)
     new_state: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -998,21 +795,11 @@ class MonthCloseEvent(Base):
     blockers: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     previous_event_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
-        Index(
-            "ix_month_close_events_month",
-            "tenant_id",
-            "month_id",
-            "occurred_at",
-        ),
-        CheckConstraint(
-            "action IN ('CLOSE', 'REOPEN')",
-            name="month_close_events_action_enum",
-        ),
+        Index("ix_month_close_events_month", "tenant_id", "month_id", "occurred_at"),
+        CheckConstraint("action IN ('CLOSE', 'REOPEN')", name="month_close_events_action_enum"),
         CheckConstraint(
             "previous_state IN ('DRAFT', 'OPEN', 'CLOSED', 'REOPENED') "
             "AND new_state IN ('DRAFT', 'OPEN', 'CLOSED', 'REOPENED')",
@@ -1022,23 +809,11 @@ class MonthCloseEvent(Base):
 
 
 class SalesPersonDayProjection(Base, TimestampMixin):
-    """Per-revision projection of the attributed store-day credit (AC-07).
-
-    Materialised by the calendar CAS in the same transaction as the calendar
-    and Pontaj projections. The composite key includes the connector
-    ``generation`` so reattribution after a connector advance stays
-    auditable; prior revisions are immutable.
-    """
-
     __tablename__ = "sales_person_day_projections"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tenants.id"), nullable=False, index=True
-    )
-    month_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("months.id"), nullable=False, index=True
-    )
+    tenant_id: Mapped[str] = mapped_column(String(64), ForeignKey("tenants.id"), nullable=False, index=True)
+    month_id: Mapped[str] = mapped_column(String(64), ForeignKey("months.id"), nullable=False, index=True)
     person_id: Mapped[str] = mapped_column(String(64), nullable=False)
     store_id: Mapped[str] = mapped_column(String(64), nullable=False)
     business_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -1049,37 +824,11 @@ class SalesPersonDayProjection(Base, TimestampMixin):
     working_kind: Mapped[str] = mapped_column(String(16), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id",
-            "month_id",
-            "person_id",
-            "store_id",
-            "business_date",
-            "revision",
-            "generation",
-            name="uq_sales_person_day_projection",
-        ),
-        Index(
-            "ix_sales_person_day_projection_current",
-            "tenant_id",
-            "month_id",
-            "revision",
-            "business_date",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "store_id"],
-            ["stores.tenant_id", "stores.id"],
-            name="fk_sales_person_day_projection_tenant_store",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "person_id"],
-            ["people.tenant_id", "people.id"],
-            name="fk_sales_person_day_projection_tenant_person",
-        ),
-        CheckConstraint(
-            "working_kind IN ('NORMAL', 'EXTRA_HOME', 'EXTRA_OTHER')",
-            name="sales_person_day_projection_kind_enum",
-        ),
+        UniqueConstraint("tenant_id", "month_id", "person_id", "store_id", "business_date", "revision", "generation", name="uq_sales_person_day_projection"),
+        Index("ix_sales_person_day_projection_current", "tenant_id", "month_id", "revision", "business_date"),
+        ForeignKeyConstraint(["tenant_id", "store_id"], ["stores.tenant_id", "stores.id"], name="fk_sales_person_day_projection_tenant_store"),
+        ForeignKeyConstraint(["tenant_id", "person_id"], ["people.tenant_id", "people.id"], name="fk_sales_person_day_projection_tenant_person"),
+        CheckConstraint("working_kind IN ('NORMAL', 'EXTRA_HOME', 'EXTRA_OTHER')", name="sales_person_day_projection_kind_enum"),
     )
 
 
