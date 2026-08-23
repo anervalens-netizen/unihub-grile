@@ -15,14 +15,15 @@ The service is intentionally thin:
 Authoritative inputs
 --------------------
 
-* targets use the latest versioned connector target and ``sales_days`` divisor;
+* Retail-backed targets/incentives use the exact versions pinned by the
+  accepted Retail generation; legacy periods keep their historical latest-row
+  semantics;
 * Pontaj is read only from the exact current calendar revision;
 * current WORKING assignments decide who receives a store/day sale;
 * sales and SIM values come directly from immutable ``SalesStoreDay`` rows for
   the requested connector generation, so a new connector generation can be
   recalculated without requiring a calendar edit merely to rebuild attribution;
-* incentive, E-pay and salary master remain versioned/effective authoritative
-  inputs;
+* E-pay and salary master remain versioned/effective authoritative inputs;
 * holidays are informational canonical inputs only.
 
 The persisted payload stores the actual canonical inputs used for each snapshot
@@ -70,6 +71,7 @@ from ..repositories.models import (
     Store,
     StoreTarget,
 )
+from ..repositories.retail_generation import accepted_retail_generation
 from ..repositories.salary import SalaryRepository
 from .attribution import AttributionService
 
@@ -220,6 +222,22 @@ class GridService:
         days_in_month = monthrange(month.year, month.month)[1]
         first = date(month.year, month.month, 1)
         last = date(month.year, month.month, days_in_month)
+        period = f"{month.year:04d}-{month.month:02d}"
+        accepted = accepted_retail_generation(
+            self.session,
+            tenant_id=tenant_id,
+            period=period,
+        )
+        if accepted is not None and sales_generation != accepted.generation_key:
+            raise ConflictError(
+                "grid sales generation is not the accepted Retail head",
+                details={
+                    "code": "RETAIL_GENERATION_NOT_ACCEPTED",
+                    "accepted_generation": accepted.generation_key,
+                    "received_generation": sales_generation,
+                    "period": period,
+                },
+            )
 
         pontaj_rows = list(
             self.session.execute(
@@ -252,10 +270,6 @@ class GridService:
             off_days=off_days,
         )
 
-        # ``SalesStoreDay`` is the physical sales authority. Attribution is
-        # deterministic from the current WORKING assignment, so payroll can
-        # derive the same credit directly and is not stranded when sales advance
-        # without a calendar mutation/reprojection.
         sale_rows = list(
             self.session.execute(
                 select(SalesStoreDay).where(
@@ -287,14 +301,26 @@ class GridService:
                 )
             ).scalars()
         )
+        retail_target_versions: dict[str, int] | None = None
         latest_targets: dict[str, StoreTarget] = {}
-        for target_row in store_targets:
-            existing = latest_targets.get(target_row.store_id)
-            if existing is None or (target_row.version, target_row.id) > (
-                existing.version,
-                existing.id,
-            ):
-                latest_targets[target_row.store_id] = target_row
+        if accepted is not None:
+            retail_target_versions = {
+                store_id: version
+                for store_id, kind, version in accepted.target_versions
+                if kind == "MONTHLY_SALES"
+            }
+            for target_row in store_targets:
+                expected_version = retail_target_versions.get(target_row.store_id)
+                if expected_version == target_row.version:
+                    latest_targets[target_row.store_id] = target_row
+        else:
+            for target_row in store_targets:
+                existing = latest_targets.get(target_row.store_id)
+                if existing is None or (target_row.version, target_row.id) > (
+                    existing.version,
+                    existing.id,
+                ):
+                    latest_targets[target_row.store_id] = target_row
 
         for target_row in sorted(latest_targets.values(), key=lambda row: row.store_id):
             if target_row.sales_days is not None:
@@ -336,6 +362,7 @@ class GridService:
             month=month,
             person_id=person_id,
         )
+        missing_target_stores: set[str] = set()
         days: list[CalendarGridDay] = []
         for offset in range(days_in_month):
             business_date = date(month.year, month.month, 1 + offset)
@@ -358,7 +385,24 @@ class GridService:
                         ),
                     )
                 )
-            if target_amount == 0:
+            target_missing = retail_target_versions is not None and (
+                store_id not in retail_target_versions or store_id not in latest_targets
+            )
+            if target_missing:
+                if store_id not in missing_target_stores:
+                    missing_target_stores.add(store_id)
+                    anomalies.append(
+                        _anomaly(
+                            GridAnomalyCode.TARGET_INPUT_MISSING,
+                            store_id=store_id,
+                            person_id=person_id,
+                            message=(
+                                "accepted Retail snapshot has no usable MONTHLY_SALES "
+                                "target for a worked store"
+                            ),
+                        )
+                    )
+            elif target_amount == 0:
                 anomalies.append(
                     _anomaly(
                         GridAnomalyCode.TARGET_ZERO,
@@ -407,9 +451,28 @@ class GridService:
             for row in self.session.execute(stmt).scalars()
         }
 
-    def _incentive_for(
+    def _incentive_for_with_status(
         self, *, tenant_id: str, person_id: str, month: Month
-    ) -> Decimal:
+    ) -> tuple[Decimal, bool]:
+        accepted = accepted_retail_generation(
+            self.session,
+            tenant_id=tenant_id,
+            period=f"{month.year:04d}-{month.month:02d}",
+        )
+        if accepted is not None:
+            expected_version = accepted.incentive_version_for(person_id=person_id)
+            if expected_version is None:
+                return Decimal("0"), True
+            stmt = select(IncentiveInput).where(
+                IncentiveInput.tenant_id == tenant_id,
+                IncentiveInput.person_id == person_id,
+                IncentiveInput.year == month.year,
+                IncentiveInput.month == month.month,
+                IncentiveInput.version == expected_version,
+            )
+            row = self.session.execute(stmt).scalar_one_or_none()
+            return (row.amount, False) if row is not None else (Decimal("0"), True)
+
         stmt = (
             select(IncentiveInput)
             .where(
@@ -422,7 +485,16 @@ class GridService:
             .limit(1)
         )
         row = self.session.execute(stmt).scalar_one_or_none()
-        return row.amount if row is not None else Decimal("0")
+        return (row.amount, False) if row is not None else (Decimal("0"), False)
+
+    def _incentive_for(
+        self, *, tenant_id: str, person_id: str, month: Month
+    ) -> Decimal:
+        return self._incentive_for_with_status(
+            tenant_id=tenant_id,
+            person_id=person_id,
+            month=month,
+        )[0]
 
     def compute_for_person(
         self,
@@ -456,11 +528,22 @@ class GridService:
                     ),
                 )
             )
-        incentive = self._incentive_for(
+        incentive, incentive_missing = self._incentive_for_with_status(
             tenant_id=tenant_id,
             person_id=person_id,
             month=month,
         )
+        if incentive_missing:
+            anomalies.append(
+                _anomaly(
+                    GridAnomalyCode.INCENTIVE_INPUT_MISSING,
+                    person_id=person_id,
+                    message=(
+                        "accepted Retail snapshot has no usable incentive input "
+                        "for this person; zero is calculation-only and close-blocking"
+                    ),
+                )
+            )
         parameters = RulePackParameters(
             salary=salary,
             tickets=tickets,
