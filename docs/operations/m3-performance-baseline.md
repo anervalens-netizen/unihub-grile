@@ -30,13 +30,21 @@ Final M3 calibration before contract freeze: Backend CI run `32589115250` on hea
 | Overview | 21 | 21 | 204.48 ms | 260.91 ms | 21 | 2,000 ms |
 | Program, stores perspective | 6 | 6 | 776.92 ms | 155.36 ms | 6 | 4,000 ms |
 | Grid | 35 | 5 | 20.91 ms | 14.46 ms | 5 | 1,000 ms |
-| Store screen | 163 | 43 (8 reads) | 1,823.23 ms | 575.99 ms | 45 (9 reads) | 8,000 ms |
+| Store screen | 163 | 43 (8 reads) | 1,823.23 ms | 575.99 ms | 46 (9 reads) | 8,000 ms |
 
 Query counts are the deterministic regression contract: an additional SQL round-trip fails CI. Latency is also checked with deliberately wide shared-runner headroom; individual observed latency values are evidence rather than a microbenchmark promise.
 
 ### M4 Store screen extension
 
-FE-005 adds the already-authorized durable job diagnostics read to Store Detail so Sheet/export state is visible locally. The mounted ADMIN Store screen therefore grows from eight to nine GETs. The diagnostics route performs exactly two bounded SQL reads for ADMIN (`active` queue rows + bounded terminal history) and does not perform per-job resource lookups. The deterministic Store-screen budget is consequently `43 + 2 = 45 SELECTs`; this is a product-visible read addition, not a relaxation for unexplained regression.
+FE-005 adds the already-authorized durable job diagnostics read to Store Detail so Sheet/export state is visible locally. The mounted ADMIN Store screen therefore grows from eight to nine GETs.
+
+The first exact-head measurement, Backend CI `32625821433`, reported `store_screen selects=46`. The extra request has an exact three-SELECT composition on the current standalone/dev-header path:
+
+1. one `User` lookup in `load_principal()` to resolve the request principal;
+2. one bounded query for tenant `PENDING`/`RUNNING` jobs;
+3. one bounded query for tenant `DONE`/`FAILED` terminal history.
+
+For ADMIN there is no per-job resource authorization query. The deterministic Store-screen budget is consequently `43 + 3 = 46 SELECTs`; this is a measured product-visible read addition, not a relaxation for unexplained regression.
 
 The diagnostics request is loaded separately and fail-soft in the frontend. A diagnostics/provider-status failure therefore does not invalidate the original eight-read core Store Detail bundle.
 
