@@ -85,19 +85,30 @@ def is_provider_failing() -> bool:
     return value.strip() in {"1", "true", "TRUE", "yes", "on"}
 
 
-def _last_run_for(session: Session, *, tenant_id: str, store_id: str) -> SheetProjectionRun | None:
-    return (
-        session.query(SheetProjectionRun)
-        .filter_by(tenant_id=tenant_id, store_id=store_id)
-        .order_by(SheetProjectionRun.id.desc())
-        .first()
-    )
-
-
 def _run_matches_month(row: SheetProjectionRun, month_id: str) -> bool:
     payload = _json_loads(row.payload)
     metadata = payload.get("metadata")
     return isinstance(metadata, Mapping) and metadata.get("month_id") == month_id
+
+
+def _last_run_for(
+    session: Session,
+    *,
+    tenant_id: str,
+    store_id: str,
+    month_id: str | None = None,
+) -> SheetProjectionRun | None:
+    rows = (
+        session.query(SheetProjectionRun)
+        .filter_by(tenant_id=tenant_id, store_id=store_id)
+        .order_by(SheetProjectionRun.id.desc())
+    )
+    if month_id is None:
+        return rows.first()
+    for row in rows:
+        if _run_matches_month(row, month_id):
+            return row
+    return None
 
 
 def _last_successful_run_for(
@@ -222,8 +233,19 @@ def write_store_projection(
             details={"code": "SHEET_BINDING_STALE", "store_id": store_id},
         )
 
+    metadata = payload.get("metadata")
+    month_id = (
+        str(metadata.get("month_id"))
+        if isinstance(metadata, Mapping) and metadata.get("month_id")
+        else None
+    )
     if is_provider_failing():
-        last_good = _last_successful_run_for(session, tenant_id=tenant_id, store_id=store_id)
+        last_good = _last_successful_run_for(
+            session,
+            tenant_id=tenant_id,
+            store_id=store_id,
+            month_id=month_id,
+        )
         last_success = last_good.last_success_generation if last_good is not None else None
         now = _now_utc()
         session.add(
@@ -268,7 +290,6 @@ def write_store_projection(
         verification_mode="fake_local",
         verified=True,
     )
-    metadata = payload.get("metadata")
     persisted_payload = {
         "metadata": dict(metadata) if isinstance(metadata, Mapping) else {},
         "grila": dict(grila),
@@ -334,10 +355,16 @@ def last_error(
     *,
     tenant_id: str,
     store_id: str,
+    month_id: str | None = None,
 ) -> str | None:
-    """Return the most recent adapter error string for the store."""
+    """Return the most recent adapter error string, optionally for one month."""
 
-    row = _last_run_for(session, tenant_id=tenant_id, store_id=store_id)
+    row = _last_run_for(
+        session,
+        tenant_id=tenant_id,
+        store_id=store_id,
+        month_id=month_id,
+    )
     return row.last_error if row is not None else None
 
 
@@ -346,10 +373,16 @@ def last_run_at(
     *,
     tenant_id: str,
     store_id: str,
+    month_id: str | None = None,
 ) -> datetime | None:
-    """Return the ``last_run_at`` of the most recent projection run."""
+    """Return the most recent projection run timestamp, optionally for one month."""
 
-    row = _last_run_for(session, tenant_id=tenant_id, store_id=store_id)
+    row = _last_run_for(
+        session,
+        tenant_id=tenant_id,
+        store_id=store_id,
+        month_id=month_id,
+    )
     return row.last_run_at if row is not None else None
 
 
