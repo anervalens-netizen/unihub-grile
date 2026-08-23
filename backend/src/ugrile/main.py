@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Awaitable, Callable
+from time import perf_counter
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -37,11 +38,19 @@ from .core.correlation import (
     bind_correlation_id,
     resolve_request_correlation_id,
 )
-from .core.logging import configure_logging, get_logger
+from .core.logging import configure_logging, get_logger, safe_exception_fields
 from .domain.errors import DomainError
 
 configure_logging()
 log = get_logger("ugrile.api")
+
+
+def _route_template(request: Request) -> str:
+    """Return the matched route template without logging concrete entity IDs."""
+
+    route = request.scope.get("route")
+    path = getattr(route, "path", None)
+    return path if isinstance(path, str) and path else "unmatched"
 
 
 def create_app() -> FastAPI:
@@ -62,9 +71,30 @@ def create_app() -> FastAPI:
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         correlation_id = resolve_request_correlation_id(request.headers.get(CORRELATION_HEADER))
+        started = perf_counter()
         with bind_correlation_id(correlation_id):
-            response = await call_next(request)
+            try:
+                response = await call_next(request)
+            except Exception as exc:
+                log.error(
+                    "http_request_failed",
+                    correlation_id=correlation_id,
+                    method=request.method,
+                    route=_route_template(request),
+                    status_code=500,
+                    duration_ms=round((perf_counter() - started) * 1000, 2),
+                    **safe_exception_fields(exc),
+                )
+                raise
             response.headers[CORRELATION_HEADER] = correlation_id
+            log.info(
+                "http_request_completed",
+                correlation_id=correlation_id,
+                method=request.method,
+                route=_route_template(request),
+                status_code=response.status_code,
+                duration_ms=round((perf_counter() - started) * 1000, 2),
+            )
             return response
 
     @app.exception_handler(DomainError)
