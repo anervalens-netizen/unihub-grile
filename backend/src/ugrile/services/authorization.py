@@ -33,6 +33,7 @@ class Capability(StrEnum):
     EPAY_WRITE = "epay.write"
     SHEET_READ = "sheet.read"
     SHEET_SYNC = "sheet.sync"
+    SHEET_BIND = "sheet.bind"
     EXPORT_READ = "export.read"
     EXPORT_CREATE = "export.create"
     MONTH_READ = "month.read"
