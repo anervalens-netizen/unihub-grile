@@ -11,6 +11,8 @@ Tenant/generation safety
 The service reads only the caller's tenant. For a Retail-backed period the read
 side returns only projection rows whose generation equals the accepted Retail
 head; historical generation rows remain stored but cannot masquerade as current.
+Accepted-head filtering is embedded in the existing SQL statements so it does
+not consume another calibrated M3 SELECT round-trip.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import literal, or_, select
 from sqlalchemy.orm import Session
 
 from ..domain.attribution import AttributedSale, AttributionResult, attribute_sales
@@ -34,7 +36,9 @@ from ..repositories.models import (
     Month,
     SalesPersonDayProjection,
 )
-from ..repositories.retail_generation import accepted_retail_generation_key
+from ..repositories.retail_generation import (
+    accepted_retail_generation_summary_subquery,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +54,6 @@ class AttributionSummary:
 class AttributionService:
     def __init__(self, session: Session) -> None:
         self.session = session
-        self._accepted_generation_cache: dict[tuple[str, str], str | None] = {}
 
     def rebuild_for_month(
         self,
@@ -58,6 +61,8 @@ class AttributionService:
         month: Month,
         tenant_id: str,
         revision: int,
+        generation: str | None = None,
+        resolve_accepted_generation: bool = True,
     ) -> tuple[int, tuple[AttributedSale, ...], tuple[str, ...]]:
         """Recompute and persist attribution for one calendar revision."""
 
@@ -72,6 +77,8 @@ class AttributionService:
             month_id=month.id,
             year=month.year,
             month=month.month,
+            generation=generation,
+            resolve_accepted_generation=resolve_accepted_generation,
         )
         count = persist_attribution(
             self.session,
@@ -82,30 +89,34 @@ class AttributionService:
         )
         return count, tuple(attributed), generations
 
-    def _accepted_generation(self, *, tenant_id: str, month: Month) -> str | None:
-        period = f"{month.year:04d}-{month.month:02d}"
-        key = (tenant_id, period)
-        if key not in self._accepted_generation_cache:
-            self._accepted_generation_cache[key] = accepted_retail_generation_key(
-                self.session,
-                tenant_id=tenant_id,
-                period=period,
-            )
-        return self._accepted_generation_cache[key]
-
     def latest_attribution(
         self, *, tenant_id: str, month: Month
     ) -> list[SalesPersonDayProjection]:
         """Read the latest projection revision, pinned to accepted Retail head."""
 
-        generation = self._accepted_generation(tenant_id=tenant_id, month=month)
-        stmt = select(SalesPersonDayProjection).where(
-            SalesPersonDayProjection.tenant_id == tenant_id,
-            SalesPersonDayProjection.month_id == month.id,
+        period = f"{month.year:04d}-{month.month:02d}"
+        accepted_summary = accepted_retail_generation_summary_subquery(
+            tenant_id=tenant_id,
+            period=period,
         )
-        if generation is not None:
-            stmt = stmt.where(SalesPersonDayProjection.generation == generation)
-        stmt = stmt.order_by(SalesPersonDayProjection.revision.desc()).limit(1)
+        generation_marker = (
+            literal('%"generation_key":"')
+            + SalesPersonDayProjection.generation
+            + literal('"%')
+        )
+        stmt = (
+            select(SalesPersonDayProjection)
+            .where(
+                SalesPersonDayProjection.tenant_id == tenant_id,
+                SalesPersonDayProjection.month_id == month.id,
+                or_(
+                    accepted_summary.is_(None),
+                    accepted_summary.like(generation_marker),
+                ),
+            )
+            .order_by(SalesPersonDayProjection.revision.desc())
+            .limit(1)
+        )
         latest = self.session.execute(stmt).scalar_one_or_none()
         if latest is None:
             return []
@@ -114,19 +125,21 @@ class AttributionService:
             tenant_id=tenant_id,
             month_id=month.id,
             revision=latest.revision,
-            generation=generation,
+            period=period,
+            resolve_accepted_generation=True,
         )
 
     def summary_for_revision(
         self, *, tenant_id: str, month: Month, revision: int
     ) -> AttributionSummary:
-        generation = self._accepted_generation(tenant_id=tenant_id, month=month)
+        period = f"{month.year:04d}-{month.month:02d}"
         rows = list_attribution(
             self.session,
             tenant_id=tenant_id,
             month_id=month.id,
             revision=revision,
-            generation=generation,
+            period=period,
+            resolve_accepted_generation=True,
         )
         anomalies: list[dict[str, object]] = []
         sales = store_sales_for_month(
@@ -134,8 +147,6 @@ class AttributionService:
             tenant_id=tenant_id,
             year=month.year,
             month=month.month,
-            generation=generation,
-            resolve_accepted_generation=False,
         )
         working = working_days_for_month(
             self.session, tenant_id=tenant_id, month_id=month.id
