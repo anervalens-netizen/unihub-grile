@@ -13,6 +13,7 @@ import { isolatedRead } from "../api/isolatedRead";
 import { MonthSelector } from "../components/MonthSelector";
 import { ProgramMatrix } from "../components/ProgramMatrix";
 import { LoadingState, RequestError, requestErrorMessage } from "../components/RequestState";
+import { dataFreshnessLabel } from "../operationalStatus";
 
 export interface AgentProps {
   api: ApiClient;
@@ -140,7 +141,7 @@ export function Agent({ api, personId, months, monthsError }: AgentProps) {
             <dt>Magazin de bază</dt><dd>{person?.home_store_id ?? "—"}</dd>
             <dt>Credit vânzări lunar</dt><dd>{salesTotal === undefined ? "—" : `${salesTotal.toFixed(2)} RON`}</dd>
             <dt>Componente grilă</dt><dd>{gridRows.length}</dd>
-            <dt>E-pay</dt><dd>{epay ? `${epay.is_fresh ? "Proaspăt" : "Stale"} (${epay.fresh_count}/${epay.expected_count})` : "—"}</dd>
+            <dt>E-pay</dt><dd>{epay ? `${dataFreshnessLabel(epay.is_fresh)} (${epay.fresh_count}/${epay.expected_count})` : "—"}</dd>
             <dt>Proiecție Sheet</dt><dd>{projectionState}</dd>
           </dl>
           {grid.rows.length > 0 && <ProgramMatrix grid={grid} viewportHeight={360} />}
