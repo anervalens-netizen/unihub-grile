@@ -15,11 +15,11 @@ from ugrile.connectors.retail_adapter import (
 )
 from ugrile.connectors.retail_contract_v1 import RetailGenerationV1, RetailSnapshotV1
 from ugrile.connectors.retail_ingest import RetailSnapshotIngestService
+from ugrile.domain.close_policy import policy_for_rule_pack
 from ugrile.domain.errors import ConflictError, ConnectorError
 from ugrile.domain.grid import GridAnomalyCode
 from ugrile.domain.identifiers import make_month_id
 from ugrile.domain.rule_pack import get_default_rule_pack
-from ugrile.domain.close_policy import policy_for_rule_pack
 from ugrile.repositories.attribution import store_sales_for_month
 from ugrile.repositories.models import ImportRun, Month, Person, SiteDayAssignment, Store
 from ugrile.repositories.retail_generation import (
@@ -230,6 +230,16 @@ def test_new_head_never_falls_back_to_old_sales_target_or_incentive(session) -> 
     )
     assert incentive == Decimal("0")
     assert incentive_missing is True
+
+    computed = grid.compute_for_person(
+        tenant_id=first.tenant_id,
+        month=month,
+        person_id=person.id,
+        sales_generation=accepted.generation_key,
+    )
+    computed_codes = {str(anomaly["code"]) for anomaly in computed.anomalies}
+    assert GridAnomalyCode.TARGET_INPUT_MISSING.value in computed_codes
+    assert GridAnomalyCode.INCENTIVE_INPUT_MISSING.value in computed_codes
 
     policy = policy_for_rule_pack(get_default_rule_pack())
     assert policy.grid_is_blocking(GridAnomalyCode.TARGET_INPUT_MISSING)
