@@ -189,10 +189,7 @@ def _decode_run(row: ImportRun) -> AcceptedRetailGeneration:
     }
     for key, expected_type in required.items():
         value = payload.get(key)
-        if expected_type is int:
-            valid = type(value) is int
-        else:
-            valid = isinstance(value, expected_type)
+        valid = type(value) is int if expected_type is int else isinstance(value, expected_type)
         if not valid:
             raise _invalid_ledger(row, key)
     return AcceptedRetailGeneration(
