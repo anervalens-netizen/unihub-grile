@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type ApiClient,
   type MonthSummary,
-  type PersonSummary,
+  type ProgramCell,
+  type ProgramChoices,
   type ProgramGrid,
-  type StoreSummary,
 } from "../api/client";
 import { hasCapability, type Capability } from "../capabilities";
 import { MonthSelector } from "../components/MonthSelector";
@@ -18,8 +18,10 @@ export interface ProgramProps {
 }
 
 type Perspective = "stores" | "people";
+type EditValue = { personId: string; storeId: string; status: string; workingKind: string };
+type Editing = { rowId: string; businessDate: string };
 
-function isApiError(error: unknown): error is { status: number } {
+function isApiError(error: unknown): error is { status: number; code?: string } {
   return typeof error === "object" && error !== null && "status" in error && typeof (error as { status?: unknown }).status === "number";
 }
 
@@ -29,12 +31,14 @@ export function Program({ api, months, monthsError, capabilities }: ProgramProps
   const [grid, setGrid] = useState<ProgramGrid | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [viewportHeight, setViewportHeight] = useState(480);
-  const [people, setPeople] = useState<PersonSummary[]>([]);
-  const [stores, setStores] = useState<StoreSummary[]>([]);
-  const [editing, setEditing] = useState<{ rowId: string; businessDate: string } | null>(null);
-  const [editValue, setEditValue] = useState({ personId: "", storeId: "", status: "WORKING", workingKind: "NORMAL" });
+  const [people, setPeople] = useState<Array<{ id: string; label: string; homeStoreId: string }>>([]);
+  const [stores, setStores] = useState<Array<{ id: string; label: string }>>([]);
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const [editValue, setEditValue] = useState<EditValue>({ personId: "", storeId: "", status: "WORKING", workingKind: "NORMAL" });
   const [saving, setSaving] = useState(false);
+  const [choiceLoading, setChoiceLoading] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const choiceRequestId = useRef(0);
   const canEditSchedule = hasCapability(capabilities, "schedule.write");
 
   useEffect(() => {
@@ -57,6 +61,11 @@ export function Program({ api, months, monthsError, capabilities }: ProgramProps
   }, []);
 
   useEffect(() => {
+    choiceRequestId.current += 1;
+    setEditing(null);
+    setPeople([]);
+    setStores([]);
+    setSaveError(null);
     if (!monthId) {
       setGrid(null);
       return;
@@ -69,79 +78,128 @@ export function Program({ api, months, monthsError, capabilities }: ProgramProps
         if (!cancelled) setGrid(response);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       });
     return () => {
       cancelled = true;
     };
   }, [api, monthId, perspective]);
 
-  useEffect(() => {
-    if (!monthId || !grid) return;
-    const peopleById = new Map<string, PersonSummary>();
-    const storesById = new Map<string, StoreSummary>();
-    for (const row of grid.rows) {
-      for (const cell of row.cells) {
-        if (cell.person_id && cell.display_name && cell.home_store_id) {
-          peopleById.set(cell.person_id, {
-            id: cell.person_id,
-            tenant_id: "",
-            internal_code: cell.person_id,
-            external_code: null,
-            display_name: cell.display_name,
-            home_store_id: cell.home_store_id,
-            is_active: true,
-          });
-        }
-        if (cell.store_id) {
-          storesById.set(cell.store_id, {
-            id: cell.store_id,
-            tenant_id: "",
-            company_code: "",
-            internal_code: cell.store_id,
-            external_code: null,
-            name: cell.store_id,
-            is_active: true,
-          });
-        }
-      }
-    }
-    setPeople([...peopleById.values()]);
-    setStores([...storesById.values()]);
-  }, [monthId, grid]);
-
-  function beginEdit(rowId: string, cell: ProgramGrid["rows"][number]["cells"][number]) {
-    if (!canEditSchedule) return;
-    setSaveError(null);
-    setEditing({ rowId, businessDate: cell.business_date });
-    setEditValue({
-      personId: cell.person_id ?? people[0]?.id ?? rowId,
-      storeId: cell.store_id ?? stores[0]?.id ?? rowId,
-      status: cell.status || "WORKING",
-      workingKind: cell.working_kind || "NORMAL",
-    });
+  function targetStoreId(sourceGrid: ProgramGrid, rowId: string, cell: ProgramCell): string | null {
+    const row = sourceGrid.rows.find((candidate) => candidate.row_id === rowId);
+    if (!row) return null;
+    if (perspective === "stores") return cell.store_id ?? cell.home_store_id ?? row.row_id;
+    return cell.store_id ?? cell.home_store_id ?? row.home_store_id;
   }
 
-  function saveCell() {
-    if (!canEditSchedule || !monthId || !grid || !editing) return;
+  async function configureEditor(
+    sourceGrid: ProgramGrid,
+    rowId: string,
+    cell: ProgramCell,
+    preferred?: EditValue,
+  ): Promise<void> {
+    if (!monthId) throw new Error("Luna nu este selectată.");
+    const storeId = targetStoreId(sourceGrid, rowId, cell);
+    if (!storeId) throw new Error("Nu pot determina magazinul pentru această zi.");
+    const choices = await api.get<ProgramChoices>(
+      `/months/${monthId}/program/choices?business_date=${encodeURIComponent(cell.business_date)}&store_id=${encodeURIComponent(storeId)}`,
+    );
+    if (choices.choices.length === 0) {
+      throw new Error("Nu există agenți eligibili pentru această zi și acest scope.");
+    }
+    const personChoice = choices.choices.find((choice) => choice.person_id === preferred?.personId)
+      ?? choices.choices.find((choice) => choice.person_id === cell.person_id)
+      ?? choices.choices[0];
+    const allowedStoreIds = Array.from(new Set(choices.choices.flatMap((choice) => choice.allowed_store_ids))).sort();
+    const candidateStoreId = preferred?.storeId || cell.store_id || choices.store_id || personChoice.home_store_id;
+    const selectedStoreId = allowedStoreIds.includes(candidateStoreId) ? candidateStoreId : (allowedStoreIds[0] ?? "");
+    const candidateKind = preferred?.workingKind || cell.working_kind || "NORMAL";
+    const selectedKind = personChoice.working_kinds.includes(candidateKind) ? candidateKind : (personChoice.working_kinds[0] ?? "NORMAL");
+
+    setPeople(choices.choices.map((choice) => ({ id: choice.person_id, label: choice.display_name, homeStoreId: choice.home_store_id })));
+    setStores(allowedStoreIds.map((id) => ({ id, label: id })));
+    setEditValue({
+      personId: personChoice.person_id,
+      storeId: selectedStoreId,
+      status: preferred?.status ?? cell.status ?? "WORKING",
+      workingKind: selectedKind,
+    });
+    setEditing({ rowId, businessDate: cell.business_date });
+  }
+
+  async function beginEdit(rowId: string, cell: ProgramCell) {
+    if (!canEditSchedule || !grid || cell.locked) return;
+    const requestId = ++choiceRequestId.current;
+    setChoiceLoading(true);
+    setSaveError(null);
+    try {
+      await configureEditor(grid, rowId, cell);
+    } catch (e: unknown) {
+      if (requestId === choiceRequestId.current) {
+        setEditing(null);
+        setSaveError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      if (requestId === choiceRequestId.current) setChoiceLoading(false);
+    }
+  }
+
+  async function recoverStaleEdit(activeEditing: Editing, draft: EditValue) {
+    if (!monthId) return;
+    setChoiceLoading(true);
+    try {
+      const freshGrid = await api.get<ProgramGrid>(`/months/${monthId}/program?perspective=${perspective}`);
+      setGrid(freshGrid);
+      const row = freshGrid.rows.find((candidate) => candidate.row_id === activeEditing.rowId);
+      const cell = row?.cells.find((candidate) => candidate.business_date === activeEditing.businessDate);
+      if (!cell || cell.locked) {
+        setEditing(null);
+        setSaveError(`Programul s-a schimbat între timp. Revizia ${freshGrid.revision} a fost încărcată, dar ziua editată nu mai este disponibilă pentru modificare.`);
+        return;
+      }
+      await configureEditor(freshGrid, activeEditing.rowId, cell, draft);
+      setSaveError(`Programul s-a schimbat între timp. Am încărcat revizia ${freshGrid.revision}; verifică valorile păstrate și salvează din nou.`);
+    } catch (e: unknown) {
+      setSaveError(`Programul s-a schimbat între timp, iar reîncărcarea reviziei curente a eșuat: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setChoiceLoading(false);
+    }
+  }
+
+  async function saveCell() {
+    if (!canEditSchedule || !monthId || !grid || !editing || !editValue.personId) return;
+    const activeEditing = editing;
+    const draft = { ...editValue };
     setSaving(true);
     setSaveError(null);
-    api.post(`/months/${monthId}/program/cell?expected_revision=${grid.revision}`, {
-      person_id: editValue.personId,
-      business_date: editing.businessDate,
-      status: editValue.status,
-      store_id: editValue.storeId || null,
-      working_kind: editValue.workingKind,
-    }).then(() => {
+    try {
+      await api.post(`/months/${monthId}/program/cell?expected_revision=${grid.revision}`, {
+        person_id: editValue.personId,
+        business_date: editing.businessDate,
+        status: editValue.status,
+        store_id: editValue.status === "WORKING" ? (editValue.storeId || null) : null,
+        working_kind: editValue.status === "WORKING" ? editValue.workingKind : null,
+      });
+      const freshGrid = await api.get<ProgramGrid>(`/months/${monthId}/program?perspective=${perspective}`);
+      setGrid(freshGrid);
       setEditing(null);
-      return api.get<ProgramGrid>(`/months/${monthId}/program?perspective=${perspective}`);
-    }).then(setGrid).catch((e: unknown) => {
-      if (isApiError(e) && e.status === 409) {
-        setSaveError("Programul s-a schimbat între timp (revizie stale). Editorul și grila curentă au fost păstrate; reîncarcă luna înainte de a salva din nou.");
+    } catch (e: unknown) {
+      if (isApiError(e) && e.status === 409 && e.code === "STALE_REVISION") {
+        await recoverStaleEdit(activeEditing, draft);
+      } else if (isApiError(e) && e.status === 409 && e.code === "MONTH_CLOSED") {
+        setEditing(null);
+        setSaveError("Luna a fost închisă între timp. Editarea a fost oprită; redeschiderea lunii este necesară înainte de alte modificări.");
+        try {
+          setGrid(await api.get<ProgramGrid>(`/months/${monthId}/program?perspective=${perspective}`));
+        } catch {
+          // The typed close error remains authoritative even if the refresh fails.
+        }
       } else {
         setSaveError(e instanceof Error ? e.message : String(e));
       }
-    }).finally(() => setSaving(false));
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -183,6 +241,7 @@ export function Program({ api, months, monthsError, capabilities }: ProgramProps
       {!canEditSchedule && <p className="muted">Programul este disponibil doar pentru vizualizare în sesiunea curentă.</p>}
       {error && <p className="error" role="alert">{error}</p>}
       {saveError && <p className="error" role="alert">Salvarea nu a reușit: {saveError}</p>}
+      {choiceLoading && <p className="muted" role="status">Actualizez opțiunile de editare…</p>}
       {grid && (
         <ProgramMatrix
           grid={grid}
@@ -190,12 +249,16 @@ export function Program({ api, months, monthsError, capabilities }: ProgramProps
           onCellClick={canEditSchedule ? beginEdit : undefined}
           editing={editing}
           editValue={editValue}
-          people={people.map((person) => ({ id: person.id, label: person.display_name, homeStoreId: person.home_store_id }))}
-          stores={stores.map((store) => ({ id: store.id, label: store.name || store.internal_code }))}
+          people={people}
+          stores={stores}
           onEditChange={canEditSchedule ? setEditValue : undefined}
           onSave={canEditSchedule ? saveCell : undefined}
-          onCancelEdit={canEditSchedule ? () => setEditing(null) : undefined}
-          saving={saving}
+          onCancelEdit={canEditSchedule ? () => {
+            choiceRequestId.current += 1;
+            setEditing(null);
+            setSaveError(null);
+          } : undefined}
+          saving={saving || choiceLoading}
         />
       )}
     </section>
