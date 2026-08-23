@@ -6,9 +6,8 @@ introducing a second browser-only data model. It is test tooling only.
 
 from __future__ import annotations
 
-from ugrile.core.database import session_scope
-
 from tests.fixtures.performance import seed_performance_dataset
+from ugrile.core.database import session_scope
 
 
 def main() -> None:
