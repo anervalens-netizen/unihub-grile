@@ -14,10 +14,10 @@ from ugrile.connectors.google import (
     write_store_projection,
 )
 from ugrile.connectors.google_live import (
+    SHEETS_SCOPE,
     GoogleRetryableTransportError,
     GoogleSheetsApiTransport,
     GoogleTerminalTransportError,
-    SHEETS_SCOPE,
 )
 from ugrile.connectors.google_provider import (
     GoogleProviderConfigurationError,
@@ -187,6 +187,7 @@ def test_live_provider_writes_bound_grila_and_pontaj_and_persists_success(
     ]
     assert writes[0]["values"][-1] == ["", "", "", "", ""]
     assert writes[1]["values"][-1] == ["", "", "", "", "", "", ""]
+    assert binding.spreadsheet_id == "sheet-live-123"
     assert binding.generation == "LIVE_V2"
     persisted = read_store_projection(
         session,
