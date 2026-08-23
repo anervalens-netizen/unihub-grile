@@ -14,6 +14,8 @@ Projection contract
   canonical tables and hands the deterministic dict to the configured provider.
 * The durable job may pin the complete Sheet binding identity observed at
   enqueue; the provider must reject a later mismatch before publication.
+* Calls without a binding pin retain the pre-GS-003 provider-seam shape; the
+  durable worker always supplies the pin.
 * The provider returns the accepted ``StoreProjection`` value object.
 * Fake-provider failure injection (``UGR_S5_GOOGLE_FAIL=1``) preserves the
   existing last-good projection semantics.
@@ -220,16 +222,29 @@ class GoogleProjectionService:
             },
             "pontaj": dict(payload.pontaj),
         }
-        projection = self.provider.write_store_projection(
-            self.session,
-            tenant_id=tenant_id,
-            store_id=store_id,
-            generation=gen,
-            payload=payload_dict,
-            expected_spreadsheet_id=expected_spreadsheet_id,
-            expected_sheet_name_grila=expected_sheet_name_grila,
-            expected_sheet_name_pontaj=expected_sheet_name_pontaj,
-        )
+        if (
+            expected_spreadsheet_id is None
+            and expected_sheet_name_grila is None
+            and expected_sheet_name_pontaj is None
+        ):
+            projection = self.provider.write_store_projection(
+                self.session,
+                tenant_id=tenant_id,
+                store_id=store_id,
+                generation=gen,
+                payload=payload_dict,
+            )
+        else:
+            projection = self.provider.write_store_projection(
+                self.session,
+                tenant_id=tenant_id,
+                store_id=store_id,
+                generation=gen,
+                payload=payload_dict,
+                expected_spreadsheet_id=expected_spreadsheet_id,
+                expected_sheet_name_grila=expected_sheet_name_grila,
+                expected_sheet_name_pontaj=expected_sheet_name_pontaj,
+            )
         return ProjectionOutcome(
             store_id=store_id,
             generation=gen,
