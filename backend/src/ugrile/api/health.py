@@ -17,22 +17,36 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import BaseModel
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from ..api.deps import db_session
-from ..api.schemas import HealthReport
 from ..core.config import get_settings
 from ..core.metrics import render_metrics
 from ..repositories.models import OutboxJob
 
 APP_VERSION = "0.2.0"
 router = APIRouter(tags=["health"])
+
+
+class ReadinessReport(BaseModel):
+    """Dependency state safe to expose on unauthenticated operational probes."""
+
+    status: Literal["ok", "degraded", "down"]
+    database: bool
+    schema_version: str | None
+    expected_schema_version: str
+    schema_current: bool
+    worker_enabled: bool
+    stale_running_jobs: int | None
+    app_version: str
 
 
 @lru_cache(maxsize=1)
@@ -46,13 +60,13 @@ def _expected_schema_version() -> str:
     return head or "missing"
 
 
-def _dependency_report(session: Session) -> HealthReport:
+def _dependency_report(session: Session) -> ReadinessReport:
     settings = get_settings()
     expected = _expected_schema_version()
     try:
         session.execute(text("SELECT 1"))
     except Exception:
-        return HealthReport(
+        return ReadinessReport(
             status="down",
             database=False,
             schema_version=None,
@@ -102,7 +116,7 @@ def _dependency_report(session: Session) -> HealthReport:
 
     worker_ready = not settings.worker_enabled or stale_running_jobs == 0
     ready = schema_current and worker_ready
-    return HealthReport(
+    return ReadinessReport(
         status="ok" if ready else "down",
         database=True,
         schema_version=schema_version,
@@ -121,8 +135,8 @@ def livez() -> dict[str, str]:
     return {"status": "ok", "app_version": APP_VERSION}
 
 
-@router.get("/healthz", response_model=HealthReport)
-def healthz(session: Session = Depends(db_session)) -> HealthReport:
+@router.get("/healthz", response_model=ReadinessReport)
+def healthz(session: Session = Depends(db_session)) -> ReadinessReport:
     """Human/operator dependency summary; always HTTP 200 when process is live."""
 
     report = _dependency_report(session)
@@ -131,8 +145,8 @@ def healthz(session: Session = Depends(db_session)) -> HealthReport:
     return report
 
 
-@router.get("/readyz", response_model=HealthReport)
-def readyz(session: Session = Depends(db_session)) -> HealthReport | JSONResponse:
+@router.get("/readyz", response_model=ReadinessReport)
+def readyz(session: Session = Depends(db_session)) -> ReadinessReport | JSONResponse:
     """Traffic readiness gate: 503 unless every required dependency is current."""
 
     report = _dependency_report(session)
@@ -147,7 +161,7 @@ def metrics(session: Session = Depends(db_session)) -> PlainTextResponse:
 
     return PlainTextResponse(
         render_metrics(session),
-        media_type="text/plain; version=0.0.4; charset=utf-8",
+        media_type="text/plain; version=0.0.4",
     )
 
 
@@ -160,4 +174,4 @@ def root() -> dict[str, str]:
     }
 
 
-__all__ = ["APP_VERSION", "router"]
+__all__ = ["APP_VERSION", "ReadinessReport", "router"]
