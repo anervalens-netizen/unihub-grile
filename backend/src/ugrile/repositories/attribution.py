@@ -9,6 +9,10 @@ When M6 Retail snapshots exist for a period, reads are pinned to the last
 accepted Retail generation. Historical generations remain stored for audit but
 cannot be summed into current attribution. Legacy/fixture periods without an
 accepted Retail head preserve the existing all-generation behavior.
+
+The accepted-head lookup is embedded as a scalar subquery inside the existing
+sales/projection SELECTs. It therefore adds no SQL round-trip to the calibrated
+M3 read or calendar-save paths.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import insert, select
+from sqlalchemy import insert, literal, or_, select
 from sqlalchemy.orm import Session
 
 from ..domain.attribution import (
@@ -31,7 +35,7 @@ from .models import (
     SalesStoreDay,
     SiteDayAssignment,
 )
-from .retail_generation import accepted_retail_generation_key
+from .retail_generation import accepted_retail_generation_summary_subquery
 
 
 def store_sales_for_month(
@@ -45,28 +49,39 @@ def store_sales_for_month(
 ) -> list[StoreDaySale]:
     """Return authoritative store/day sales for the tenant/month.
 
-    By default the repository resolves an accepted Retail head itself. A caller
-    that already resolved the head can pass ``generation`` and set
-    ``resolve_accepted_generation=False``; passing ``None`` in that mode means
-    intentional legacy all-generation semantics and avoids a duplicate query.
+    ``generation`` is an explicit exact override used by already-pinned callers.
+    Otherwise, when ``resolve_accepted_generation`` is true, the latest Retail
+    ledger summary is embedded in this same SELECT. A missing ledger row keeps
+    historical fixture semantics; a present ledger permits only its exact
+    ``generation_key`` marker.
     """
 
     first = date(year, month, 1)
     last = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
-    effective_generation = generation
-    if resolve_accepted_generation and effective_generation is None:
-        effective_generation = accepted_retail_generation_key(
-            session,
-            tenant_id=tenant_id,
-            period=f"{year:04d}-{month:02d}",
-        )
+    period = f"{year:04d}-{month:02d}"
     stmt = select(SalesStoreDay).where(
         SalesStoreDay.tenant_id == tenant_id,
         SalesStoreDay.business_date >= first,
         SalesStoreDay.business_date < last,
     )
-    if effective_generation is not None:
-        stmt = stmt.where(SalesStoreDay.generation == effective_generation)
+    if generation is not None:
+        stmt = stmt.where(SalesStoreDay.generation == generation)
+    elif resolve_accepted_generation:
+        accepted_summary = accepted_retail_generation_summary_subquery(
+            tenant_id=tenant_id,
+            period=period,
+        )
+        generation_marker = (
+            literal('%"generation_key":"')
+            + SalesStoreDay.generation
+            + literal('"%')
+        )
+        stmt = stmt.where(
+            or_(
+                accepted_summary.is_(None),
+                accepted_summary.like(generation_marker),
+            )
+        )
     stmt = stmt.order_by(
         SalesStoreDay.store_id,
         SalesStoreDay.business_date,
@@ -127,10 +142,19 @@ def attribute_for_month(
     month_id: str,
     year: int,
     month: int,
+    generation: str | None = None,
+    resolve_accepted_generation: bool = True,
 ) -> tuple[list[AttributedSale], tuple[str, ...]]:
     """Run attribution for the current calendar using authoritative sales."""
 
-    sales = store_sales_for_month(session, tenant_id=tenant_id, year=year, month=month)
+    sales = store_sales_for_month(
+        session,
+        tenant_id=tenant_id,
+        year=year,
+        month=month,
+        generation=generation,
+        resolve_accepted_generation=resolve_accepted_generation,
+    )
     working = working_days_for_month(session, tenant_id=tenant_id, month_id=month_id)
     result = attribute_sales(working, sales)
     generations = tuple(sorted({sale.generation for sale in result.attributed if sale.generation}))
@@ -179,8 +203,12 @@ def list_attribution(
     tenant_id: str,
     month_id: str,
     revision: int,
+    period: str | None = None,
     generation: str | None = None,
+    resolve_accepted_generation: bool = False,
 ) -> list[SalesPersonDayProjection]:
+    """List one attribution revision with optional accepted-head pinning."""
+
     stmt = select(SalesPersonDayProjection).where(
         SalesPersonDayProjection.tenant_id == tenant_id,
         SalesPersonDayProjection.month_id == month_id,
@@ -188,6 +216,24 @@ def list_attribution(
     )
     if generation is not None:
         stmt = stmt.where(SalesPersonDayProjection.generation == generation)
+    elif resolve_accepted_generation:
+        if period is None:
+            raise ValueError("period is required when resolving accepted Retail generation")
+        accepted_summary = accepted_retail_generation_summary_subquery(
+            tenant_id=tenant_id,
+            period=period,
+        )
+        generation_marker = (
+            literal('%"generation_key":"')
+            + SalesPersonDayProjection.generation
+            + literal('"%')
+        )
+        stmt = stmt.where(
+            or_(
+                accepted_summary.is_(None),
+                accepted_summary.like(generation_marker),
+            )
+        )
     stmt = stmt.order_by(
         SalesPersonDayProjection.business_date,
         SalesPersonDayProjection.person_id,
