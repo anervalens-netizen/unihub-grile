@@ -8,6 +8,7 @@ import {
 } from "../api/client";
 import { isolatedRead } from "../api/isolatedRead";
 import { MonthSelector } from "../components/MonthSelector";
+import { LoadingState, RequestError, requestErrorMessage } from "../components/RequestState";
 import { navigate } from "../router";
 
 export interface OverviewProps {
@@ -23,6 +24,8 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
   const [storesError, setStoresError] = useState<string | null>(null);
   const [peopleTotal, setPeopleTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     setMonthId((current) => current ?? months[0]?.id ?? null);
@@ -34,12 +37,16 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
       setStores([]);
       setStoresError(null);
       setPeopleTotal(null);
+      setLoading(false);
       return;
     }
     let cancelled = false;
+    setReport(null);
+    setStores([]);
     setError(null);
     setStoresError(null);
     setPeopleTotal(null);
+    setLoading(true);
     Promise.all([
       api.get<OverviewReport>(`/months/${monthId}/overview`),
       isolatedRead(api.get<StoreSummary[]>("/catalog/stores")),
@@ -53,12 +60,17 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
         setPeopleTotal(peopleRead.value?.rows.length ?? null);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(requestErrorMessage(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [api, monthId]);
+  }, [api, monthId, reloadToken]);
+
+  const retry = () => setReloadToken((value) => value + 1);
 
   const issuesByStore = useMemo(() => {
     const map = new Map<string, { count: number; severity: number }>();
@@ -102,10 +114,10 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
         </div>
       </section>
 
-      {error && <p className="error" role="alert">{error}</p>}
-      {!report && !error && <div className="loading-panel">Încarc situația operațională…</div>}
+      {error && <RequestError message={error} onRetry={retry} />}
+      {loading && <LoadingState>Încarc situația operațională…</LoadingState>}
 
-      {report && operational && (
+      {!loading && !error && report && operational && (
         <>
           <section className="kpi-strip" aria-label="Indicatori principali">
             <Metric label="Magazine" value={`${report.kpis.stores_covered}/${report.kpis.stores_total}`} detail="cu program acoperit" tone={report.kpis.stores_covered === report.kpis.stores_total ? "ok" : "warn"} />
@@ -127,8 +139,11 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
                 <span className="context-pill">{report.state} · rev {report.revision}</span>
               </div>
 
-              {storesError && <p className="error-text compact-error" role="alert">Structura magazinelor este indisponibilă: {storesError}</p>}
-              {!storesError && (
+              {storesError && <RequestError message={`Structura magazinelor este indisponibilă: ${storesError}`} onRetry={retry} />}
+              {!storesError && stores.length === 0 && (
+                <div className="empty-state"><strong>Niciun magazin activ.</strong><span>Catalogul nu conține magazine active în scope-ul curent.</span></div>
+              )}
+              {!storesError && stores.length > 0 && (
                 <div className="retail-overview-table">
                   <div className="retail-overview-row head">
                     <span>Magazin</span><span>Cod</span><span>Firmă</span><span>Status</span><span>Excepții</span><span></span>
