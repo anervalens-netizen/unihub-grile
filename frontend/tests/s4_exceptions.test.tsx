@@ -87,7 +87,7 @@ describe("Exceptions resolution workflow", () => {
     expect(texts[0]).toMatch(/Magazin fără agent/);
     expect(texts[1]).toMatch(/Clasificare invalidă/);
     expect(texts[2]).toMatch(/Canary Sheet nesincronizat/);
-    expect(screen.getByText("2", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.getAllByText("2", { selector: "strong" })).toHaveLength(2);
     expect(screen.getByText("05.08.2026")).toBeInTheDocument();
     expect(screen.getByText("Cod: STORE_DAY_UNCOVERED")).toBeInTheDocument();
   });
