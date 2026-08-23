@@ -165,7 +165,10 @@ def _default_projection_idempotency_key(
         )
     ).encode()
     digest = hashlib.sha256(material).hexdigest()[:32]
-    return f"{JobKind.GOOGLE_PROJECTION_STORE.value}:{digest}"
+    return (
+        f"{JobKind.GOOGLE_PROJECTION_STORE.value}:{digest}:"
+        f"m{month_revision}:d{data_revision}"
+    )
 
 
 @router.post("/{month_id}/epay/readback", response_model=EpayReadbackOut)
