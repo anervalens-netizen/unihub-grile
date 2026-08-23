@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..domain.errors import ConflictError
+from ..repositories.models import SheetBinding
 from ..services.auth import Principal
 from ..services.authorization import Capability, authorize
 from ..services.sheet_bindings import (
@@ -20,7 +21,7 @@ from .schemas import SheetBindingConfigureIn, SheetBindingOut
 router = APIRouter(prefix="/sheet-bindings", tags=["google-sheets"])
 
 
-def _out(binding: object) -> SheetBindingOut:
+def _out(binding: SheetBinding) -> SheetBindingOut:
     return SheetBindingOut.model_validate(binding)
 
 
