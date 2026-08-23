@@ -13,6 +13,9 @@ The contract is explicit:
   any Google API.
 * Successful fake projections persist the same format/checksum reconciliation
   envelope that the live provider exposes after remote readback verification.
+* Month-scoped readback trusts only v2 snapshots carrying an exact persisted
+  ``metadata.month_id``; historical unscoped rows cannot masquerade as another
+  month's current projection.
 * Provider failure is simulated via ``UGR_S5_GOOGLE_FAIL=1`` while last-good
   projection state remains readable.
 
@@ -91,21 +94,33 @@ def _last_run_for(session: Session, *, tenant_id: str, store_id: str) -> SheetPr
     )
 
 
+def _run_matches_month(row: SheetProjectionRun, month_id: str) -> bool:
+    payload = _json_loads(row.payload)
+    metadata = payload.get("metadata")
+    return isinstance(metadata, Mapping) and metadata.get("month_id") == month_id
+
+
 def _last_successful_run_for(
     session: Session,
     *,
     tenant_id: str,
     store_id: str,
+    month_id: str | None = None,
 ) -> SheetProjectionRun | None:
-    """Return the newest persisted successful projection, ignoring failures."""
+    """Return the newest successful projection, optionally scoped to one month."""
 
-    return (
+    rows = (
         session.query(SheetProjectionRun)
         .filter_by(tenant_id=tenant_id, store_id=store_id, status="DONE")
         .filter(SheetProjectionRun.last_success_generation.isnot(None))
         .order_by(SheetProjectionRun.id.desc())
-        .first()
     )
+    if month_id is None:
+        return rows.first()
+    for row in rows:
+        if _run_matches_month(row, month_id):
+            return row
+    return None
 
 
 def _binding_for(session: Session, *, tenant_id: str, store_id: str) -> SheetBinding | None:
@@ -288,10 +303,16 @@ def read_store_projection(
     *,
     tenant_id: str,
     store_id: str,
+    month_id: str | None = None,
 ) -> StoreProjection | None:
-    """Return the last-good projection for one store, or ``None``."""
+    """Return the last-good projection, optionally proven for one month."""
 
-    row = _last_successful_run_for(session, tenant_id=tenant_id, store_id=store_id)
+    row = _last_successful_run_for(
+        session,
+        tenant_id=tenant_id,
+        store_id=store_id,
+        month_id=month_id,
+    )
     if row is None or row.last_success_generation is None:
         return None
     payload = _json_loads(row.payload)
