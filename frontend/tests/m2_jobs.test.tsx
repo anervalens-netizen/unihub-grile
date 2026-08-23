@@ -52,17 +52,21 @@ function makeApi(): ApiClient {
 }
 
 describe("Jobs operator workspace", () => {
-  it("renders queue, retry, failure and recent job diagnostics", async () => {
+  it("renders aligned queue terminology and semantic status colors", async () => {
     const api = makeApi();
-    render(<Jobs api={api} />);
+    const { container } = render(<Jobs api={api} />);
 
     expect(await screen.findByText("#41")).toBeInTheDocument();
     expect(screen.getByText("#40")).toBeInTheDocument();
     expect(screen.getByText("provider timeout", { exact: false })).toBeInTheDocument();
     expect(screen.getByText("2/5")).toBeInTheDocument();
     expect(screen.getAllByText("store_acme_s1")).toHaveLength(2);
+    expect(screen.getAllByText("Reîncercare").length).toBeGreaterThan(0);
+    expect(screen.getByText("În execuție")).toBeInTheDocument();
     expect(screen.getByText("Eșuate")).toBeInTheDocument();
     expect(screen.getByText("Finalizate")).toBeInTheDocument();
+    expect(container.querySelectorAll(".status-dot.status-checking")).toHaveLength(1);
+    expect(container.querySelectorAll(".status-dot.status-online")).toHaveLength(1);
   });
 
   it("refreshes diagnostics without coupling to other pages", async () => {

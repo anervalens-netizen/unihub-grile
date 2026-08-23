@@ -114,7 +114,7 @@ export function Program({ api, months, monthsError, capabilities }: ProgramProps
       `/months/${monthId}/program/choices?business_date=${encodeURIComponent(cell.business_date)}&store_id=${encodeURIComponent(storeId)}`,
     );
     if (choices.choices.length === 0) {
-      throw new Error("Nu există agenți eligibili pentru această zi și acest scope.");
+      throw new Error("Nu există agenți eligibili pentru această zi și această arie.");
     }
     const personChoice = choices.choices.find((choice) => choice.person_id === preferred?.personId)
       ?? choices.choices.find((choice) => choice.person_id === cell.person_id)

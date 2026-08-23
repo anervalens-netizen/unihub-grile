@@ -19,6 +19,7 @@ import {
   type Capability,
   type SessionInfo,
 } from "./capabilities";
+import { healthStateLabel, type StatusDotTone } from "./operationalStatus";
 import { currentRoute, subscribeRoute, type Route } from "./router";
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "/api") as string;
@@ -85,7 +86,7 @@ export function App() {
   }, [api]);
 
   const pageMeta = getPageMeta(route);
-  const systemState = healthError ? "offline" : health?.status === "ok" ? "online" : "checking";
+  const systemState: StatusDotTone = healthError ? "offline" : health?.status === "ok" ? "online" : "checking";
 
   return (
     <Layout
@@ -106,7 +107,7 @@ export function App() {
           </div>
           <div className="topbar-status" aria-label="Stare sistem">
             <span className={`status-dot status-${systemState}`} aria-hidden="true" />
-            <span>{systemState === "online" ? "Online" : systemState === "offline" ? "API offline" : "Verificare"}</span>
+            <span>{healthStateLabel(systemState)}</span>
             {health?.app_version && <small>v{health.app_version}</small>}
           </div>
         </div>
@@ -159,7 +160,7 @@ function PageRouter({
     return (
       <section className="card" aria-label="Acces indisponibil">
         <h2>Acces indisponibil</h2>
-        <p className="muted">Rolul {session.role} nu are capability-urile necesare pentru această secțiune.</p>
+        <p className="muted">Rolul {session.role} nu are drepturile necesare pentru această secțiune.</p>
       </section>
     );
   }
@@ -192,7 +193,7 @@ function getPageMeta(route: Route): { title: string; subtitle: string } {
     case "close":
       return { title: "Management", subtitle: "Închidere, validare și audit lunar." };
     case "jobs":
-      return { title: "Joburi", subtitle: "Coadă, retry-uri și rezultate asincrone." };
+      return { title: "Joburi", subtitle: "Coadă, reîncercări și rezultate asincrone." };
     case "store":
       return { title: "Magazin", subtitle: "Program, agenți, pontaj și grilă." };
     case "agent":

@@ -93,12 +93,13 @@ describe("Magazin and Agent contract routes", () => {
     expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
     expect(screen.getAllByText(/126/).length).toBeGreaterThan(0);
     expect(screen.getByText("g1")).toBeInTheDocument();
-    expect(screen.getByText("OPEN · rev 2")).toBeInTheDocument();
+    expect(screen.getByText("Deschisă · rev. 2")).toBeInTheDocument();
     expect(screen.getByText("1 grilă · 1 atribuire")).toBeInTheDocument();
     expect(await screen.findByText(/Export XLSX #71/)).toBeInTheDocument();
     expect(screen.getByText(/Sheet #72/)).toBeInTheDocument();
-    expect(screen.getByText(/Finalizat · 1\/3/)).toBeInTheDocument();
-    expect(screen.getByText(/Retry · 2\/4/)).toBeInTheDocument();
+    expect(screen.getByText(/Finalizat · 1\/3/)).toHaveClass("text-ok");
+    expect(screen.getByText(/Reîncercare · 2\/4/)).toHaveClass("text-warn");
+    expect(screen.getAllByText("Actualizat").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("tab", { name: "Grilă & Pontaj" }));
     expect(screen.getByText("1.250 RON")).toBeInTheDocument();
@@ -130,7 +131,7 @@ describe("Magazin and Agent contract routes", () => {
     const { api } = apiForPage({ jobsFailure: true });
     render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} capabilities={MANAGER_CAPABILITIES} />);
     expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
-    expect(screen.getByText(/Statusul joburilor este indisponibil: jobs unavailable/)).toBeInTheDocument();
+    expect(screen.getByText(/Starea joburilor este indisponibilă: jobs unavailable/)).toBeInTheDocument();
     expect(screen.getByText("2/2")).toBeInTheDocument();
   });
 
@@ -179,6 +180,7 @@ describe("Magazin and Agent contract routes", () => {
     expect(await screen.findByText("Alice")).toBeInTheDocument();
     expect(screen.getByText("store_x")).toBeInTheDocument();
     expect(screen.getByText(/125.50 RON/)).toBeInTheDocument();
+    expect(screen.getByText(/Actualizat \(2\/2\)/)).toBeInTheDocument();
     expect(calls).toContain(`/months/${MONTH.id}/epay/freshness?store_id=store_x`);
     expect(calls).toContain(`/months/${MONTH.id}/sheet-projection?store_id=store_x`);
     expect(calls.some((path) => path.includes("/agents/") || path.includes("/people/"))).toBe(false);

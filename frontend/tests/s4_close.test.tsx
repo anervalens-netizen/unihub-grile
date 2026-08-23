@@ -1,8 +1,8 @@
 /**
- * S4 Close page tests.
+ * S4 Management month tests.
  *
  * Close/reopen mutations are rendered only from backend-provided capabilities;
- * read-only Management access keeps checklist and audit visibility.
+ * read-only Management access keeps validation and audit visibility.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -92,11 +92,11 @@ function renderClose(api: ApiClient, capabilities: ReadonlySet<Capability> = ADM
   return render(<Close api={api} months={[MONTH]} monthsError={null} capabilities={capabilities} />);
 }
 
-describe("Close page reopen reason validation", () => {
-  it("disables the Reopen button until a CLOSED month has a reason with at least 4 chars", async () => {
+describe("Management month reopen reason validation", () => {
+  it("disables Redeschide until an enclosed month has a reason with at least 4 chars", async () => {
     const api = makeApi(CLOSED_CHECKLIST);
     renderClose(api);
-    const button = await screen.findByRole("button", { name: /Reopen/i });
+    const button = await screen.findByRole("button", { name: /^Redeschide$/i });
     expect(button).toBeDisabled();
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     expect(textarea).toBeEnabled();
@@ -106,20 +106,20 @@ describe("Close page reopen reason validation", () => {
     expect(button).toBeEnabled();
   });
 
-  it("keeps reopen inert while the month is not CLOSED", async () => {
+  it("keeps redeschidere inert while the month is not closed", async () => {
     const api = makeApi(CLEAR_CHECKLIST);
     renderClose(api);
-    const button = await screen.findByRole("button", { name: /Reopen/i });
+    const button = await screen.findByRole("button", { name: /^Redeschide$/i });
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     expect(textarea).toBeDisabled();
     expect(button).toBeDisabled();
-    expect(screen.getByText(/Reopen devine disponibil când luna este CLOSED/i)).toBeInTheDocument();
+    expect(screen.getByText(/Redeschiderea devine disponibilă când luna este închisă/i)).toBeInTheDocument();
   });
 
   it("rejects whitespace-only reasons", async () => {
     const api = makeApi(CLOSED_CHECKLIST);
     renderClose(api);
-    const button = await screen.findByRole("button", { name: /Reopen/i });
+    const button = await screen.findByRole("button", { name: /^Redeschide$/i });
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "    " } });
     expect(button).toBeDisabled();
@@ -159,14 +159,16 @@ describe("Close page reopen reason validation", () => {
     expect(await screen.findByText(/Condiții blocante:/)).toHaveTextContent("Condiții blocante: 1 · avertismente: 1");
     expect(screen.getByText("blocant")).toBeInTheDocument();
     expect(screen.getByText("avertisment")).toBeInTheDocument();
+    expect(screen.getByText("Închidere", { selector: "strong" })).toBeInTheDocument();
     expect(screen.getByText(/#7/)).toBeInTheDocument();
-    fireEvent.click(screen.getByText(/Snapshot validare \(1\)/));
+    fireEvent.click(screen.getByText(/Validări la momentul acțiunii \(1\)/));
     expect(screen.getByText(/canary pending at close time/)).toBeInTheDocument();
     expect(screen.getByText(/2026-08-05 · store_x · —/)).toBeInTheDocument();
     expect(screen.getByText(/Lanț audit:/)).toHaveTextContent(/digest-prev.*digest-current/);
+    expect(screen.getByText(/Deschisă → Închisă/)).toBeInTheDocument();
   });
 
-  it("keeps checklist and close controls usable when audit history fails", async () => {
+  it("keeps validations and close controls usable when audit history fails", async () => {
     const api = {
       healthz: vi.fn(), readyz: vi.fn(), post: vi.fn(),
       get: vi.fn(async (path: string) => {
@@ -185,10 +187,9 @@ describe("Close page reopen reason validation", () => {
     const api = makeApi(CLEAR_CHECKLIST);
     renderClose(api, READ_ONLY_CAPABILITIES);
     expect(await screen.findByText("Nicio condiție blocantă.")).toBeInTheDocument();
-    expect(screen.getByText("month.close", { selector: "code" })).toBeInTheDocument();
-    expect(screen.getByText("month.reopen", { selector: "code" })).toBeInTheDocument();
+    expect(screen.getAllByText(/doar pentru consultare/i)).toHaveLength(2);
     expect(screen.queryByRole("button", { name: /Pregătește închiderea/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Reopen$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Redeschide$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(api.post).not.toHaveBeenCalled();
   });
@@ -197,26 +198,26 @@ describe("Close page reopen reason validation", () => {
     const closeApi = makeApi(CLEAR_CHECKLIST);
     const closeView = renderClose(closeApi, CLOSE_ONLY_CAPABILITIES);
     expect(await screen.findByRole("button", { name: /Pregătește închiderea/i })).toBeEnabled();
-    expect(screen.queryByRole("button", { name: /^Reopen$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Redeschide$/i })).not.toBeInTheDocument();
     closeView.unmount();
 
     const reopenApi = makeApi(CLOSED_CHECKLIST);
     renderClose(reopenApi, REOPEN_ONLY_CAPABILITIES);
-    expect(await screen.findByText("month.close", { selector: "code" })).toBeInTheDocument();
+    expect(await screen.findByText(/închiderea lunii nu este permisă/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Pregătește închiderea/i })).not.toBeInTheDocument();
-    const reopen = screen.getByRole("button", { name: /^Reopen$/i });
+    const reopen = screen.getByRole("button", { name: /^Redeschide$/i });
     const textarea = screen.getByRole("textbox");
     fireEvent.change(textarea, { target: { value: "motiv valid" } });
     expect(reopen).toBeEnabled();
   });
 
-  it("blocks preparation while checklist blockers remain", async () => {
+  it("blocks preparation while validation blockers remain", async () => {
     const api = makeApi();
     renderClose(api);
     expect(await screen.findByRole("button", { name: /Pregătește închiderea/i })).toBeDisabled();
   });
 
-  it("reloads checklist and exits confirmation when close hits STALE_REVISION", async () => {
+  it("reloads validations and exits confirmation when close hits STALE_REVISION", async () => {
     let checklistCalls = 0;
     const refreshedChecklist: CloseChecklist = {
       ...CLEAR_CHECKLIST,
@@ -238,7 +239,7 @@ describe("Close page reopen reason validation", () => {
     renderClose(api);
     fireEvent.click(await screen.findByRole("button", { name: /Pregătește închiderea/i }));
     fireEvent.click(screen.getByRole("button", { name: /Confirmă închiderea/i }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/reîncărcat la revizia 1/i);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/validările au fost reîncărcate la revizia 1/i);
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Pregătește închiderea/i })).toBeEnabled();
     expect((api.post as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
@@ -247,7 +248,7 @@ describe("Close page reopen reason validation", () => {
     ]);
   });
 
-  it("prepares, confirms, posts expected_revision, and refreshes checklist/events", async () => {
+  it("prepares, confirms, posts expected_revision, and refreshes validations/events", async () => {
     let checklistCalls = 0;
     const events = [{
       id: 1, month_id: MONTH.id, action: "CLOSE", previous_state: "OPEN", new_state: "CLOSED",
@@ -271,8 +272,8 @@ describe("Close page reopen reason validation", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Pregătește închiderea/i }));
     expect(screen.getByRole("alertdialog")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Confirmă închiderea/i }));
-    expect(await screen.findByText("CLOSE", { selector: "strong" })).toBeInTheDocument();
-    expect(screen.getAllByText(/CLOSED/).length).toBeGreaterThan(0);
+    expect(await screen.findByText("Închidere", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.getAllByText(/Închisă/).length).toBeGreaterThan(0);
     await waitFor(() => expect(screen.getByRole("textbox")).toBeEnabled());
   });
 });
