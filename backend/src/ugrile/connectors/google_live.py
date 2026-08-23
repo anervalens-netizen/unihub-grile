@@ -24,7 +24,7 @@ SHEETS_API_BASE = "https://sheets.googleapis.com/v4/spreadsheets"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 _CONTROL_FIELDS = (
     "sheets(properties(sheetId,title),"
-    "protectedRanges(protectedRangeId,range,description,warningOnly,"
+    "protectedRanges(protectedRangeId,range,namedRangeId,tableId,description,warningOnly,"
     "unprotectedRanges,editors))"
 )
 
@@ -153,7 +153,7 @@ class GoogleSheetsApiTransport:
     def read_control_state(self, spreadsheet_id: str) -> Mapping[str, Any]:
         url = (
             f"{SHEETS_API_BASE}/{quote(spreadsheet_id, safe='')}"
-            f"?fields={quote(_CONTROL_FIELDS, safe='(),') }"
+            f"?fields={quote(_CONTROL_FIELDS, safe='(),')}"
         )
         return self._request_json("GET", url)
 
