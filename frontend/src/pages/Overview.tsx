@@ -6,6 +6,7 @@ import {
   type ProgramGrid,
   type StoreSummary,
 } from "../api/client";
+import { isolatedRead } from "../api/isolatedRead";
 import { MonthSelector } from "../components/MonthSelector";
 import { navigate } from "../router";
 
@@ -19,6 +20,7 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
   const [monthId, setMonthId] = useState<string | null>(months[0]?.id ?? null);
   const [report, setReport] = useState<OverviewReport | null>(null);
   const [stores, setStores] = useState<StoreSummary[]>([]);
+  const [storesError, setStoresError] = useState<string | null>(null);
   const [peopleTotal, setPeopleTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,22 +31,26 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
   useEffect(() => {
     if (!monthId) {
       setReport(null);
+      setStores([]);
+      setStoresError(null);
       setPeopleTotal(null);
       return;
     }
     let cancelled = false;
     setError(null);
+    setStoresError(null);
     setPeopleTotal(null);
     Promise.all([
       api.get<OverviewReport>(`/months/${monthId}/overview`),
-      api.get<StoreSummary[]>("/catalog/stores"),
-      api.get<ProgramGrid>(`/months/${monthId}/program?perspective=people`).catch(() => null),
+      isolatedRead(api.get<StoreSummary[]>("/catalog/stores")),
+      isolatedRead(api.get<ProgramGrid>(`/months/${monthId}/program?perspective=people`)),
     ])
-      .then(([overview, storeList, peopleProgram]) => {
+      .then(([overview, storeRead, peopleRead]) => {
         if (cancelled) return;
         setReport(overview);
-        setStores(storeList.filter((store) => store.is_active));
-        setPeopleTotal(peopleProgram?.rows.length ?? null);
+        setStores(storeRead.value?.filter((store) => store.is_active) ?? []);
+        setStoresError(storeRead.error);
+        setPeopleTotal(peopleRead.value?.rows.length ?? null);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -121,28 +127,31 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
                 <span className="context-pill">{report.state} · rev {report.revision}</span>
               </div>
 
-              <div className="retail-overview-table">
-                <div className="retail-overview-row head">
-                  <span>Magazin</span><span>Cod</span><span>Firmă</span><span>Status</span><span>Excepții</span><span></span>
+              {storesError && <p className="error-text compact-error" role="alert">Structura magazinelor este indisponibilă: {storesError}</p>}
+              {!storesError && (
+                <div className="retail-overview-table">
+                  <div className="retail-overview-row head">
+                    <span>Magazin</span><span>Cod</span><span>Firmă</span><span>Status</span><span>Excepții</span><span></span>
+                  </div>
+                  {stores.map((store) => {
+                    const issue = issuesByStore.get(store.id);
+                    const status = !issue ? "ok" : issue.severity >= 2 ? "err" : "warn";
+                    return (
+                      <div className="retail-overview-row" key={store.id}>
+                        <button type="button" className="retail-store-link" onClick={() => navigate("store", store.id)}>{store.name}</button>
+                        <span>{store.internal_code}</span>
+                        <span>{store.company_code || "—"}</span>
+                        <span className="retail-status">
+                          <span className={`status-dot status-${status === "ok" ? "online" : status === "warn" ? "checking" : "offline"}`} />
+                          {status === "ok" ? "OK" : status === "warn" ? "Atenție" : "Intervenție"}
+                        </span>
+                        <span>{issue?.count ?? 0}</span>
+                        <button type="button" className="retail-store-link retail-open" onClick={() => navigate("store", store.id)}>Deschide</button>
+                      </div>
+                    );
+                  })}
                 </div>
-                {stores.map((store) => {
-                  const issue = issuesByStore.get(store.id);
-                  const status = !issue ? "ok" : issue.severity >= 2 ? "err" : "warn";
-                  return (
-                    <div className="retail-overview-row" key={store.id}>
-                      <button type="button" className="retail-store-link" onClick={() => navigate("store", store.id)}>{store.name}</button>
-                      <span>{store.internal_code}</span>
-                      <span>{store.company_code || "—"}</span>
-                      <span className="retail-status">
-                        <span className={`status-dot status-${status === "ok" ? "online" : status === "warn" ? "checking" : "offline"}`} />
-                        {status === "ok" ? "OK" : status === "warn" ? "Atenție" : "Intervenție"}
-                      </span>
-                      <span>{issue?.count ?? 0}</span>
-                      <button type="button" className="retail-store-link retail-open" onClick={() => navigate("store", store.id)}>Deschide</button>
-                    </div>
-                  );
-                })}
-              </div>
+              )}
             </section>
 
             <section className="panel attention-panel">
