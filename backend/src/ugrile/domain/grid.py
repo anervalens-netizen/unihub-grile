@@ -57,6 +57,8 @@ class GridAnomalyCode(StrEnum):
     MISSING_SALE = "MISSING_SALE"
     SALES_DAY_COUNT_MISSING = "SALES_DAY_COUNT_MISSING"
     SALARY_MASTER_MISSING = "SALARY_MASTER_MISSING"
+    TARGET_INPUT_MISSING = "TARGET_INPUT_MISSING"
+    INCENTIVE_INPUT_MISSING = "INCENTIVE_INPUT_MISSING"
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +188,6 @@ def _main_commission(
         return Decimal("0"), Decimal("0")
     if progress < pack.main_progress_under_80:
         return Decimal("0"), Decimal("0")
-    # commission is 3% of realised; bonus is the step above the threshold.
     commission = money(pack.main_commission_rate * realised)
     if progress < pack.main_progress_under_100:
         bonus = money(pack.main_bonus_under_100)
@@ -216,9 +217,6 @@ def _extra_other_commission(
         if day.working_kind is not WorkingKind.EXTRA_OTHER:
             continue
         if day.store_id == home_store_id:
-            # Defensive: contractually impossible (EXTRA_OTHER requires
-            # home_store_id != site_store_id), but the engine never trusts
-            # the caller; an invalid pair is treated as a zero commission.
             continue
         if day.target_amount <= 0:
             continue
@@ -308,12 +306,11 @@ def calculate_grid(pack: RulePackV1, inputs: GridInputs) -> GridComponents:
     )
 
 
-# Convenience constants exported for golden fixtures.
 V2_EXAMPLE_SALARY: Final[Decimal] = Decimal("2600")
 V2_EXAMPLE_TICKETS: Final[Decimal] = Decimal("480")
-V2_EXAMPLE_SIM_QTY: Final[int] = 9  # 9 * 3 = 27
+V2_EXAMPLE_SIM_QTY: Final[int] = 9
 V2_EXAMPLE_INCENTIVE: Final[Decimal] = Decimal("350")
-V2_EXAMPLE_TOTAL: Final[Decimal] = Decimal("3457")  # 2600 + 480 + 27 + 350
+V2_EXAMPLE_TOTAL: Final[Decimal] = Decimal("3457")
 
 
 __all__ = [
