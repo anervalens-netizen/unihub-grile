@@ -4,9 +4,9 @@ A successful Retail snapshot apply and its DONE ImportRun are committed in the
 same caller transaction. The newest DONE run for a tenant/period is therefore
 the accepted head; failed/rolled-back attempts cannot displace last-good state.
 
-The ledger also pins the exact target and incentive row versions materialized by
-that accepted snapshot. This prevents a later complete snapshot that omits an
-input from silently falling back to an older database version.
+The ledger pins exact catalog membership plus target/incentive row versions for
+the accepted snapshot. A newer complete snapshot can therefore deactivate
+removed Retail catalog members and can never fall back to old financial rows.
 """
 
 from __future__ import annotations
@@ -46,6 +46,8 @@ class AcceptedRetailGeneration:
     sales_revision: int
     campaign_revision: int
     cutoff_date: str
+    store_ids: tuple[str, ...]
+    person_ids: tuple[str, ...]
     target_versions: tuple[tuple[str, str, int], ...]
     incentive_versions: tuple[tuple[str, int], ...]
 
@@ -73,6 +75,24 @@ def _invalid_ledger(row: ImportRun, key: str) -> ConnectorError:
     )
 
 
+def _decode_unique_strings(
+    row: ImportRun,
+    payload: dict[str, object],
+    key: str,
+) -> tuple[str, ...]:
+    raw = payload.get(key)
+    if not isinstance(raw, list):
+        raise _invalid_ledger(row, key)
+    decoded: list[str] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, str) or not item:
+            raise _invalid_ledger(row, f"{key}[{index}]")
+        decoded.append(item)
+    if len(decoded) != len(set(decoded)):
+        raise _invalid_ledger(row, f"{key}.duplicate")
+    return tuple(sorted(decoded))
+
+
 def _decode_target_versions(
     row: ImportRun,
     payload: dict[str, object],
@@ -97,10 +117,10 @@ def _decode_target_versions(
             or version < 1
         ):
             raise _invalid_ledger(row, f"target_versions[{index}]")
-        key = (store_id, kind)
-        if key in seen:
+        identity = (store_id, kind)
+        if identity in seen:
             raise _invalid_ledger(row, "target_versions.duplicate")
-        seen.add(key)
+        seen.add(identity)
         decoded.append((store_id, kind, version))
     return tuple(sorted(decoded))
 
@@ -181,6 +201,8 @@ def _decode_run(row: ImportRun) -> AcceptedRetailGeneration:
         sales_revision=int(payload["sales_revision"]),
         campaign_revision=int(payload["campaign_revision"]),
         cutoff_date=str(payload["cutoff_date"]),
+        store_ids=_decode_unique_strings(row, payload, "store_ids"),
+        person_ids=_decode_unique_strings(row, payload, "person_ids"),
         target_versions=_decode_target_versions(row, payload),
         incentive_versions=_decode_incentive_versions(row, payload),
     )
