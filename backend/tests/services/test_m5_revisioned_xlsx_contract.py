@@ -91,10 +91,10 @@ def test_revision_pinned_store_export_is_byte_deterministic_and_parseable(
 
     workbook = load_workbook(io.BytesIO(first.bytes_), data_only=False, keep_links=True)
     assert workbook.sheetnames == ["Grila", "Pontaj"]
-    assert f"Revizie: 1" in str(workbook["Grila"]["A4"].value)
+    assert "Revizie: 1" in str(workbook["Grila"]["A4"].value)
     assert workbook["Pontaj"]["A1"].value == "Persoana"
     assert workbook["Pontaj"]["AH1"].value == "Total ore (AH)"
-    assert workbook["Pontaj"]["A8"].value == faker_tenant["person_a_name"]
+    assert workbook["Pontaj"]["A8"].value == "Alice"
     assert workbook["Pontaj"]["C8"].value == "11.00"
     _assert_no_external_dependencies(first.bytes_)
 
@@ -152,6 +152,6 @@ def test_revision_pinned_pontaj_only_is_scoped_parseable_and_dependency_free(
     assert envelope.summary["revision"] == 1
     workbook = load_workbook(io.BytesIO(envelope.bytes_), data_only=False, keep_links=True)
     assert workbook.sheetnames == ["Pontaj"]
-    assert workbook["Pontaj"]["A8"].value == faker_tenant["person_a_name"]
+    assert workbook["Pontaj"]["A8"].value == "Alice"
     assert workbook["Pontaj"]["C8"].value == "11.00"
     _assert_no_external_dependencies(envelope.bytes_)
