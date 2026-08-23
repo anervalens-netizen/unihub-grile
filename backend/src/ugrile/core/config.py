@@ -56,6 +56,22 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Export artifact retention. The cleaner is intentionally explicit and
+    # only operates inside the managed ``ugrile-s5-exports`` root. Age and
+    # operation-count caps are both enforced so disk growth remains bounded.
+    export_artifact_retention_hours: int = Field(
+        default=168,
+        ge=1,
+        validation_alias="UGRILE_EXPORT_RETENTION_HOURS",
+        description="Maximum age of managed export operation artifacts.",
+    )
+    export_artifact_max_operations: int = Field(
+        default=500,
+        ge=1,
+        validation_alias="UGRILE_EXPORT_MAX_OPERATIONS",
+        description="Maximum number of managed export operation entries retained.",
+    )
+
     # Connector / fixture ingestion. Retail remains read-only during the
     # standalone plugin-candidate program.
     connector_default: str = "fixture-v1"
