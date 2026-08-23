@@ -7,8 +7,7 @@ from datetime import date
 
 from ugrile.connectors.google import write_store_projection
 from ugrile.core import database
-from ugrile.domain.enums import RoleName
-from ugrile.repositories.models import ManagerScope, SheetProjectionRun, User
+from ugrile.repositories.models import ManagerScope, SheetProjectionRun
 from ugrile.repositories.months import MonthRepository
 
 ADMIN = {"X-Ugrile-Identity": "user_admin", "X-Ugrile-Tenant": "tenant_acme"}
@@ -139,16 +138,7 @@ def test_reconciliation_requires_sheet_read_and_exact_manager_store_scope(
 ) -> None:
     month_id = _month_id(faker_tenant, 2026, 8)
     with database.session_scope() as session:
-        session.add(
-            User(
-                id="user_manager",
-                tenant_id=faker_tenant["tenant_id"],
-                email="manager@acme.example",
-                display_name="Manager",
-                role=RoleName.MANAGER.value,
-            )
-        )
-        session.flush()
+        # The API ``client`` fixture already provisions ``user_manager``.
         session.add(
             ManagerScope(
                 tenant_id=faker_tenant["tenant_id"],
