@@ -1,0 +1,229 @@
+/* FE-013: final responsive layer loaded after app.css and retail-overrides.css.
+ * Keep this file focused on layout/cascade corrections; visual/runtime browser proof remains FE-016.
+ */
+
+@media (max-width: 1000px) {
+  .command-grid,
+  .store-control-grid,
+  .payroll-grid,
+  .close-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .close-timeline {
+    grid-column: auto;
+  }
+
+  .kpi-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .exception-context {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .audit-timeline code,
+  .exception-context .context-pill,
+  .sync-status-row strong {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  /* retail-overrides.css used to hide the entire sidebar here, which also
+   * removed the only primary navigation. Convert it to a compact top rail.
+   */
+  .app-sidebar {
+    display: block;
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    background: #fff;
+    border-right: 0;
+    border-bottom: 1px solid #e7eaef;
+  }
+
+  .sidebar-inner {
+    min-height: auto;
+    padding: 6px 8px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+  }
+
+  .brand-block {
+    width: auto;
+    min-height: 32px;
+    padding: 0 3px;
+    border-bottom: 0;
+  }
+
+  .brand-block > span:last-child,
+  .sidebar-footer {
+    display: none;
+  }
+
+  .app-nav {
+    display: flex;
+    gap: 4px;
+    padding: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+
+  .nav-link {
+    width: auto;
+    min-width: max-content;
+    min-height: 32px;
+    padding: 0 8px;
+    flex: 0 0 auto;
+  }
+
+  .nav-icon {
+    width: 18px;
+    height: 18px;
+  }
+
+  .workspace-main {
+    padding: 10px;
+  }
+
+  .command-page,
+  .store-page,
+  .page {
+    width: 100%;
+    margin: 0;
+  }
+
+  .command-page::before,
+  .store-page::before {
+    display: none;
+  }
+
+  .command-hero,
+  .store-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .command-hero-actions,
+  .store-hero-actions,
+  .program-toolbar {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .program-toolbar {
+    align-items: stretch;
+  }
+
+  .month-selector {
+    min-width: min(180px, 100%);
+    flex: 1 1 180px;
+  }
+
+  .perspective-switch {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+  }
+
+  .kpi-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .grid-calculation-card {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .grid-calculation-card > small {
+    grid-column: 1 / -1;
+  }
+
+  .retail-overview-table,
+  .data-table-wrap,
+  .program-matrix-scroll {
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+@media (max-width: 480px) {
+  .workspace-topbar {
+    height: auto;
+    min-height: 36px;
+    padding: 6px 10px;
+  }
+
+  .topbar-inner {
+    gap: 8px;
+  }
+
+  .topbar-status span:not(.status-dot),
+  .topbar-status small {
+    display: none;
+  }
+
+  .workspace-main {
+    padding: 8px;
+  }
+
+  .command-hero,
+  .store-hero,
+  .panel,
+  .card {
+    padding: 10px;
+  }
+
+  .command-hero-actions > *,
+  .store-hero-actions > * {
+    flex: 1 1 100%;
+  }
+
+  .month-selector {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .month-selector select {
+    width: 100%;
+  }
+
+  .exception-context .context-pill {
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .editor-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .editor-actions button {
+    flex: 1 1 auto;
+  }
+
+  .program-cell-editor-panel,
+  .grid-calculation-card {
+    grid-template-columns: 1fr;
+  }
+
+  .editor-context,
+  .grid-calculation-card > small {
+    grid-column: auto;
+  }
+
+  .sync-status-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+}
