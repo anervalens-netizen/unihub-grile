@@ -29,15 +29,19 @@ from ugrile.core import database
 pytestmark = [pytest.mark.postgres, pytest.mark.performance]
 
 # PostgreSQL optimized calibration, run 32589115250 / head 911ae5b:
-# overview=21, program=6, grid=5, store_screen=43 SELECTs. These ceilings are
-# locked to the improved measured counts so any additional SQL round-trip is a
-# visible regression. Latency ceilings remain deliberately wider than the
-# sample to avoid treating shared-runner jitter as an application failure.
+# overview=21, program=6, grid=5, original 8-read store_screen=43 SELECTs.
+# FE-005 adds the mounted, capability-gated job diagnostics HTTP request. On the
+# dev-header identity path that request executes one principal lookup plus two
+# bounded ADMIN diagnostics reads (active queue + terminal history), measured as
+# exactly +3 SELECTs in run 32625821433. The real 9-read Store screen contract is
+# therefore 46 SELECTs. Any further SQL round-trip remains a visible regression.
+# Latency ceilings remain deliberately wider than samples so shared-runner jitter
+# is not treated as an application failure.
 QUERY_BUDGETS = {
     "overview": 21,
     "program": 6,
     "grid": 5,
-    "store_screen": 43,
+    "store_screen": 46,
 }
 LATENCY_BUDGET_MS = {
     "overview": 2000.0,
@@ -179,7 +183,7 @@ def test_realistic_primary_read_performance(
         grid_body = client.get(f"/months/{month}/grid", headers=dataset.headers).json()
         assert len(grid_body) == PERF_PERSON_COUNT
 
-        # This mirrors the requests currently issued in parallel by Magazin.tsx.
+        # This mirrors the reads currently mounted by Magazin.tsx for an ADMIN.
         # Count them as one screen budget so future endpoint or frontend changes
         # cannot quietly introduce query fan-out across the composed screen.
         store_screen = _measure_gets(
@@ -195,6 +199,7 @@ def test_realistic_primary_read_performance(
                 f"/months/{month}/grid",
                 f"/months/{month}/epay/freshness?store_id={representative_store}",
                 f"/months/{month}/sheet-projection?store_id={representative_store}",
+                "/worker/jobs/diagnostics?terminal_limit=50",
             ],
             headers=dataset.headers,
         )

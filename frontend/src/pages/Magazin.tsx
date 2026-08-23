@@ -29,6 +29,28 @@ export interface MagazinProps {
 type StoreTab = "control" | "calendar" | "payroll";
 type EditValue = { personId: string; storeId: string; status: string; workingKind: string };
 type Editing = { rowId: string; businessDate: string };
+type QueueState = "QUEUED" | "RETRY" | "RUNNING" | "FAILED" | "DONE";
+
+interface JobDiagnostic {
+  id: number;
+  kind: string;
+  state: QueueState;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  month_id: string | null;
+  store_ids: string[];
+}
+
+interface JobDiagnostics {
+  jobs: JobDiagnostic[];
+}
+
+interface GridDetail {
+  components: Record<string, unknown>;
+  anomalies: Array<Record<string, unknown>>;
+  inputs: Record<string, unknown>;
+}
 
 function isApiError(error: unknown): error is { status: number; code?: string } {
   return typeof error === "object" && error !== null && "status" in error && typeof (error as { status?: unknown }).status === "number";
@@ -45,6 +67,8 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
   const [gridRows, setGridRows] = useState<GridCalculation[]>([]);
   const [freshness, setFreshness] = useState<EpayFreshness | null>(null);
   const [projection, setProjection] = useState<SheetProjection | null>(null);
+  const [jobDiagnostics, setJobDiagnostics] = useState<JobDiagnostics | null>(null);
+  const [jobsError, setJobsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<StoreTab>("control");
@@ -59,6 +83,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
   const canEditSchedule = hasCapability(capabilities, "schedule.write");
   const canSyncSheet = hasCapability(capabilities, "sheet.sync");
   const canCreateExport = hasCapability(capabilities, "export.create");
+  const canReadJobs = hasCapability(capabilities, "jobs.read");
   const hasStoreAction = canEditSchedule || canSyncSheet || canCreateExport;
 
   useEffect(() => {
@@ -109,23 +134,79 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
     };
   }, [api, monthId, storeId]);
 
+  useEffect(() => {
+    if (!monthId || !storeId || !canReadJobs) {
+      setJobDiagnostics(null);
+      setJobsError(null);
+      return;
+    }
+    let cancelled = false;
+    setJobsError(null);
+    api.get<JobDiagnostics>("/worker/jobs/diagnostics?terminal_limit=50")
+      .then((response) => {
+        if (!cancelled) setJobDiagnostics(response);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setJobsError(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, monthId, storeId, canReadJobs]);
+
   const salesByPerson = useMemo(() => {
     const map = new Map<string, number>();
     attribution?.rows.forEach((row) => map.set(row.person_id, (map.get(row.person_id) ?? 0) + Number(row.amount)));
     return map;
   }, [attribution]);
 
+  const gridDetails = useMemo(() => {
+    const map = new Map<number, GridDetail | null>();
+    for (const row of gridRows) map.set(row.id, parseGridDetail(row.payload));
+    return map;
+  }, [gridRows]);
+
+  const gridAnomalyCount = useMemo(
+    () => Array.from(gridDetails.values()).reduce((sum, detail) => sum + (detail?.anomalies.length ?? 0), 0),
+    [gridDetails],
+  );
+
+  const storeAttributionAnomalies = useMemo(
+    () => (attribution?.anomalies ?? []).filter((item) => anomalyBelongsToStore(item, storeId)),
+    [attribution, storeId],
+  );
+
+  const storeJobs = useMemo(() => {
+    if (!jobDiagnostics || !storeId || !monthId) return [];
+    return jobDiagnostics.jobs.filter((job) =>
+      job.month_id === monthId
+      && job.store_ids.includes(storeId)
+      && (job.kind === "GOOGLE_PROJECTION_STORE" || job.kind === "EXPORT_XLSX_STORE"),
+    ).slice(0, 6);
+  }, [jobDiagnostics, monthId, storeId]);
+
   const storeSalesTotal = Array.from(salesByPerson.values()).reduce((total, amount) => total + amount, 0);
   const peopleIds = new Set(people.map((person) => person.id));
   const storeHours = totals ? Object.entries(totals.totals).filter(([personId]) => peopleIds.has(personId)).reduce((sum, [, bucket]) => sum + bucket.hours, 0) : 0;
   const storeWorkingDays = totals ? Object.entries(totals.totals).filter(([personId]) => peopleIds.has(personId)).reduce((sum, [, bucket]) => sum + bucket.working_days, 0) : 0;
   const matrixPeople = useMemo(() => buildMatrixPeople(grid, people), [grid, people]);
+  const currentMonth = months.find((month) => month.id === monthId) ?? null;
 
   function enqueue(requiredCapability: Capability, path: string, body: Record<string, string>) {
     if (!monthId || !hasCapability(capabilities, requiredCapability)) return;
     setActionMessage(null);
     api.post<Record<string, unknown>>(`/months/${monthId}${path}`, body)
-      .then((result) => setActionMessage(`Job ${String(result.job_id ?? result.status ?? "trimis")} a fost pus în coadă.`))
+      .then(async (result) => {
+        setActionMessage(`Job ${String(result.job_id ?? result.status ?? "trimis")} a fost pus în coadă.`);
+        if (canReadJobs) {
+          try {
+            setJobDiagnostics(await api.get<JobDiagnostics>("/worker/jobs/diagnostics?terminal_limit=50"));
+            setJobsError(null);
+          } catch (e: unknown) {
+            setJobsError(e instanceof Error ? e.message : String(e));
+          }
+        }
+      })
       .catch((e: unknown) => setActionMessage(e instanceof Error ? e.message : String(e)));
   }
 
@@ -253,6 +334,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
         </div>
         <div className="store-hero-actions">
           <MonthSelector months={months} value={monthId} onChange={setMonthId} error={monthsError} />
+          {currentMonth && <span className="context-pill">{currentMonth.state} · rev {grid?.revision ?? currentMonth.revision}</span>}
           <span className={`operational-chip ${freshness?.is_fresh ? "ok" : "warn"}`}>{freshness?.is_fresh ? "Date actualizate" : "Verifică E-pay"}</span>
         </div>
       </section>
@@ -266,6 +348,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
         <Metric label="Vânzări atribuite" value={`${formatMoney(storeSalesTotal)} RON`} detail={`${attribution?.rows.length ?? 0} înregistrări`} />
         <Metric label="Pontaj" value={`${storeHours.toFixed(1)} h`} detail={`${storeWorkingDays} zile lucrate`} />
         <Metric label="Grile calculate" value={String(gridRows.length)} detail={`revizia ${grid?.revision ?? "—"}`} />
+        <Metric label="Anomalii" value={String(gridAnomalyCount + storeAttributionAnomalies.length)} detail={`${gridAnomalyCount} grilă · ${storeAttributionAnomalies.length} atribuire`} />
         <Metric label="E-pay" value={`${freshness?.fresh_count ?? 0}/${freshness?.expected_count ?? 0}`} detail={freshness?.is_fresh ? "proaspăt" : "necesită sync"} />
       </section>
 
@@ -320,11 +403,21 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
           </section>
 
           <section className="panel sync-panel">
-            <div className="panel-heading"><div><span className="eyebrow">INTEGRITATE DATE</span><h3>Sync & stare</h3></div></div>
+            <div className="panel-heading"><div><span className="eyebrow">INTEGRITATE DATE</span><h3>Sync & export</h3></div></div>
             <div className="sync-status-row"><span>E-pay</span><strong className={freshness?.is_fresh ? "text-ok" : "text-warn"}>{freshness?.is_fresh ? "Proaspăt" : "Stale / indisponibil"}</strong></div>
             <div className="sync-status-row"><span>Sheet projection</span><strong>{projection?.last_success_generation ?? "—"}</strong></div>
-            <div className="sync-status-row"><span>Erori sync</span><strong className={projection?.last_error ? "text-err" : "text-ok"}>{projection?.last_error ? "Există" : "0"}</strong></div>
+            <div className="sync-status-row"><span>Erori Sheet</span><strong className={projection?.last_error ? "text-err" : "text-ok"}>{projection?.last_error ? "Există" : "0"}</strong></div>
             {projection?.last_error && <p className="error-text compact-error">{projection.last_error}</p>}
+            {jobsError && <p className="error-text compact-error">Statusul joburilor este indisponibil: {jobsError}</p>}
+            {canReadJobs && !jobsError && storeJobs.length === 0 && <div className="sync-status-row"><span>Joburi sync/export</span><strong>Fără activitate recentă</strong></div>}
+            {storeJobs.map((job) => (
+              <div className="sync-status-row" key={job.id} title={job.last_error ?? ""}>
+                <span>{jobKindLabel(job.kind)} #{job.id}</span>
+                <strong className={job.state === "FAILED" ? "text-err" : job.state === "DONE" ? "text-ok" : "text-warn"}>
+                  {jobStateLabel(job.state)} · {job.attempts}/{job.max_attempts}
+                </strong>
+              </div>
+            ))}
           </section>
         </div>
       )}
@@ -376,16 +469,23 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
           </section>
 
           <section className="panel">
-            <div className="panel-heading"><div><span className="eyebrow">GRILĂ</span><h3>Calcul server-side</h3></div><span className="count-badge">{gridRows.length}</span></div>
+            <div className="panel-heading"><div><span className="eyebrow">GRILĂ</span><h3>Componente și anomalii</h3></div><span className="count-badge">{gridRows.length}</span></div>
             <div className="grid-calculation-list">
-              {gridRows.map((row) => (
-                <article className="grid-calculation-card" key={row.id}>
-                  <div><span>Agent</span><strong>{people.find((person) => person.id === row.person_id)?.display_name ?? row.person_id}</strong></div>
-                  <div><span>Rule pack</span><strong>{row.rule_pack_version}</strong></div>
-                  <div><span>Revizie</span><strong>{row.revision}</strong></div>
-                  <small>Output {row.outputs_hash.slice(0, 10)}…</small>
-                </article>
-              ))}
+              {gridRows.map((row) => {
+                const detail = gridDetails.get(row.id);
+                const epay = asRecord(detail?.inputs.epay);
+                return (
+                  <article className="grid-calculation-card" key={row.id}>
+                    <div><span>Agent</span><strong>{people.find((person) => person.id === row.person_id)?.display_name ?? row.person_id}</strong></div>
+                    <div><span>Total grilă</span><strong>{moneyComponent(detail, "total_salary")}</strong></div>
+                    <div><span>Comision principal</span><strong>{moneyComponent(detail, "main_commission")}</strong></div>
+                    <div><span>Comision E-pay</span><strong>{moneyComponent(detail, "epay_commission")}</strong></div>
+                    <div><span>E-pay input</span><strong>{epay ? `${numericValue(epay.under_50)} / ${numericValue(epay.at_or_over_50)}` : "—"}</strong></div>
+                    <div><span>Anomalii</span><strong className={(detail?.anomalies.length ?? 0) > 0 ? "text-warn" : "text-ok"}>{detail ? detail.anomalies.length : "—"}</strong></div>
+                    <small>{detail?.anomalies.length ? detail.anomalies.map((item) => String(item.code ?? "ANOMALY")).join(" · ") : `rev ${row.revision} · ${row.rule_pack_version}`}</small>
+                  </article>
+                );
+              })}
               {gridRows.length === 0 && <div className="empty-state"><strong>Fără calcul disponibil.</strong><span>Grila server-side nu are încă rezultate pentru revizia curentă.</span></div>}
             </div>
           </section>
@@ -411,6 +511,61 @@ function buildMatrixPeople(grid: ProgramGrid | null, catalogPeople: PersonSummar
     }
   }
   return Array.from(map.values());
+}
+
+function parseGridDetail(payload: string): GridDetail | null {
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    const record = parsed as Record<string, unknown>;
+    const components = asRecord(record.components);
+    const inputs = asRecord(record.inputs);
+    const anomalies = Array.isArray(record.anomalies)
+      ? record.anomalies.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      : [];
+    if (!components || !inputs) return null;
+    return { components, inputs, anomalies };
+  } catch {
+    return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function moneyComponent(detail: GridDetail | null | undefined, key: string): string {
+  if (!detail) return "—";
+  const value = Number(detail.components[key]);
+  return Number.isFinite(value) ? `${formatMoney(value)} RON` : "—";
+}
+
+function numericValue(value: unknown): string {
+  const number = Number(value);
+  return Number.isFinite(number) ? String(number) : "—";
+}
+
+function anomalyBelongsToStore(anomaly: Record<string, unknown>, storeId: string | null): boolean {
+  if (!storeId) return false;
+  const anomalyStoreId = anomaly.store_id;
+  return anomalyStoreId === undefined || anomalyStoreId === null || anomalyStoreId === storeId;
+}
+
+function jobKindLabel(kind: string): string {
+  if (kind === "GOOGLE_PROJECTION_STORE") return "Sheet";
+  if (kind === "EXPORT_XLSX_STORE") return "Export XLSX";
+  return kind.replaceAll("_", " ");
+}
+
+function jobStateLabel(state: QueueState): string {
+  const labels: Record<QueueState, string> = {
+    QUEUED: "În așteptare",
+    RETRY: "Retry",
+    RUNNING: "Rulează",
+    FAILED: "Eșuat",
+    DONE: "Finalizat",
+  };
+  return labels[state];
 }
 
 function formatMoney(value: number): string {
