@@ -9,8 +9,8 @@ used as a metric label.
 
 from __future__ import annotations
 
-import time
 from collections import defaultdict
+from datetime import UTC
 from threading import Lock
 
 from sqlalchemy import func, select
@@ -42,7 +42,7 @@ def observe_http_request(
 
 
 def observe_close_blockers(count: int) -> None:
-    """Record the most recently evaluated close-blocker count.
+    """Record the most recently evaluated final-close blocker count.
 
     The value is intentionally unlabeled. The authenticated close/checklist API
     remains the place to inspect which tenant/month/entities caused blockers.
@@ -95,10 +95,10 @@ def render_metrics(session: Session) -> str:
 
     lines.extend(
         [
-            "# HELP ugrile_close_blockers_last_observed Last close/checklist blocker count.",
+            "# HELP ugrile_close_blockers_last_observed Last final-close blocker count.",
             "# TYPE ugrile_close_blockers_last_observed gauge",
             _sample("ugrile_close_blockers_last_observed", close_blockers),
-            "# HELP ugrile_close_blocker_observations_total Close/checklist evaluations observed.",
+            "# HELP ugrile_close_blocker_observations_total Final-close evaluations observed.",
             "# TYPE ugrile_close_blocker_observations_total counter",
             _sample("ugrile_close_blocker_observations_total", close_observations),
         ]
@@ -131,6 +131,9 @@ def render_metrics(session: Session) -> str:
             or 0
         )
     except Exception:
+        # A failed PostgreSQL statement can poison the transaction. Metrics are
+        # read-only, so rollback before returning the degraded scrape.
+        session.rollback()
         lines.extend(
             [
                 "# HELP ugrile_metrics_database_up Whether durable metric gauges were readable.",
@@ -165,8 +168,9 @@ def render_metrics(session: Session) -> str:
     )
     age_seconds = -1.0
     if latest_projection is not None:
-        timestamp = latest_projection.timestamp()
-        age_seconds = max(time.time() - timestamp, 0.0)
+        if latest_projection.tzinfo is None:
+            latest_projection = latest_projection.replace(tzinfo=UTC)
+        age_seconds = max((__import__("datetime").datetime.now(tz=UTC) - latest_projection).total_seconds(), 0.0)
     lines.append(_sample("ugrile_sheet_projection_last_success_age_seconds", round(age_seconds, 3)))
     return "\n".join(lines) + "\n"
 
