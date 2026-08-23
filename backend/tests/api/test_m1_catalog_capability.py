@@ -23,10 +23,15 @@ def test_catalog_reads_fail_closed_when_catalog_capability_is_removed(
     """Route authorization must not rely on today's fixed role policy alone."""
 
     admin_capabilities = authorization._ROLE_CAPABILITIES[RoleName.ADMIN]
+    without_catalog_read = frozenset(
+        capability
+        for capability in admin_capabilities
+        if capability is not Capability.CATALOG_READ
+    )
     monkeypatch.setitem(
         authorization._ROLE_CAPABILITIES,
         RoleName.ADMIN,
-        frozenset(capability for capability in admin_capabilities if capability is not Capability.CATALOG_READ),
+        without_catalog_read,
     )
 
     response = client.get(path, headers=HEADERS)
