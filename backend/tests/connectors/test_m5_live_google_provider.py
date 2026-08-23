@@ -685,7 +685,7 @@ def test_http_transport_reads_and_updates_control_state_without_network() -> Non
     control_url = str(session.calls[0]["url"])
     assert "fields=" in control_url
     assert "namedRangeId" in control_url
-    assert "tableId" in control_url
+    assert "tableId" not in control_url
     assert session.calls[1]["method"] == "POST"
     assert str(session.calls[1]["url"]).endswith("/sheet-1:batchUpdate")
     assert session.calls[1]["json"] == {
