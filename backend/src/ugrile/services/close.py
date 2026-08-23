@@ -58,6 +58,7 @@ from ..repositories.models import (
     Store,
     StoreTarget,
 )
+from ..repositories.retail_generation import accepted_retail_generation
 from .person_scope import effective_home_store_map
 
 
@@ -165,14 +166,21 @@ class CloseService:
                 )
             )
 
-        sales = list(
-            self.session.execute(
-                select(SalesStoreDay).where(
-                    SalesStoreDay.tenant_id == tenant_id,
-                    SalesStoreDay.business_date.in_(dates),
-                )
-            ).scalars()
+        period = f"{month.year:04d}-{month.month:02d}"
+        accepted = accepted_retail_generation(
+            self.session,
+            tenant_id=tenant_id,
+            period=period,
         )
+        sales_stmt = select(SalesStoreDay).where(
+            SalesStoreDay.tenant_id == tenant_id,
+            SalesStoreDay.business_date.in_(dates),
+        )
+        if accepted is not None:
+            sales_stmt = sales_stmt.where(
+                SalesStoreDay.generation == accepted.generation_key
+            )
+        sales = list(self.session.execute(sales_stmt).scalars())
         sales_index: dict[tuple[str, date], bool] = {}
         for sale_row in sales:
             sales_index[(sale_row.store_id, sale_row.business_date)] = True
@@ -205,15 +213,25 @@ class CloseService:
                 )
             ).scalars()
         )
-        latest_targets: dict[tuple[str, str], StoreTarget] = {}
-        for target_row in target_rows:
-            key = (target_row.store_id, target_row.kind)
-            existing = latest_targets.get(key)
-            if existing is None or target_row.version > existing.version:
-                latest_targets[key] = target_row
+        authoritative_targets: dict[tuple[str, str], StoreTarget] = {}
+        if accepted is not None:
+            expected_versions = {
+                (store_id, kind): version
+                for store_id, kind, version in accepted.target_versions
+            }
+            for target_row in target_rows:
+                key = (target_row.store_id, target_row.kind)
+                if expected_versions.get(key) == target_row.version:
+                    authoritative_targets[key] = target_row
+        else:
+            for target_row in target_rows:
+                key = (target_row.store_id, target_row.kind)
+                existing = authoritative_targets.get(key)
+                if existing is None or target_row.version > existing.version:
+                    authoritative_targets[key] = target_row
         for business_date in dates:
             for store_id in store_ids:
-                target_lookup = latest_targets.get((store_id, "MONTHLY_SALES"))
+                target_lookup = authoritative_targets.get((store_id, "MONTHLY_SALES"))
                 if target_lookup is None or target_lookup.amount <= 0:
                     target_availability.append(
                         StoreTargetAvailabilitySnapshot(
