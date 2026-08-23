@@ -12,6 +12,7 @@ import {
 import { isolatedRead } from "../api/isolatedRead";
 import { MonthSelector } from "../components/MonthSelector";
 import { ProgramMatrix } from "../components/ProgramMatrix";
+import { LoadingState, RequestError, requestErrorMessage } from "../components/RequestState";
 
 export interface AgentProps {
   api: ApiClient;
@@ -30,6 +31,8 @@ export function Agent({ api, personId, months, monthsError }: AgentProps) {
   const [projection, setProjection] = useState<SheetProjection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [subsystemErrors, setSubsystemErrors] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     setMonthId((current) => current ?? months[0]?.id ?? null);
@@ -44,11 +47,19 @@ export function Agent({ api, personId, months, monthsError }: AgentProps) {
       setEpay(null);
       setProjection(null);
       setSubsystemErrors([]);
+      setLoading(false);
       return;
     }
     let cancelled = false;
+    setGrid(null);
+    setPerson(null);
+    setAttribution(null);
+    setGridRows([]);
+    setEpay(null);
+    setProjection(null);
     setError(null);
     setSubsystemErrors([]);
+    setLoading(true);
     api
       .get<ProgramGrid>(`/months/${monthId}/program?perspective=people`)
       .then(async (response) => {
@@ -93,13 +104,17 @@ export function Agent({ api, personId, months, monthsError }: AgentProps) {
         ].filter((message): message is string => message !== null));
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(requestErrorMessage(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [api, monthId, personId]);
+  }, [api, monthId, personId, reloadToken]);
 
+  const retry = () => setReloadToken((value) => value + 1);
   const salesTotal = attribution?.rows.reduce((sum, row) => sum + Number(row.amount), 0);
   const projectionState = projection?.last_error
     ? `Eroare proiecție: ${projection.last_error}`
@@ -111,24 +126,26 @@ export function Agent({ api, personId, months, monthsError }: AgentProps) {
         <h2>Agent {personId ?? ""}</h2>
         <MonthSelector months={months} value={monthId} onChange={setMonthId} error={monthsError} />
       </header>
-      {error && <p className="error" role="alert">{error}</p>}
-      {subsystemErrors.length > 0 && (
-        <div className="error" role="alert">
-          <strong>Date parțial indisponibile.</strong>
-          <ul>{subsystemErrors.map((message) => <li key={message}>{message}</li>)}</ul>
-        </div>
+      {error && <RequestError message={error} onRetry={retry} />}
+      {loading && <LoadingState>Încarc detaliile agentului…</LoadingState>}
+      {!loading && !error && subsystemErrors.length > 0 && (
+        <RequestError message={`Date parțial indisponibile — ${subsystemErrors.join(" · ")}`} onRetry={retry} />
       )}
-      {grid && grid.rows.length === 0 && (
-        <p className="muted">Persoana nu are rânduri în calendarul acestei luni.</p>
+      {!loading && !error && grid && grid.rows.length === 0 && (
+        <div className="empty-state"><strong>Fără program în această lună.</strong><span>Persoana nu are rânduri în calendarul lunii selectate.</span></div>
       )}
-      <dl className="agent-contract">
-        <dt>Magazin de bază</dt><dd>{person?.home_store_id ?? "—"}</dd>
-        <dt>Credit vânzări lunar</dt><dd>{salesTotal === undefined ? "—" : `${salesTotal.toFixed(2)} RON`}</dd>
-        <dt>Componente grilă</dt><dd>{gridRows.length}</dd>
-        <dt>E-pay</dt><dd>{epay ? `${epay.is_fresh ? "Proaspăt" : "Stale"} (${epay.fresh_count}/${epay.expected_count})` : "—"}</dd>
-        <dt>Proiecție Sheet</dt><dd>{projectionState}</dd>
-      </dl>
-      {grid && grid.rows.length > 0 && <ProgramMatrix grid={grid} viewportHeight={360} />}
+      {!loading && !error && grid && (
+        <>
+          <dl className="agent-contract">
+            <dt>Magazin de bază</dt><dd>{person?.home_store_id ?? "—"}</dd>
+            <dt>Credit vânzări lunar</dt><dd>{salesTotal === undefined ? "—" : `${salesTotal.toFixed(2)} RON`}</dd>
+            <dt>Componente grilă</dt><dd>{gridRows.length}</dd>
+            <dt>E-pay</dt><dd>{epay ? `${epay.is_fresh ? "Proaspăt" : "Stale"} (${epay.fresh_count}/${epay.expected_count})` : "—"}</dd>
+            <dt>Proiecție Sheet</dt><dd>{projectionState}</dd>
+          </dl>
+          {grid.rows.length > 0 && <ProgramMatrix grid={grid} viewportHeight={360} />}
+        </>
+      )}
     </section>
   );
 }
