@@ -21,7 +21,7 @@ from .config import get_settings
 _SAFE_LOG_FIELDS = frozenset(
     {
         "event",
-        "log_level",
+        "level",
         "timestamp",
         "correlation_id",
         "method",
