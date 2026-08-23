@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -14,6 +15,7 @@ from ugrile.connectors.google import (
     read_store_projection,
     write_store_projection,
 )
+from ugrile.connectors.google_epay_layout import render_epay_values
 from ugrile.connectors.google_live import (
     SHEETS_SCOPE,
     GoogleRetryableTransportError,
@@ -24,17 +26,35 @@ from ugrile.connectors.google_provider import (
     GoogleProviderConfigurationError,
     LiveGoogleProjectionProvider,
 )
+from ugrile.connectors.google_sheet_protection import GoogleProtectionContractError
 from ugrile.repositories.models import SheetBinding, SheetProjectionRun
 
 
 class RecordingTransport:
+    managed_editor_email = "svc-grile@example.test"
+
     def __init__(self, *, grila_rows: int = 0, pontaj_rows: int = 0) -> None:
         self.grila_rows = grila_rows
         self.pontaj_rows = pontaj_rows
         self.count_reads: list[tuple[str, str]] = []
         self.readbacks: list[tuple[str, str]] = []
         self.writes: list[tuple[str, Sequence[Mapping[str, Any]]]] = []
+        self.control_reads: list[str] = []
+        self.control_updates: list[tuple[str, Sequence[Mapping[str, Any]]]] = []
         self._written: dict[str, list[list[Any]]] = {}
+        self._next_protection_id = 1000
+        self.control_state: dict[str, Any] = {
+            "sheets": [
+                {
+                    "properties": {"sheetId": 101, "title": "Grila"},
+                    "protectedRanges": [],
+                },
+                {
+                    "properties": {"sheetId": 202, "title": "Pontaj"},
+                    "protectedRanges": [],
+                },
+            ]
+        }
 
     def existing_row_count(self, spreadsheet_id: str, range_a1: str) -> int:
         self.count_reads.append((spreadsheet_id, range_a1))
@@ -48,7 +68,7 @@ class RecordingTransport:
         self.writes.append((spreadsheet_id, data))
         for item in data:
             range_a1 = str(item["range"])
-            key = "Grila" if "Grila" in range_a1 else "Pontaj"
+            key = self._value_key(range_a1)
             raw_values = item["values"]
             assert isinstance(raw_values, list)
             self._written[key] = [list(row) for row in raw_values]
@@ -56,10 +76,69 @@ class RecordingTransport:
 
     def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
         self.readbacks.append((spreadsheet_id, range_a1))
-        key = "Grila" if "Grila" in range_a1 else "Pontaj"
+        key = self._value_key(range_a1)
         match = re.search(r"(\d+)$", range_a1)
-        assert match is not None
-        return [list(row) for row in self._written[key][: int(match.group(1))]]
+        limit = int(match.group(1)) if match is not None else 2**31 - 1
+        return [list(row) for row in self._written.get(key, [])[:limit]]
+
+    def read_control_state(self, spreadsheet_id: str) -> Mapping[str, Any]:
+        self.control_reads.append(spreadsheet_id)
+        return copy.deepcopy(self.control_state)
+
+    def batch_update_spreadsheet(
+        self,
+        spreadsheet_id: str,
+        requests_: Sequence[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        self.control_updates.append((spreadsheet_id, requests_))
+        for request in requests_:
+            if "addProtectedRange" in request:
+                payload = copy.deepcopy(
+                    dict(request["addProtectedRange"])["protectedRange"]
+                )
+                assert isinstance(payload, dict)
+                payload["protectedRangeId"] = self._next_protection_id
+                self._next_protection_id += 1
+                self._sheet_for_id(int(dict(payload["range"])["sheetId"]))[
+                    "protectedRanges"
+                ].append(payload)
+            elif "updateProtectedRange" in request:
+                update = dict(request["updateProtectedRange"])
+                payload = copy.deepcopy(dict(update["protectedRange"]))
+                protection_id = int(payload["protectedRangeId"])
+                sheet = self._sheet_for_id(int(dict(payload["range"])["sheetId"]))
+                ranges = sheet["protectedRanges"]
+                sheet["protectedRanges"] = [
+                    payload if item.get("protectedRangeId") == protection_id else item
+                    for item in ranges
+                ]
+            elif "deleteProtectedRange" in request:
+                protection_id = int(
+                    dict(request["deleteProtectedRange"])["protectedRangeId"]
+                )
+                for sheet in self.control_state["sheets"]:
+                    sheet["protectedRanges"] = [
+                        item
+                        for item in sheet["protectedRanges"]
+                        if item.get("protectedRangeId") != protection_id
+                    ]
+            else:
+                raise AssertionError(f"unexpected control request: {request}")
+        return {"spreadsheetId": spreadsheet_id, "replies": [{} for _ in requests_]}
+
+    def seed_epay(self, rows: list[list[Any]]) -> None:
+        self._written["Epay"] = [list(row) for row in rows]
+
+    def _value_key(self, range_a1: str) -> str:
+        if "Grila" in range_a1 and re.search(r"!G\d*:I", range_a1):
+            return "Epay"
+        return "Grila" if "Grila" in range_a1 else "Pontaj"
+
+    def _sheet_for_id(self, sheet_id: int) -> dict[str, Any]:
+        for sheet in self.control_state["sheets"]:
+            if sheet["properties"]["sheetId"] == sheet_id:
+                return sheet
+        raise AssertionError(f"unknown sheet id {sheet_id}")
 
 
 class OmittingTrailingBlankTransport(RecordingTransport):
@@ -87,7 +166,7 @@ class FailingTransport(RecordingTransport):
 class MismatchTransport(RecordingTransport):
     def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
         rows = super().read_values(spreadsheet_id, range_a1)
-        if "Grila" in range_a1:
+        if "!A1:E" in range_a1 and rows:
             rows[-1][0] = "tampered-date"
         return rows
 
@@ -191,7 +270,7 @@ def test_live_provider_requires_existing_binding(session, faker_tenant) -> None:
     assert excinfo.value.details["code"] == "GOOGLE_SHEET_BINDING_REQUIRED"
 
 
-def test_live_provider_writes_reads_back_and_persists_verified_reconciliation(
+def test_live_provider_writes_epay_controls_and_verified_projection(
     session,
     faker_tenant,
 ) -> None:
@@ -214,14 +293,20 @@ def test_live_provider_writes_reads_back_and_persists_verified_reconciliation(
         ("sheet-live-123", "'Pontaj'!A:G"),
     ]
     assert transport.readbacks == [
+        ("sheet-live-123", "'Grila'!G1:I260"),
         ("sheet-live-123", "'Grila'!A1:E20"),
         ("sheet-live-123", "'Pontaj'!A1:G15"),
+        ("sheet-live-123", "'Grila'!G1:I5"),
     ]
+    assert transport.control_reads == ["sheet-live-123", "sheet-live-123"]
+    assert len(transport.control_updates) == 1
+    assert len(transport.control_updates[0][1]) == 2
     assert len(transport.writes) == 1
     spreadsheet_id, writes = transport.writes[0]
     assert spreadsheet_id == "sheet-live-123"
     assert writes[0]["range"] == "'Grila'!A1:E20"
     assert writes[1]["range"] == "'Pontaj'!A1:G15"
+    assert writes[2]["range"] == "'Grila'!G1:I5"
     assert writes[0]["values"][0] == ["UGRILE_PROJECTION", "v2", "", "", ""]
     assert writes[1]["values"][0] == [
         "UGRILE_PROJECTION",
@@ -232,10 +317,31 @@ def test_live_provider_writes_reads_back_and_persists_verified_reconciliation(
         "",
         "",
     ]
+    assert writes[2]["values"] == [
+        ["UGRILE_EPAY_INPUTS", "v1", ""],
+        ["month_id", "month_test", ""],
+        ["revision", 7, ""],
+        ["person_id", "UNDER_50", "AT_OR_OVER_50"],
+        ["person_a", "", ""],
+    ]
     assert writes[0]["values"][2][:2] == ["store_id", "store_test"]
     assert writes[0]["values"][7][:2] == ["rule_pack_version", "rule-pack-test-v1"]
     assert writes[0]["values"][-1] == ["", "", "", "", ""]
     assert writes[1]["values"][-1] == ["", "", "", "", "", "", ""]
+    grila_protection = transport.control_state["sheets"][0]["protectedRanges"][0]
+    assert grila_protection["range"] == {"sheetId": 101}
+    assert grila_protection["unprotectedRanges"] == [
+        {
+            "sheetId": 101,
+            "startRowIndex": 4,
+            "endRowIndex": 5,
+            "startColumnIndex": 7,
+            "endColumnIndex": 9,
+        }
+    ]
+    pontaj_protection = transport.control_state["sheets"][1]["protectedRanges"][0]
+    assert pontaj_protection["range"] == {"sheetId": 202}
+    assert pontaj_protection["unprotectedRanges"] == []
     assert binding.spreadsheet_id == "sheet-live-123"
     assert binding.generation == "LIVE_V2"
     assert projection.reconciliation["verified"] is True
@@ -257,6 +363,96 @@ def test_live_provider_writes_reads_back_and_persists_verified_reconciliation(
     assert persisted.reconciliation == projection.reconciliation
 
 
+def test_live_projection_preserves_same_month_epay_inputs(session, faker_tenant) -> None:
+    _binding(session, faker_tenant)
+    transport = RecordingTransport()
+    transport.seed_epay(
+        render_epay_values(
+            month_id="month_test",
+            revision=6,
+            person_ids=["person_a"],
+            preserved={"person_a": (3, "2")},
+        )
+    )
+    provider = LiveGoogleProjectionProvider(transport)
+
+    provider.write_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        generation="LIVE_V2",
+        payload=_payload(),
+    )
+
+    epay_write = transport.writes[0][1][2]["values"]
+    assert epay_write[4] == ["person_a", 3, "2"]
+
+
+def test_live_protection_is_noop_when_already_exact(session, faker_tenant) -> None:
+    _binding(session, faker_tenant)
+    transport = RecordingTransport()
+    provider = LiveGoogleProjectionProvider(transport)
+
+    provider.write_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        generation="LIVE_V2",
+        payload=_payload(),
+    )
+    first_control_updates = len(transport.control_updates)
+    provider.write_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        generation="LIVE_V3",
+        payload=_payload(),
+    )
+
+    assert first_control_updates == 1
+    assert len(transport.control_updates) == 1
+
+
+def test_external_protection_over_epay_inputs_fails_closed(session, faker_tenant) -> None:
+    binding = _binding(session, faker_tenant)
+    transport = RecordingTransport()
+    transport.control_state["sheets"][0]["protectedRanges"].append(
+        {
+            "protectedRangeId": 77,
+            "range": {
+                "sheetId": 101,
+                "startRowIndex": 4,
+                "endRowIndex": 5,
+                "startColumnIndex": 7,
+                "endColumnIndex": 9,
+            },
+            "description": "external-admin-protection",
+            "warningOnly": False,
+        }
+    )
+    provider = LiveGoogleProjectionProvider(transport)
+
+    with pytest.raises(GoogleProtectionContractError) as excinfo:
+        provider.write_store_projection(
+            session,
+            tenant_id=faker_tenant["tenant_id"],
+            store_id=faker_tenant["store_id"],
+            generation="BAD_PROTECTION",
+            payload=_payload(),
+        )
+
+    assert excinfo.value.details["code"] == "GOOGLE_EPAY_PROTECTION_CONFLICT"
+    assert binding.generation == "BINDING_V1"
+    assert transport.writes == []
+    assert transport.control_updates == []
+    assert session.query(SheetProjectionRun).filter_by(
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        status="DONE",
+        generation="BAD_PROTECTION",
+    ).count() == 0
+
+
 def test_live_readback_accepts_google_omitted_blank_tail_after_stale_row_clear(
     session,
     faker_tenant,
@@ -276,9 +472,10 @@ def test_live_readback_accepts_google_omitted_blank_tail_after_stale_row_clear(
 
     assert binding.generation == "LIVE_V2"
     assert projection.reconciliation["verified"] is True
-    assert transport.readbacks == [
+    assert transport.readbacks[-3:] == [
         ("sheet-live-123", "'Grila'!A1:E20"),
         ("sheet-live-123", "'Pontaj'!A1:G15"),
+        ("sheet-live-123", "'Grila'!G1:I5"),
     ]
 
 
@@ -469,6 +666,33 @@ def test_http_transport_reads_unformatted_values_and_uses_batch_update_without_n
     assert session.calls[1]["timeout"] == 12.5
 
 
+def test_http_transport_reads_and_updates_control_state_without_network() -> None:
+    session = FakeAuthorizedSession(
+        [
+            FakeResponse(200, {"sheets": []}),
+            FakeResponse(200, {"spreadsheetId": "sheet-1", "replies": [{}]}),
+        ]
+    )
+    transport = GoogleSheetsApiTransport(session)
+
+    assert transport.read_control_state("sheet-1") == {"sheets": []}
+    result = transport.batch_update_spreadsheet(
+        "sheet-1", [{"deleteProtectedRange": {"protectedRangeId": 9}}]
+    )
+
+    assert result["spreadsheetId"] == "sheet-1"
+    assert session.calls[0]["method"] == "GET"
+    control_url = str(session.calls[0]["url"])
+    assert "fields=" in control_url
+    assert "namedRangeId" in control_url
+    assert "tableId" in control_url
+    assert session.calls[1]["method"] == "POST"
+    assert str(session.calls[1]["url"]).endswith("/sheet-1:batchUpdate")
+    assert session.calls[1]["json"] == {
+        "requests": [{"deleteProtectedRange": {"protectedRangeId": 9}}]
+    }
+
+
 def test_http_transport_rejects_invalid_values_shape() -> None:
     session = FakeAuthorizedSession([FakeResponse(200, {"values": ["not-a-row"]})])
     transport = GoogleSheetsApiTransport(session)
@@ -479,10 +703,13 @@ def test_http_transport_rejects_invalid_values_shape() -> None:
     assert excinfo.value.details == {"code": "GOOGLE_LIVE_RESPONSE_INVALID"}
 
 
-def test_service_account_loader_uses_sheet_scope_without_real_credentials(
+def test_service_account_loader_uses_sheet_scope_and_editor_identity_without_real_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    sentinel_credentials = object()
+    class SentinelCredentials:
+        service_account_email = "svc@example.test"
+
+    sentinel_credentials = SentinelCredentials()
     sentinel_session = FakeAuthorizedSession([])
     calls: dict[str, object] = {}
 
@@ -509,3 +736,4 @@ def test_service_account_loader_uses_sheet_scope_without_real_credentials(
         "scopes": [SHEETS_SCOPE],
     }
     assert transport._session is sentinel_session
+    assert transport.managed_editor_email == "svc@example.test"
