@@ -1,7 +1,7 @@
-# Observability and safe logging
+# Observability, health and safe logging
 
 Status: server-test candidate contract  
-Tracker: issue #4 (`OPS-001`)
+Tracker: issue #4 (`OPS-001`, `OPS-002`, `OPS-003`)
 
 UniHub Grile uses JSON structured application events for operational diagnosis.
 Those events are a **metadata channel**, not a business-data export. The
@@ -63,6 +63,54 @@ Richer failure text may remain in the existing durable `last_error`/provider
 diagnostic state, where API scope/redaction and operator workflows already
 govern access.
 
+## Health and readiness
+
+The probe endpoints have intentionally different meanings:
+
+| Endpoint | HTTP contract | Meaning |
+| --- | --- | --- |
+| `/livez` | 200 while process can answer | Process/event-loop liveness only. It performs no DB/provider check, so a DB outage does not create a restart loop. |
+| `/healthz` | 200 while process can answer | Human/operator dependency summary. `status=degraded` reports DB/schema/worker-lease problems without making this a traffic gate. |
+| `/readyz` | 200 ready / 503 not ready | Traffic gate. DB must respond, the DB Alembic revision must equal the **current shipped migration head**, and when the worker is enabled there must be no expired RUNNING lease awaiting recovery. |
+| `/metrics` | 200 Prometheus text | Privacy-safe operational metrics; DB-backed gauges degrade to `ugrile_metrics_database_up 0` if they cannot be read. |
+
+The expected schema version is derived at runtime from the packaged Alembic
+migration scripts. It is not a manually maintained SHA/revision constant.
+
+`/readyz` does **not** pretend to prove that a separate worker process is alive;
+the current architecture has no worker heartbeat table. Instead it checks the
+state that matters to API traffic safety: whether enabled-worker durable leases
+have already expired. Queue state is observable through `/metrics` and the
+scoped Joburi diagnostics. A dedicated worker-service supervisor remains
+responsible for process liveness.
+
+## Metrics contract
+
+`/metrics` uses Prometheus text exposition without adding tenant/store/person or
+financial labels.
+
+Current metrics include:
+
+- `ugrile_http_requests_total{method,route,status_class}`;
+- `ugrile_http_request_duration_seconds_sum{method,route,status_class}`;
+- `ugrile_jobs_current{status}` for `PENDING/RUNNING/FAILED/DONE`;
+- `ugrile_job_retry_backlog` for PENDING jobs that already attempted execution;
+- `ugrile_sheet_projection_failures_current`;
+- `ugrile_sheet_projection_last_success_age_seconds` (`-1` when no success exists);
+- `ugrile_close_blockers_last_observed` and
+  `ugrile_close_blocker_observations_total`;
+- `ugrile_metrics_database_up`.
+
+HTTP counters/latency are process-local and therefore reset on process restart,
+which is normal for process metrics. Queue/projection gauges are recomputed from
+durable DB state on scrape. The close-blocker gauge is deliberately the last
+observed authenticated close evaluation and is **unlabeled**; the authenticated
+checklist remains the source for entity-level blocker detail.
+
+Do not add correlation IDs, tenant IDs, store/person IDs, spreadsheet IDs,
+provider IDs or payroll values as metric labels. Route labels must remain matched
+route templates so cardinality stays bounded and identifiers cannot leak.
+
 ## Explicitly forbidden in Grile application events
 
 Do not log any of the following, even at debug level:
@@ -114,11 +162,14 @@ basic latency/error/queue flow.
 
 When troubleshooting:
 
-1. capture the response `X-Correlation-ID` from the failing interaction;
-2. search API structured logs by that ID;
-3. if the action enqueued work, search worker logs by the same ID;
-4. use the scoped Joburi/API diagnostic surface for controlled failure detail;
-5. use audit records for business-mutation evidence rather than application logs.
+1. check `/livez`; if it is down, diagnose/supervise the API process;
+2. check `/readyz`; a 503 response identifies DB/schema/stale-lease readiness state;
+3. inspect `/metrics` for request errors/latency, queue state and projection freshness;
+4. capture the response `X-Correlation-ID` from the failing interaction;
+5. search API structured logs by that ID;
+6. if the action enqueued work, search worker logs by the same ID;
+7. use the scoped Joburi/API diagnostic surface for controlled failure detail;
+8. use audit records for business-mutation evidence rather than application logs.
 
 Do not solve missing observability by temporarily logging raw payloads in a
 server-test or production-capable environment.
