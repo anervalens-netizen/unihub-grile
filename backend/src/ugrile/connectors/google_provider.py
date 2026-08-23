@@ -16,8 +16,15 @@ from ..repositories.models import SheetBinding, SheetProjectionRun
 from . import google as fake_google
 from .google import StoreProjection
 from .google_live import (
+    GoogleRetryableTransportError,
     GoogleSheetsApiTransport,
     GoogleSheetsTransport,
+)
+from .google_projection_format import (
+    matrices_match,
+    reconciliation_metadata,
+    render_grila_values,
+    render_pontaj_values,
 )
 
 
@@ -96,7 +103,7 @@ class FakeGoogleProjectionProvider:
 
 
 class LiveGoogleProjectionProvider:
-    """Real Google Sheets publisher for an already-bound store workbook."""
+    """Real Google Sheets publisher with mandatory structural readback verification."""
 
     name = "live"
 
@@ -145,8 +152,8 @@ class LiveGoogleProjectionProvider:
         if expected is not None and _binding_identity(binding) != expected:
             raise _stale_binding_error(store_id)
 
-        grila_values = _grila_values(grila, generation=generation)
-        pontaj_values = _pontaj_values(pontaj, generation=generation)
+        grila_values = render_grila_values(payload, generation=generation)
+        pontaj_values = render_pontaj_values(payload, generation=generation)
         try:
             grila_existing_rows = self._transport.existing_row_count(
                 binding.spreadsheet_id,
@@ -179,6 +186,40 @@ class LiveGoogleProjectionProvider:
                     },
                 ],
             )
+            grila_readback = self._transport.read_values(
+                binding.spreadsheet_id,
+                (
+                    f"{_quote_sheet(binding.sheet_name_grila)}!A1:"
+                    f"E{len(grila_values)}"
+                ),
+            )
+            pontaj_readback = self._transport.read_values(
+                binding.spreadsheet_id,
+                (
+                    f"{_quote_sheet(binding.sheet_name_pontaj)}!A1:"
+                    f"G{len(pontaj_values)}"
+                ),
+            )
+            _require_reconciled_matrix(
+                sheet="Grila",
+                expected=grila_values,
+                actual=grila_readback,
+                width=5,
+            )
+            _require_reconciled_matrix(
+                sheet="Pontaj",
+                expected=pontaj_values,
+                actual=pontaj_readback,
+                width=7,
+            )
+            reconciliation = reconciliation_metadata(
+                payload,
+                generation=generation,
+                verification_mode="live_readback",
+                verified=True,
+                grila_values=grila_readback,
+                pontaj_values=pontaj_readback,
+            )
         except DomainError as exc:
             _record_live_failure(
                 session,
@@ -192,6 +233,13 @@ class LiveGoogleProjectionProvider:
 
         binding.generation = generation
         binding.updated_at = datetime.now(tz=UTC)
+        metadata = payload.get("metadata")
+        persisted_payload = {
+            "metadata": dict(metadata) if isinstance(metadata, Mapping) else {},
+            "grila": dict(grila),
+            "pontaj": dict(pontaj),
+            "reconciliation": reconciliation,
+        }
         session.add(
             SheetProjectionRun(
                 tenant_id=tenant_id,
@@ -200,7 +248,7 @@ class LiveGoogleProjectionProvider:
                 last_error=None,
                 last_success_generation=generation,
                 last_run_at=datetime.now(tz=UTC),
-                payload=_json_dumps({"grila": dict(grila), "pontaj": dict(pontaj)}),
+                payload=_json_dumps(persisted_payload),
                 generation=generation,
                 failures=0,
             )
@@ -211,6 +259,7 @@ class LiveGoogleProjectionProvider:
             grila=dict(grila),
             pontaj=dict(pontaj),
             last_success_generation=generation,
+            reconciliation=reconciliation,
         )
 
 
@@ -311,73 +360,19 @@ def _validate_live_payload(
     return grila, pontaj
 
 
-def _grila_values(grila: Mapping[str, Any], *, generation: str) -> list[list[Any]]:
-    target = grila.get("target")
-    target_mapping = target if isinstance(target, Mapping) else {}
-    values: list[list[Any]] = [
-        ["UGRILE_PROJECTION", "v1"],
-        ["generation", generation],
-        ["revision", _cell(grila.get("revision"))],
-        ["generated_at", _cell(grila.get("generated_at"))],
-        ["target_amount", _cell(target_mapping.get("amount"))],
-        ["target_currency", _cell(target_mapping.get("currency"))],
-        ["target_version", _cell(target_mapping.get("version"))],
-        ["target_sales_days", _cell(target_mapping.get("sales_days"))],
-        ["", ""],
-        ["business_date", "person_id", "status", "working_kind", "revision"],
-    ]
-    for row in _projection_rows(grila, "Grila"):
-        values.append(
-            [
-                _cell(row.get("business_date")),
-                _cell(row.get("person_id")),
-                _cell(row.get("status")),
-                _cell(row.get("working_kind")),
-                _cell(row.get("revision")),
-            ]
-        )
-    return values
-
-
-def _pontaj_values(pontaj: Mapping[str, Any], *, generation: str) -> list[list[Any]]:
-    values: list[list[Any]] = [
-        ["UGRILE_PROJECTION", "v1"],
-        ["generation", generation],
-        ["revision", _cell(pontaj.get("revision"))],
-        ["", ""],
-        [
-            "person_id",
-            "business_date",
-            "status",
-            "start_time",
-            "end_time",
-            "pause_minutes",
-            "hours",
-        ],
-    ]
-    for row in _projection_rows(pontaj, "Pontaj"):
-        values.append(
-            [
-                _cell(row.get("person_id")),
-                _cell(row.get("business_date")),
-                _cell(row.get("status")),
-                _cell(row.get("start_time")),
-                _cell(row.get("end_time")),
-                _cell(row.get("pause_minutes")),
-                _cell(row.get("hours")),
-            ]
-        )
-    return values
-
-
-def _projection_rows(block: Mapping[str, Any], label: str) -> Sequence[Mapping[str, Any]]:
-    rows = block.get("rows", [])
-    if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
-        raise GoogleProviderConfigurationError(
-            f"{label} projection rows must be a list of mappings",
-            details={"code": "GOOGLE_PROJECTION_ROWS_INVALID", "sheet": label},
-        )
-    return rows
+def _require_reconciled_matrix(
+    *,
+    sheet: str,
+    expected: Sequence[Sequence[Any]],
+    actual: Sequence[Sequence[Any]],
+    width: int,
+) -> None:
+    if matrices_match(expected, actual, width=width):
+        return
+    raise GoogleRetryableTransportError(
+        "Google Sheet readback did not match the projection that was written",
+        details={"code": "GOOGLE_LIVE_READBACK_MISMATCH", "sheet": sheet},
+    )
 
 
 def _pad_rows(
@@ -432,14 +427,6 @@ def _record_live_failure(
 
 def _quote_sheet(name: str) -> str:
     return "'" + name.replace("'", "''") + "'"
-
-
-def _cell(value: Any) -> str | int | float | bool:
-    if value is None:
-        return ""
-    if isinstance(value, bool | int | float | str):
-        return value
-    return str(value)
 
 
 def _json_dumps(value: Any) -> str:
