@@ -98,9 +98,9 @@ def _assert_no_input_conflict(
             continue
         if protected.get("warningOnly") is True:
             continue
-        if protected.get("namedRangeId") or protected.get("tableId"):
+        if protected.get("namedRangeId"):
             raise GoogleProtectionContractError(
-                "an external named/table protection prevents proving E-pay editability",
+                "an external named-range protection prevents proving E-pay editability",
                 details={"code": "GOOGLE_EPAY_PROTECTION_CONFLICT", "tab": tab_name},
             )
         protected_range = _mapping(protected.get("range"))
@@ -132,7 +132,7 @@ def _normalized_unprotected(value: Any) -> list[dict[str, int]]:
 
 
 def _text_list(value: Any) -> list[str]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
         return []
     return [str(item) for item in value if isinstance(item, str) and item]
 
