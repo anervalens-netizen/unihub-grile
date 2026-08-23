@@ -18,6 +18,8 @@ Projection contract
   durable worker always supplies the pin.
 * Projection metadata carries generation, month/revision, rule-pack and one
   projected-at timestamp shared by both Sheet tabs.
+* The durable worker passes the enqueue-pinned ``projected_at`` value so retries
+  of the same job render the same projection identity and checksums.
 * The provider returns the accepted ``StoreProjection`` value object.
 * Fake-provider failure injection (``UGR_S5_GOOGLE_FAIL=1``) preserves the
   existing last-good projection semantics.
@@ -182,6 +184,7 @@ class GoogleProjectionService:
         month: int,
         revision: int,
         generation: str | None = None,
+        projected_at: str | None = None,
         expected_spreadsheet_id: str | None = None,
         expected_sheet_name_grila: str | None = None,
         expected_sheet_name_pontaj: str | None = None,
@@ -212,7 +215,7 @@ class GoogleProjectionService:
             revision=revision,
             generation=gen,
         )
-        projected_at = datetime.now(tz=UTC).isoformat()
+        resolved_projected_at = projected_at or datetime.now(tz=UTC).isoformat()
         payload_dict: dict[str, Any] = {
             "metadata": {
                 "store_id": store_id,
@@ -222,7 +225,7 @@ class GoogleProjectionService:
                 "revision": revision,
                 "generation": gen,
                 "rule_pack_version": RULE_PACK_VERSION,
-                "projected_at": projected_at,
+                "projected_at": resolved_projected_at,
             },
             "grila": {
                 **payload.grila,
@@ -232,7 +235,7 @@ class GoogleProjectionService:
                     "version": target.version if target is not None else None,
                     "sales_days": target.sales_days if target is not None else None,
                 },
-                "generated_at": projected_at,
+                "generated_at": resolved_projected_at,
             },
             "pontaj": dict(payload.pontaj),
         }
