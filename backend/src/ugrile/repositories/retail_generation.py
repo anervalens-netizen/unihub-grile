@@ -12,6 +12,7 @@ input from silently falling back to an older database version.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -21,6 +22,16 @@ from ..domain.errors import ConnectorError
 from .models import ImportRun
 
 RETAIL_IMPORT_KIND = "RETAIL_SNAPSHOT_V1"
+_PERIOD_RE = re.compile(r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+
+
+def retail_import_kind(period: str) -> str:
+    if not _PERIOD_RE.fullmatch(period):
+        raise ConnectorError(
+            "Retail generation period is invalid",
+            details={"code": "RETAIL_PERIOD_INVALID", "period": period},
+        )
+    return f"{RETAIL_IMPORT_KIND}:{period}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,22 +194,30 @@ def accepted_retail_generation(
 ) -> AcceptedRetailGeneration | None:
     """Return the last committed accepted Retail generation for the period."""
 
-    rows = list(
-        session.execute(
-            select(ImportRun)
-            .where(
-                ImportRun.tenant_id == tenant_id,
-                ImportRun.kind == RETAIL_IMPORT_KIND,
-                ImportRun.status == "DONE",
-            )
-            .order_by(ImportRun.id.desc())
-        ).scalars()
-    )
-    for row in rows:
-        decoded = _decode_run(row)
-        if decoded.period == period:
-            return decoded
-    return None
+    row = session.execute(
+        select(ImportRun)
+        .where(
+            ImportRun.tenant_id == tenant_id,
+            ImportRun.kind == retail_import_kind(period),
+            ImportRun.status == "DONE",
+        )
+        .order_by(ImportRun.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    decoded = _decode_run(row)
+    if decoded.period != period:
+        raise ConnectorError(
+            "accepted Retail generation ledger period does not match its key",
+            details={
+                "code": "RETAIL_GENERATION_LEDGER_INVALID",
+                "import_run_id": row.id,
+                "expected_period": period,
+                "received_period": decoded.period,
+            },
+        )
+    return decoded
 
 
 def accepted_retail_generation_key(
@@ -220,4 +239,5 @@ __all__ = [
     "RETAIL_IMPORT_KIND",
     "accepted_retail_generation",
     "accepted_retail_generation_key",
+    "retail_import_kind",
 ]
