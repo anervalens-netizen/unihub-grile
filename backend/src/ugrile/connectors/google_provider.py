@@ -190,25 +190,25 @@ class LiveGoogleProjectionProvider:
                 binding.spreadsheet_id,
                 (
                     f"{_quote_sheet(binding.sheet_name_grila)}!A1:"
-                    f"E{len(grila_values)}"
+                    f"E{len(grila_write)}"
                 ),
             )
             pontaj_readback = self._transport.read_values(
                 binding.spreadsheet_id,
                 (
                     f"{_quote_sheet(binding.sheet_name_pontaj)}!A1:"
-                    f"G{len(pontaj_values)}"
+                    f"G{len(pontaj_write)}"
                 ),
             )
             _require_reconciled_matrix(
                 sheet="Grila",
-                expected=grila_values,
+                expected=grila_write,
                 actual=grila_readback,
                 width=5,
             )
             _require_reconciled_matrix(
                 sheet="Pontaj",
-                expected=pontaj_values,
+                expected=pontaj_write,
                 actual=pontaj_readback,
                 width=7,
             )
@@ -217,8 +217,8 @@ class LiveGoogleProjectionProvider:
                 generation=generation,
                 verification_mode="live_readback",
                 verified=True,
-                grila_values=grila_readback,
-                pontaj_values=pontaj_readback,
+                grila_values=grila_readback[: len(grila_values)],
+                pontaj_values=pontaj_readback[: len(pontaj_values)],
             )
         except DomainError as exc:
             _record_live_failure(
