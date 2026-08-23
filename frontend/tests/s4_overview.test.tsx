@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { Overview } from "../src/pages/Overview";
-import type { ApiClient, MonthSummary, OverviewReport } from "../src/api/client";
+import type { ApiClient, MonthSummary, OverviewReport, ProgramGrid } from "../src/api/client";
 
 const MONTH: MonthSummary = {
   id: "month_tenantacme_2026-08",
@@ -48,6 +48,7 @@ const REPORT: OverviewReport = {
   needs_attention: [
     { code: "STORE_DAY_UNCOVERED", severity: 1, title: "Magazin fără agent", detail: "store_x neacoperit pe 2026-08-05", store_id: "store_x", person_id: null, business_date: "2026-08-05" },
     { code: "INVALID_WORKING_KIND", severity: 2, title: "Clasificare invalidă", detail: "kind=EXTRA_OTHER pentru home_store", store_id: "store_y", person_id: "person_a", business_date: "2026-08-06" },
+    { code: "TARGET_ZERO_FOR_WORKED_STORE", severity: 2, title: "Target lipsă/zero", detail: "target lipsă pentru store_x", store_id: "store_x", person_id: null, business_date: "2026-08-07" },
   ],
 };
 
@@ -56,13 +57,32 @@ const STORES = [
   { id: "store_y", tenant_id: "tenant_acme", company_code: "ACME", internal_code: "SY", external_code: null, name: "Demo Store Y", is_active: true },
 ];
 
-function makeApi(): ApiClient {
+const PEOPLE_PROGRAM: ProgramGrid = {
+  month_id: MONTH.id,
+  year: 2026,
+  month: 8,
+  revision: 1,
+  dates: [],
+  rows: Array.from({ length: 6 }, (_, index) => ({
+    row_id: `person_${index}`,
+    label: `Agent ${index}`,
+    home_store_id: "store_x",
+    cells: [],
+  })),
+  legend: [],
+};
+
+function makeApi({ failPeopleProgram = false }: { failPeopleProgram?: boolean } = {}): ApiClient {
   return {
     healthz: vi.fn(),
     readyz: vi.fn(),
     get: vi.fn(async (path: string) => {
       if (path.startsWith(`/months/${MONTH.id}/overview`)) return REPORT;
       if (path === "/catalog/stores") return STORES;
+      if (path === `/months/${MONTH.id}/program?perspective=people`) {
+        if (failPeopleProgram) throw new Error("people program unavailable");
+        return PEOPLE_PROGRAM;
+      }
       throw new Error(`unexpected GET ${path}`);
     }),
     post: vi.fn(),
@@ -70,15 +90,33 @@ function makeApi(): ApiClient {
 }
 
 describe("Overview command center", () => {
-  it("renders network KPIs, stores and attention priorities", async () => {
+  it("renders network KPIs, operational statuses, stores and attention priorities", async () => {
     const api = makeApi();
     render(<Overview api={api} months={[MONTH]} monthsError={null} />);
     expect(await screen.findByText("2/4")).toBeInTheDocument();
+    expect(screen.getByText("Persoane")).toBeInTheDocument();
+    expect(screen.getByText("6")).toBeInTheDocument();
+    expect(screen.getByText("Calendar")).toBeInTheDocument();
+    expect(screen.getByText("52%")).toBeInTheDocument();
+    expect(screen.getByText("Targeturi")).toBeInTheDocument();
+    expect(screen.getByText("E-pay")).toBeInTheDocument();
+    expect(screen.getByText("OK")).toBeInTheDocument();
+    expect(screen.getByText("Sync / export")).toBeInTheDocument();
+    expect(screen.getByText("1 în lucru")).toBeInTheDocument();
     expect(screen.getByText("60")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Demo Store X/i })).toBeInTheDocument();
     expect(screen.getByText("Magazin fără agent")).toBeInTheDocument();
     expect(screen.getByText("Clasificare invalidă")).toBeInTheDocument();
+    expect(screen.getByText("Target lipsă\/zero")).toBeInTheDocument();
     expect(screen.getByText("Alice")).toBeInTheDocument();
+  });
+
+  it("keeps the hub usable when the auxiliary people-scope read fails", async () => {
+    const api = makeApi({ failPeopleProgram: true });
+    render(<Overview api={api} months={[MONTH]} monthsError={null} />);
+    expect(await screen.findByText("2/4")).toBeInTheDocument();
+    expect(screen.getByText("scope indisponibil")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("surfaces API errors via the accessible alert role", async () => {
