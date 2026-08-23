@@ -10,7 +10,7 @@ used as a metric label.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC
+from datetime import UTC, datetime
 from threading import Lock
 
 from sqlalchemy import func, select
@@ -170,7 +170,7 @@ def render_metrics(session: Session) -> str:
     if latest_projection is not None:
         if latest_projection.tzinfo is None:
             latest_projection = latest_projection.replace(tzinfo=UTC)
-        age_seconds = max((__import__("datetime").datetime.now(tz=UTC) - latest_projection).total_seconds(), 0.0)
+        age_seconds = max((datetime.now(tz=UTC) - latest_projection).total_seconds(), 0.0)
     lines.append(_sample("ugrile_sheet_projection_last_success_age_seconds", round(age_seconds, 3)))
     return "\n".join(lines) + "\n"
 
