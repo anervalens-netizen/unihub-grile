@@ -11,6 +11,7 @@ import {
   type ProgramChoices,
   type ProgramGrid,
   type SheetProjection,
+  type SheetReconciliation,
   type StoreSummary,
 } from "../api/client";
 import { isolatedRead } from "../api/isolatedRead";
@@ -75,6 +76,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
   const [gridRows, setGridRows] = useState<GridCalculation[]>([]);
   const [freshness, setFreshness] = useState<EpayFreshness | null>(null);
   const [projection, setProjection] = useState<SheetProjection | null>(null);
+  const [reconciliation, setReconciliation] = useState<SheetReconciliation | null>(null);
   const [jobDiagnostics, setJobDiagnostics] = useState<JobDiagnostics | null>(null);
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -116,6 +118,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
       setGridRows([]);
       setFreshness(null);
       setProjection(null);
+      setReconciliation(null);
       setError(null);
       setLoading(false);
       return;
@@ -130,6 +133,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
     setGridRows([]);
     setFreshness(null);
     setProjection(null);
+    setReconciliation(null);
     setError(null);
     setLoading(true);
     const query = `?store_id=${encodeURIComponent(storeId)}`;
@@ -142,8 +146,9 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
       isolatedRead(api.get<GridCalculation[]>(`/months/${monthId}/grid`)),
       isolatedRead(api.get<EpayFreshness>(`/months/${monthId}/epay/freshness${query}`)),
       isolatedRead(api.get<SheetProjection>(`/months/${monthId}/sheet-projection${query}`)),
+      isolatedRead(api.get<SheetReconciliation>(`/months/${monthId}/sheet-reconciliation${query}`)),
     ])
-      .then(([programRead, totalsRead, storesRead, peopleRead, attributionRead, gridRead, freshnessRead, projectionRead]) => {
+      .then(([programRead, totalsRead, storesRead, peopleRead, attributionRead, gridRead, freshnessRead, projectionRead, reconciliationRead]) => {
         if (cancelled) return;
         const program = programRead.value;
         const storesResponse = storesRead.value ?? [];
@@ -163,6 +168,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
         );
         setFreshness(freshnessRead.value);
         setProjection(projectionRead.value);
+        setReconciliation(reconciliationRead.value);
         const failures = [
           programRead.error ? `Calendar: ${programRead.error}` : null,
           totalsRead.error ? `Pontaj: ${totalsRead.error}` : null,
@@ -172,6 +178,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
           gridRead.error ? `Grilă: ${gridRead.error}` : null,
           freshnessRead.error ? `E-pay: ${freshnessRead.error}` : null,
           projectionRead.error ? `Sheet: ${projectionRead.error}` : null,
+          reconciliationRead.error ? `Reconciliere Sheet: ${reconciliationRead.error}` : null,
         ].filter((message): message is string => message !== null);
         setError(failures.length > 0 ? `Date parțial indisponibile — ${failures.join(" · ")}` : null);
       })
@@ -462,6 +469,14 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
                 <div className="panel-heading"><div><span className="eyebrow">INTEGRITATE DATE</span><h3>Sincronizare & export</h3></div></div>
                 <div className="sync-status-row"><span>E-pay</span><strong className={freshness?.is_fresh ? "text-ok" : "text-warn"}>{freshness ? dataFreshnessLabel(freshness.is_fresh) : "Indisponibil"}</strong></div>
                 <div className="sync-status-row"><span>Proiecție Sheet</span><strong>{projection?.last_success_generation ?? "—"}</strong></div>
+                <div className="sync-status-row"><span>Verificare Sheet</span><strong className={reconciliation?.verified ? "text-ok" : "text-warn"}>{reconciliation?.available ? (reconciliation.verified ? "Verificat" : "Neconfirmat") : "Fără verificare"}</strong></div>
+                {reconciliation?.available && (
+                  <>
+                    <div className="sync-status-row"><span>Revizie / reguli</span><strong>rev. {reconciliation.revision ?? "—"} · {reconciliation.rule_pack_version ?? "—"}</strong></div>
+                    <div className="sync-status-row"><span>Format / checksum</span><strong>{reconciliation.format_version ?? "—"} · {shortChecksum(reconciliation.projection_checksum_sha256)}</strong></div>
+                    <div className="sync-status-row"><span>Proiectat la</span><strong>{reconciliation.projected_at ?? "—"}</strong></div>
+                  </>
+                )}
                 <div className="sync-status-row"><span>Erori Sheet</span><strong className={projection?.last_error ? "text-err" : "text-ok"}>{projection?.last_error ? "Există" : projection ? "0" : "—"}</strong></div>
                 {projection?.last_error && <p className="error-text compact-error">{projection.last_error}</p>}
                 {jobsError && <RequestError message={`Starea joburilor este indisponibilă: ${jobsError}`} onRetry={retry} />}
@@ -621,6 +636,10 @@ function jobKindLabel(kind: string): string {
   if (kind === "GOOGLE_PROJECTION_STORE") return "Sheet";
   if (kind === "EXPORT_XLSX_STORE") return "Export XLSX";
   return kind.replaceAll("_", " ");
+}
+
+function shortChecksum(value: string | null): string {
+  return value ? value.slice(0, 12) : "—";
 }
 
 function formatMoney(value: number): string {
