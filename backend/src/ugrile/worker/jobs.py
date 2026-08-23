@@ -22,11 +22,11 @@ Revision-bound side effects
 
 Exports and Sheet projections pin both ``month_revision`` and the
 calendar-derived data revision when they are enqueued. Sheet projection jobs
-also pin the complete store↔Sheet identity (spreadsheet + Grila/Pontaj tabs).
-The worker locks the in-tenant Month row and revalidates the revisions before
-any side effect; the provider revalidates the binding pin before publication.
-Obsolete jobs fail terminally instead of silently rendering a newer snapshot
-or being redirected by a later rebind.
+also pin the complete store↔Sheet identity (spreadsheet + Grila/Pontaj tabs)
+and the projection timestamp. The worker locks the in-tenant Month row and
+revalidates the revisions before any side effect; the provider revalidates the
+binding pin before publication. Obsolete jobs fail terminally instead of
+silently rendering a newer snapshot or being redirected by a later rebind.
 """
 
 from __future__ import annotations
@@ -559,6 +559,7 @@ def _job_google_projection_store(
     binding_spreadsheet_id = _required_string(payload, "binding_spreadsheet_id")
     binding_sheet_name_grila = _required_string(payload, "binding_sheet_name_grila")
     binding_sheet_name_pontaj = _required_string(payload, "binding_sheet_name_pontaj")
+    projected_at = _required_string(payload, "projected_at")
     service = GoogleProjectionService(session)
     outcome = service.project_store_for_month(
         tenant_id=tenant_id,
@@ -568,6 +569,7 @@ def _job_google_projection_store(
         month=month_num,
         revision=data_revision,
         generation=payload.get("generation"),
+        projected_at=projected_at,
         expected_spreadsheet_id=binding_spreadsheet_id,
         expected_sheet_name_grila=binding_sheet_name_grila,
         expected_sheet_name_pontaj=binding_sheet_name_pontaj,
