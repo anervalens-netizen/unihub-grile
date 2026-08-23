@@ -7,6 +7,7 @@ import {
   type MonthSummary,
 } from "../api/client";
 import { isolatedRead } from "../api/isolatedRead";
+import { hasCapability, type Capability } from "../capabilities";
 import { MonthSelector } from "../components/MonthSelector";
 import { LoadingState, RequestError, requestErrorMessage } from "../components/RequestState";
 
@@ -14,6 +15,7 @@ export interface CloseProps {
   api: ApiClient;
   months: MonthSummary[];
   monthsError: string | null;
+  capabilities: ReadonlySet<Capability>;
 }
 
 interface CloseEventOut {
@@ -81,7 +83,7 @@ function parseAuditBlockers(raw: string): AuditBlocker[] {
   }
 }
 
-export function Close({ api, months, monthsError }: CloseProps) {
+export function Close({ api, months, monthsError, capabilities }: CloseProps) {
   const [monthId, setMonthId] = useState<string | null>(months[0]?.id ?? null);
   const [checklist, setChecklist] = useState<CloseChecklist | null>(null);
   const [timeline, setTimeline] = useState<CloseEventOut[]>([]);
@@ -94,6 +96,8 @@ export function Close({ api, months, monthsError }: CloseProps) {
   const [closeError, setCloseError] = useState<string | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
   const [closing, setClosing] = useState(false);
+  const canCloseAction = hasCapability(capabilities, "month.close");
+  const canReopenAction = hasCapability(capabilities, "month.reopen");
 
   useEffect(() => {
     setMonthId((current) => current ?? months[0]?.id ?? null);
@@ -139,7 +143,7 @@ export function Close({ api, months, monthsError }: CloseProps) {
   const reasonValid = trimmedReason.length >= 4;
   const blockingCount = checklist?.blockers.filter((item) => item.blocking).length ?? 0;
   const advisoryCount = checklist?.blockers.length ? checklist.blockers.length - blockingCount : 0;
-  const canReopen = checklist?.state === "CLOSED";
+  const canReopenCurrentMonth = canReopenAction && checklist?.state === "CLOSED";
 
   function applyCloseState(state: CloseState) {
     setChecklist(state.checklist);
@@ -148,7 +152,7 @@ export function Close({ api, months, monthsError }: CloseProps) {
   }
 
   async function handleClose() {
-    if (!monthId || !checklist || checklist.blockers.some((item) => item.blocking)) return;
+    if (!canCloseAction || !monthId || !checklist || checklist.blockers.some((item) => item.blocking)) return;
     setClosing(true);
     setCloseError(null);
     try {
@@ -181,7 +185,7 @@ export function Close({ api, months, monthsError }: CloseProps) {
   }
 
   async function handleReopen() {
-    if (!monthId || !canReopen || !reasonValid) return;
+    if (!canReopenCurrentMonth || !monthId || !reasonValid) return;
     setReopenError(null);
     try {
       const response = await api.post<CloseChecklist>(`/months/${monthId}/reopen-admin`, {
@@ -234,60 +238,72 @@ export function Close({ api, months, monthsError }: CloseProps) {
           </section>
           <section className="close-action" aria-label="Închidere lună">
             <h3>Închidere lună</h3>
-            <p className="muted">Confirmă explicit după verificarea checklist-ului. Revizia trimisă este {checklist.expected_revision}.</p>
-            {checklist.blockers.some((item) => item.blocking) && <p className="error-text">Închiderea este blocată până la rezolvarea tuturor condițiilor blocante.</p>}
-            {!confirmClose ? (
-              <button type="button" className="primary" disabled={checklist.blockers.some((item) => item.blocking) || checklist.state === "CLOSED"} onClick={() => setConfirmClose(true)}>Pregătește închiderea</button>
+            {!canCloseAction ? (
+              <p className="muted">Sesiunea curentă poate consulta starea de close, dar nu are capability-ul <code>month.close</code>.</p>
             ) : (
-              <div role="alertdialog" aria-label="Confirmare închidere">
-                <p>Închizi luna la revizia {checklist.expected_revision}? Această acțiune este auditabilă și îngheață luna.</p>
-                <button type="button" className="primary" onClick={handleClose} disabled={closing}>{closing ? "Închid…" : "Confirmă închiderea"}</button>
-                <button type="button" onClick={() => setConfirmClose(false)} disabled={closing}>Renunță</button>
-              </div>
+              <>
+                <p className="muted">Confirmă explicit după verificarea checklist-ului. Revizia trimisă este {checklist.expected_revision}.</p>
+                {checklist.blockers.some((item) => item.blocking) && <p className="error-text">Închiderea este blocată până la rezolvarea tuturor condițiilor blocante.</p>}
+                {!confirmClose ? (
+                  <button type="button" className="primary" disabled={checklist.blockers.some((item) => item.blocking) || checklist.state === "CLOSED"} onClick={() => setConfirmClose(true)}>Pregătește închiderea</button>
+                ) : (
+                  <div role="alertdialog" aria-label="Confirmare închidere">
+                    <p>Închizi luna la revizia {checklist.expected_revision}? Această acțiune este auditabilă și îngheață luna.</p>
+                    <button type="button" className="primary" onClick={handleClose} disabled={closing}>{closing ? "Închid…" : "Confirmă închiderea"}</button>
+                    <button type="button" onClick={() => setConfirmClose(false)} disabled={closing}>Renunță</button>
+                  </div>
+                )}
+                {closeError && <p className="error" role="alert">{closeError}</p>}
+              </>
             )}
-            {closeError && <p className="error" role="alert">{closeError}</p>}
           </section>
           <section className="close-reopen" aria-label="Reopen admin">
-            <h3>Reopen (admin-only)</h3>
-            <p className="muted">
-              Reopen este admin-only, disponibil numai pentru o lună CLOSED și necesită un motiv de minim 4 caractere.
-              Tranziția este jurnalizată în audit-ul imuabil.
-            </p>
-            <label>
-              <span className="muted">Motiv</span>
-              <textarea
-                value={reason}
-                onChange={(event) => setReason(event.target.value)}
-                rows={3}
-                disabled={!canReopen}
-                aria-invalid={canReopen && !reasonValid && reason.length > 0}
-                aria-describedby="reopen-reason-help"
-              />
-            </label>
-            <small
-              id="reopen-reason-help"
-              className={reasonValid || reason.length === 0 || !canReopen ? "muted" : "error-text"}
-            >
-              {!canReopen
-                ? "Reopen devine disponibil când luna este CLOSED."
-                : reason.length === 0
-                  ? "Scrie motivul."
-                  : reasonValid
-                    ? "Motiv valid."
-                    : "Minim 4 caractere."}
-            </small>
-            <button
-              type="button"
-              className="primary"
-              disabled={!canReopen || !reasonValid}
-              onClick={handleReopen}
-            >
-              Reopen
-            </button>
-            {reopenError && (
-              <p className="error" role="alert">
-                {reopenError}
-              </p>
+            <h3>Reopen</h3>
+            {!canReopenAction ? (
+              <p className="muted">Sesiunea curentă nu are capability-ul <code>month.reopen</code>; istoricul rămâne disponibil doar pentru citire.</p>
+            ) : (
+              <>
+                <p className="muted">
+                  Reopen este disponibil numai pentru o lună CLOSED și necesită un motiv de minim 4 caractere.
+                  Tranziția este jurnalizată în audit-ul imuabil.
+                </p>
+                <label>
+                  <span className="muted">Motiv</span>
+                  <textarea
+                    value={reason}
+                    onChange={(event) => setReason(event.target.value)}
+                    rows={3}
+                    disabled={!canReopenCurrentMonth}
+                    aria-invalid={canReopenCurrentMonth && !reasonValid && reason.length > 0}
+                    aria-describedby="reopen-reason-help"
+                  />
+                </label>
+                <small
+                  id="reopen-reason-help"
+                  className={reasonValid || reason.length === 0 || !canReopenCurrentMonth ? "muted" : "error-text"}
+                >
+                  {checklist.state !== "CLOSED"
+                    ? "Reopen devine disponibil când luna este CLOSED."
+                    : reason.length === 0
+                      ? "Scrie motivul."
+                      : reasonValid
+                        ? "Motiv valid."
+                        : "Minim 4 caractere."}
+                </small>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={!canReopenCurrentMonth || !reasonValid}
+                  onClick={handleReopen}
+                >
+                  Reopen
+                </button>
+                {reopenError && (
+                  <p className="error" role="alert">
+                    {reopenError}
+                  </p>
+                )}
+              </>
             )}
           </section>
           <section className="close-timeline" aria-label="Audit">
