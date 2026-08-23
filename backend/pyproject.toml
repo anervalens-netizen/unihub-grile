@@ -15,6 +15,9 @@ dependencies = [
     "SQLAlchemy==2.0.36",
     "alembic==1.13.3",
     "psycopg[binary]==3.2.3",
+    # External provider authentication / HTTP transport
+    "google-auth==2.56.3",
+    "requests==2.34.2",
     # Async worker skeleton
     "structlog==24.4.0",
     "httpx==0.27.2",
