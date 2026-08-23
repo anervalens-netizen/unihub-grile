@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -23,18 +24,20 @@ from ugrile.connectors.google_provider import (
     GoogleProviderConfigurationError,
     LiveGoogleProjectionProvider,
 )
-from ugrile.repositories.models import SheetBinding
+from ugrile.repositories.models import SheetBinding, SheetProjectionRun
 
 
 class RecordingTransport:
     def __init__(self, *, grila_rows: int = 0, pontaj_rows: int = 0) -> None:
         self.grila_rows = grila_rows
         self.pontaj_rows = pontaj_rows
-        self.reads: list[tuple[str, str]] = []
+        self.count_reads: list[tuple[str, str]] = []
+        self.readbacks: list[tuple[str, str]] = []
         self.writes: list[tuple[str, Sequence[Mapping[str, Any]]]] = []
+        self._written: dict[str, list[list[Any]]] = {}
 
     def existing_row_count(self, spreadsheet_id: str, range_a1: str) -> int:
-        self.reads.append((spreadsheet_id, range_a1))
+        self.count_reads.append((spreadsheet_id, range_a1))
         return self.grila_rows if "Grila" in range_a1 else self.pontaj_rows
 
     def batch_update_values(
@@ -43,7 +46,20 @@ class RecordingTransport:
         data: Sequence[Mapping[str, Any]],
     ) -> Mapping[str, Any]:
         self.writes.append((spreadsheet_id, data))
+        for item in data:
+            range_a1 = str(item["range"])
+            key = "Grila" if "Grila" in range_a1 else "Pontaj"
+            raw_values = item["values"]
+            assert isinstance(raw_values, list)
+            self._written[key] = [list(row) for row in raw_values]
         return {"spreadsheetId": spreadsheet_id, "totalUpdatedCells": 42}
+
+    def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
+        self.readbacks.append((spreadsheet_id, range_a1))
+        key = "Grila" if "Grila" in range_a1 else "Pontaj"
+        match = re.search(r"(\d+)$", range_a1)
+        assert match is not None
+        return [list(row) for row in self._written[key][: int(match.group(1))]]
 
 
 class FailingTransport(RecordingTransport):
@@ -56,6 +72,14 @@ class FailingTransport(RecordingTransport):
             "simulated provider timeout",
             details={"code": "GOOGLE_LIVE_TRANSPORT_ERROR"},
         )
+
+
+class MismatchTransport(RecordingTransport):
+    def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
+        rows = super().read_values(spreadsheet_id, range_a1)
+        if "Grila" in range_a1:
+            rows[-1][0] = "tampered-date"
+        return rows
 
 
 class FakeResponse:
@@ -97,6 +121,15 @@ def _binding(session, faker_tenant, *, generation: str = "BINDING_V1") -> SheetB
 
 def _payload() -> dict[str, Any]:
     return {
+        "metadata": {
+            "store_id": "store_test",
+            "month_id": "month_test",
+            "year": 2026,
+            "month": 8,
+            "revision": 7,
+            "rule_pack_version": "rule-pack-test-v1",
+            "projected_at": "2026-08-23T12:00:00+00:00",
+        },
         "grila": {
             "revision": 7,
             "generated_at": "2026-08-23T12:00:00+00:00",
@@ -148,12 +181,12 @@ def test_live_provider_requires_existing_binding(session, faker_tenant) -> None:
     assert excinfo.value.details["code"] == "GOOGLE_SHEET_BINDING_REQUIRED"
 
 
-def test_live_provider_writes_bound_grila_and_pontaj_and_persists_success(
+def test_live_provider_writes_reads_back_and_persists_verified_reconciliation(
     session,
     faker_tenant,
 ) -> None:
     binding = _binding(session, faker_tenant)
-    transport = RecordingTransport(grila_rows=14, pontaj_rows=8)
+    transport = RecordingTransport(grila_rows=20, pontaj_rows=15)
     provider = LiveGoogleProjectionProvider(transport)
 
     projection = provider.write_store_projection(
@@ -166,37 +199,131 @@ def test_live_provider_writes_bound_grila_and_pontaj_and_persists_success(
     session.commit()
 
     assert projection.generation == "LIVE_V2"
-    assert transport.reads == [
+    assert transport.count_reads == [
         ("sheet-live-123", "'Grila'!A:E"),
         ("sheet-live-123", "'Pontaj'!A:G"),
+    ]
+    assert transport.readbacks == [
+        ("sheet-live-123", "'Grila'!A1:E16"),
+        ("sheet-live-123", "'Pontaj'!A1:G12"),
     ]
     assert len(transport.writes) == 1
     spreadsheet_id, writes = transport.writes[0]
     assert spreadsheet_id == "sheet-live-123"
-    assert writes[0]["range"] == "'Grila'!A1:E14"
-    assert writes[1]["range"] == "'Pontaj'!A1:G8"
-    assert writes[0]["values"][0] == ["UGRILE_PROJECTION", "v1", "", "", ""]
+    assert writes[0]["range"] == "'Grila'!A1:E20"
+    assert writes[1]["range"] == "'Pontaj'!A1:G15"
+    assert writes[0]["values"][0] == ["UGRILE_PROJECTION", "v2", "", "", ""]
     assert writes[1]["values"][0] == [
         "UGRILE_PROJECTION",
-        "v1",
+        "v2",
         "",
         "",
         "",
         "",
         "",
     ]
+    assert writes[0]["values"][2][:2] == ["store_id", "store_test"]
+    assert writes[0]["values"][7][:2] == ["rule_pack_version", "rule-pack-test-v1"]
     assert writes[0]["values"][-1] == ["", "", "", "", ""]
     assert writes[1]["values"][-1] == ["", "", "", "", "", "", ""]
     assert binding.spreadsheet_id == "sheet-live-123"
     assert binding.generation == "LIVE_V2"
+    assert projection.reconciliation["verified"] is True
+    assert projection.reconciliation["verification_mode"] == "live_readback"
+    assert projection.reconciliation["format_version"] == "v2"
+    assert projection.reconciliation["revision"] == 7
+    assert projection.reconciliation["rule_pack_version"] == "rule-pack-test-v1"
+    assert len(str(projection.reconciliation["projection_checksum_sha256"])) == 64
+
     persisted = read_store_projection(
         session,
         tenant_id=faker_tenant["tenant_id"],
         store_id=faker_tenant["store_id"],
+        month_id="month_test",
     )
     assert persisted is not None
     assert persisted.generation == "LIVE_V2"
     assert persisted.grila["revision"] == 7
+    assert persisted.reconciliation == projection.reconciliation
+
+
+def test_live_readback_mismatch_is_retryable_and_does_not_advance_last_good(
+    session,
+    faker_tenant,
+) -> None:
+    write_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        generation="GOOD_V1",
+        payload=_payload(),
+        spreadsheet_id="sheet-live-123",
+    )
+    session.commit()
+    binding = session.query(SheetBinding).filter_by(
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+    ).one()
+    assert binding.generation == "GOOD_V1"
+
+    provider = LiveGoogleProjectionProvider(MismatchTransport())
+    with pytest.raises(GoogleRetryableTransportError) as excinfo:
+        provider.write_store_projection(
+            session,
+            tenant_id=faker_tenant["tenant_id"],
+            store_id=faker_tenant["store_id"],
+            generation="BAD_V2",
+            payload=_payload(),
+        )
+    session.commit()
+
+    assert excinfo.value.details == {
+        "code": "GOOGLE_LIVE_READBACK_MISMATCH",
+        "sheet": "Grila",
+    }
+    session.refresh(binding)
+    assert binding.generation == "GOOD_V1"
+    persisted = read_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        month_id="month_test",
+    )
+    assert persisted is not None
+    assert persisted.generation == "GOOD_V1"
+    failed = session.query(SheetProjectionRun).filter_by(
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        status="FAILED",
+        generation="BAD_V2",
+    ).one()
+    assert "GOOGLE_LIVE_READBACK_MISMATCH" in (failed.last_error or "")
+
+
+def test_month_scoped_readback_does_not_return_another_month(session, faker_tenant) -> None:
+    payload = _payload()
+    payload["metadata"] = {**payload["metadata"], "month_id": "month_aug"}
+    write_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        generation="AUG_V1",
+        payload=payload,
+    )
+    session.commit()
+
+    assert read_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        month_id="month_aug",
+    ) is not None
+    assert read_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        month_id="month_sep",
+    ) is None
 
 
 def test_live_transport_failure_preserves_last_good_and_records_diagnostic(
@@ -228,6 +355,7 @@ def test_live_transport_failure_preserves_last_good_and_records_diagnostic(
         session,
         tenant_id=faker_tenant["tenant_id"],
         store_id=faker_tenant["store_id"],
+        month_id="month_test",
     )
     assert persisted is not None
     assert persisted.generation == "GOOD_V1"
@@ -269,7 +397,7 @@ def test_http_transport_classifies_terminal_responses(status_code: int) -> None:
     assert "sheet-secret" not in str(excinfo.value)
 
 
-def test_http_transport_uses_values_batch_update_without_network() -> None:
+def test_http_transport_reads_values_and_uses_batch_update_without_network() -> None:
     session = FakeAuthorizedSession(
         [
             FakeResponse(200, {"values": [["x"], ["y"]]}),
@@ -278,7 +406,7 @@ def test_http_transport_uses_values_batch_update_without_network() -> None:
     )
     transport = GoogleSheetsApiTransport(session, timeout_seconds=12.5)
 
-    assert transport.existing_row_count("sheet-1", "'Grila'!A:E") == 2
+    assert transport.read_values("sheet-1", "'Grila'!A:E") == [["x"], ["y"]]
     result = transport.batch_update_values(
         "sheet-1",
         [{"range": "'Grila'!A1:A1", "values": [["ok"]]}],
@@ -294,6 +422,16 @@ def test_http_transport_uses_values_batch_update_without_network() -> None:
         "data": [{"range": "'Grila'!A1:A1", "values": [["ok"]]}],
     }
     assert session.calls[1]["timeout"] == 12.5
+
+
+def test_http_transport_rejects_invalid_values_shape() -> None:
+    session = FakeAuthorizedSession([FakeResponse(200, {"values": ["not-a-row"]})])
+    transport = GoogleSheetsApiTransport(session)
+
+    with pytest.raises(GoogleRetryableTransportError) as excinfo:
+        transport.read_values("sheet-1", "'Grila'!A:E")
+
+    assert excinfo.value.details == {"code": "GOOGLE_LIVE_RESPONSE_INVALID"}
 
 
 def test_service_account_loader_uses_sheet_scope_without_real_credentials(
