@@ -1,6 +1,6 @@
 """Grile-owned versioned DTOs for the future Retail adapter.
 
-The module contains no Retail imports and performs no external I/O.  It defines
+The module contains no Retail imports and performs no external I/O. It defines
 only the semantic data boundary that a fixture adapter and a future Retail
 adapter must both satisfy.
 """
@@ -70,7 +70,7 @@ class RetailPersonV1(BaseModel):
     """Minimal person facts for the requested snapshot period.
 
     A future adapter must resolve exactly one defensible payroll/home store for
-    the person in the requested period before constructing this DTO.  It must
+    the person in the requested period before constructing this DTO. It must
     not guess when Retail contains ambiguous multi-store evidence.
     """
 
@@ -183,7 +183,13 @@ class RetailIncentiveV1(BaseModel):
 
 
 class RetailPayrollInputV1(BaseModel):
-    """Generic future external payroll input; absence is never implicit zero."""
+    """Generic future external payroll input; absence is never implicit zero.
+
+    ``amount`` intentionally allows signed values: a future authoritative
+    payroll source may express corrections/adjustments. Individual input kinds
+    can impose a narrower sign contract in a later schema without silently
+    coercing a missing value to zero.
+    """
 
     external_person_id: str
     year: int = Field(ge=2000, le=2200)
@@ -201,7 +207,7 @@ class RetailPayrollInputV1(BaseModel):
 class RetailSnapshotV1(BaseModel):
     """One complete, generation-pinned Retail snapshot for a Grile period."""
 
-    schema_version: Literal["retail-grile.v1"] = RETAIL_GRILE_SCHEMA_V1
+    schema_version: Literal["retail-grile.v1"] = "retail-grile.v1"
     tenant_id: str
     timezone: str
     period: str
