@@ -22,6 +22,11 @@ from .google import GoogleAdapterError
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 SHEETS_API_BASE = "https://sheets.googleapis.com/v4/spreadsheets"
 DEFAULT_TIMEOUT_SECONDS = 30.0
+_CONTROL_FIELDS = (
+    "sheets(properties(sheetId,title),"
+    "protectedRanges(protectedRangeId,range,description,warningOnly,"
+    "unprotectedRanges,editors))"
+)
 
 
 class GoogleRetryableTransportError(GoogleAdapterError):
@@ -34,6 +39,11 @@ class GoogleTerminalTransportError(DomainError):
 
 class GoogleSheetsTransport(Protocol):
     """Small transport seam used by the live provider and unit tests."""
+
+    @property
+    def managed_editor_email(self) -> str:
+        """Identity that must retain edit access to managed protected ranges."""
+        ...
 
     def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
         """Read one bounded values range from a spreadsheet."""
@@ -51,6 +61,18 @@ class GoogleSheetsTransport(Protocol):
         """Write multiple value ranges in one Sheets API request."""
         ...
 
+    def read_control_state(self, spreadsheet_id: str) -> Mapping[str, Any]:
+        """Read bounded tab/protected-range metadata needed for protection attestation."""
+        ...
+
+    def batch_update_spreadsheet(
+        self,
+        spreadsheet_id: str,
+        requests_: Sequence[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        """Apply structural spreadsheet requests such as protected-range updates."""
+        ...
+
 
 class GoogleSheetsApiTransport:
     """Real Sheets v4 transport authenticated with a service-account file."""
@@ -59,10 +81,16 @@ class GoogleSheetsApiTransport:
         self,
         authorized_session: AuthorizedSession,
         *,
+        managed_editor_email: str = "service-account",
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         self._session = authorized_session
+        self._managed_editor_email = managed_editor_email
         self._timeout_seconds = timeout_seconds
+
+    @property
+    def managed_editor_email(self) -> str:
+        return self._managed_editor_email
 
     @classmethod
     def from_service_account_file(cls, credentials_file: str) -> GoogleSheetsApiTransport:
@@ -78,7 +106,16 @@ class GoogleSheetsApiTransport:
                 "Google service-account credentials could not be loaded",
                 details={"code": "GOOGLE_CREDENTIALS_INVALID"},
             ) from exc
-        return cls(AuthorizedSession(credentials))  # type: ignore[no-untyped-call]
+        editor_email = str(getattr(credentials, "service_account_email", "") or "")
+        if not editor_email:
+            raise GoogleTerminalTransportError(
+                "Google service-account credentials have no client identity",
+                details={"code": "GOOGLE_CREDENTIALS_INVALID"},
+            )
+        return cls(  # type: ignore[no-untyped-call]
+            AuthorizedSession(credentials),
+            managed_editor_email=editor_email,
+        )
 
     def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
         url = (
@@ -111,6 +148,25 @@ class GoogleSheetsApiTransport:
                 "valueInputOption": "RAW",
                 "data": [dict(item) for item in data],
             },
+        )
+
+    def read_control_state(self, spreadsheet_id: str) -> Mapping[str, Any]:
+        url = (
+            f"{SHEETS_API_BASE}/{quote(spreadsheet_id, safe='')}"
+            f"?fields={quote(_CONTROL_FIELDS, safe='(),') }"
+        )
+        return self._request_json("GET", url)
+
+    def batch_update_spreadsheet(
+        self,
+        spreadsheet_id: str,
+        requests_: Sequence[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        url = f"{SHEETS_API_BASE}/{quote(spreadsheet_id, safe='')}:batchUpdate"
+        return self._request_json(
+            "POST",
+            url,
+            json_body={"requests": [dict(item) for item in requests_]},
         )
 
     def _request_json(
