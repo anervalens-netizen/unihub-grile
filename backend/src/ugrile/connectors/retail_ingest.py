@@ -41,22 +41,45 @@ from .v1_types import (
     TargetRecord,
 )
 
+_CANONICAL_LIST_FIELDS = (
+    "stores",
+    "people",
+    "manager_scopes",
+    "sales_store_day",
+    "targets",
+    "incentives",
+    "payroll_inputs",
+)
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
 
 def _canonical_snapshot_payload(snapshot: RetailSnapshotV1) -> dict[str, Any]:
     payload = snapshot.model_dump(mode="json")
     generation = dict(payload["generation"])
+    # Fetch time is diagnostic, not semantic source identity. Excluding it makes
+    # a repeat fetch of the same accepted source data a true idempotent replay.
     generation.pop("generated_at", None)
     payload["generation"] = generation
+    # Provider result ordering is not authority. Canonical list ordering keeps
+    # exact replay idempotent even when an equivalent source query returns rows
+    # in a different order.
+    for field in _CANONICAL_LIST_FIELDS:
+        rows = payload.get(field)
+        if isinstance(rows, list):
+            payload[field] = sorted(rows, key=_canonical_json)
     return payload
 
 
 def snapshot_sha256(snapshot: RetailSnapshotV1) -> str:
-    encoded = json.dumps(
-        _canonical_snapshot_payload(snapshot),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    encoded = _canonical_json(_canonical_snapshot_payload(snapshot)).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -83,6 +106,21 @@ def _person_codes(snapshot: RetailSnapshotV1) -> dict[str, str]:
         row.external_person_id: _stable_code("rp", row.external_person_id)
         for row in snapshot.people
     }
+
+
+def _catalog_ledger(
+    snapshot: RetailSnapshotV1,
+) -> tuple[list[str], list[str]]:
+    tenant_token = tenant_slug_from_tenant_id(snapshot.tenant_id)
+    store_ids = sorted(
+        make_store_id(tenant_token, internal_code)
+        for internal_code in _store_codes(snapshot).values()
+    )
+    person_ids = sorted(
+        make_person_id(tenant_token, internal_code)
+        for internal_code in _person_codes(snapshot).values()
+    )
+    return store_ids, person_ids
 
 
 def _next_target_version(
@@ -226,6 +264,9 @@ def _connector_payload(
         )
         for row in snapshot.incentives
     ]
+    # ConnectorHeader's legacy validator is intentionally fixture-only. The
+    # internal bridge constructs an already-validated M6 snapshot, so it uses
+    # model_construct instead of weakening the historical public contract.
     header = ConnectorHeader.model_construct(
         schema_name="grile.connector.v1",
         generation=generation_key,
@@ -382,6 +423,9 @@ class RetailSnapshotIngestService:
                 },
             )
         if snapshot.manager_scopes:
+            # Manager keys cannot become User foreign keys before INT-012
+            # defines the identity translation. Ignoring them would silently
+            # weaken effective authorization, so fail closed instead.
             raise ConnectorError(
                 "Retail manager scopes require the identity adapter contract",
                 details={"code": "RETAIL_MANAGER_IDENTITY_UNRESOLVED"},
@@ -395,6 +439,10 @@ class RetailSnapshotIngestService:
         digest = snapshot_sha256(snapshot)
         generation_key = digest[:32]
 
+        # A tenant-row lock serializes accepted-head transitions. This avoids a
+        # stale writer validating against head N, waiting behind head N+1, then
+        # incorrectly publishing N again. It also serializes target/incentive
+        # version allocation for the tenant.
         with self.session.begin_nested():
             tenant = self.session.get(Tenant, snapshot.tenant_id)
             if tenant is None:
@@ -446,6 +494,7 @@ class RetailSnapshotIngestService:
                 generation_key=generation_key,
             )
             applied = FixtureConnector(self.session).apply(connector_payload)
+            store_ids, person_ids = _catalog_ledger(snapshot)
             ledger = {
                 "schema_version": snapshot.schema_version,
                 "period": snapshot.period,
@@ -455,6 +504,8 @@ class RetailSnapshotIngestService:
                 "sales_revision": snapshot.generation.sales_revision,
                 "campaign_revision": snapshot.generation.campaign_revision,
                 "cutoff_date": snapshot.generation.cutoff_date.isoformat(),
+                "store_ids": store_ids,
+                "person_ids": person_ids,
                 "target_versions": _target_version_ledger(snapshot, connector_payload),
                 "incentive_versions": _incentive_version_ledger(
                     snapshot,
