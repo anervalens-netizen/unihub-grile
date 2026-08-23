@@ -1,9 +1,8 @@
 /**
  * S4 Close page tests.
  *
- * Reopen reason validation: the Reopen button is disabled until the user
- * has typed at least 4 non-whitespace characters; the inline help text
- * updates accordingly.
+ * Close/reopen mutations are rendered only from backend-provided capabilities;
+ * read-only Management access keeps checklist and audit visibility.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -15,6 +14,7 @@ import type {
   CloseChecklist,
   MonthSummary,
 } from "../src/api/client";
+import type { Capability } from "../src/capabilities";
 
 const MONTH: MonthSummary = {
   id: "month_tenantacme_2026-08",
@@ -25,6 +25,11 @@ const MONTH: MonthSummary = {
   revision: 0,
   closed_at: null,
 };
+
+const ADMIN_CAPABILITIES = new Set<Capability>(["month.close.read", "month.close", "month.reopen"]);
+const READ_ONLY_CAPABILITIES = new Set<Capability>(["month.close.read"]);
+const CLOSE_ONLY_CAPABILITIES = new Set<Capability>(["month.close.read", "month.close"]);
+const REOPEN_ONLY_CAPABILITIES = new Set<Capability>(["month.close.read", "month.reopen"]);
 
 const CLEAR_CHECKLIST: CloseChecklist = {
   month_id: MONTH.id,
@@ -83,10 +88,14 @@ function makeApi(checklist: CloseChecklist = CHECKLIST): ApiClient {
   } as unknown as ApiClient;
 }
 
+function renderClose(api: ApiClient, capabilities: ReadonlySet<Capability> = ADMIN_CAPABILITIES) {
+  return render(<Close api={api} months={[MONTH]} monthsError={null} capabilities={capabilities} />);
+}
+
 describe("Close page reopen reason validation", () => {
   it("disables the Reopen button until a CLOSED month has a reason with at least 4 chars", async () => {
     const api = makeApi(CLOSED_CHECKLIST);
-    render(<Close api={api} months={[MONTH]} monthsError={null} />);
+    renderClose(api);
     const button = await screen.findByRole("button", { name: /Reopen/i });
     expect(button).toBeDisabled();
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
@@ -99,7 +108,7 @@ describe("Close page reopen reason validation", () => {
 
   it("keeps reopen inert while the month is not CLOSED", async () => {
     const api = makeApi(CLEAR_CHECKLIST);
-    render(<Close api={api} months={[MONTH]} monthsError={null} />);
+    renderClose(api);
     const button = await screen.findByRole("button", { name: /Reopen/i });
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     expect(textarea).toBeDisabled();
@@ -109,7 +118,7 @@ describe("Close page reopen reason validation", () => {
 
   it("rejects whitespace-only reasons", async () => {
     const api = makeApi(CLOSED_CHECKLIST);
-    render(<Close api={api} months={[MONTH]} monthsError={null} />);
+    renderClose(api);
     const button = await screen.findByRole("button", { name: /Reopen/i });
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "    " } });
@@ -146,7 +155,7 @@ describe("Close page reopen reason validation", () => {
       }),
     } as unknown as ApiClient;
 
-    render(<Close api={api} months={[MONTH]} monthsError={null} />);
+    renderClose(api);
     expect(await screen.findByText(/Condiții blocante:/)).toHaveTextContent("Condiții blocante: 1 · avertismente: 1");
     expect(screen.getByText("blocant")).toBeInTheDocument();
     expect(screen.getByText("avertisment")).toBeInTheDocument();
@@ -166,15 +175,44 @@ describe("Close page reopen reason validation", () => {
         throw new Error(`unexpected GET ${path}`);
       }),
     } as unknown as ApiClient;
-    render(<Close api={api} months={[MONTH]} monthsError={null} />);
+    renderClose(api);
     expect(await screen.findByRole("button", { name: /Pregătește închiderea/i })).toBeEnabled();
     expect(screen.getByRole("alert")).toHaveTextContent(/Istoricul audit este indisponibil: audit unavailable/);
     expect(screen.getByText("Nicio condiție blocantă.")).toBeInTheDocument();
   });
 
+  it("keeps read-only Management visible but renders no mutation controls", async () => {
+    const api = makeApi(CLEAR_CHECKLIST);
+    renderClose(api, READ_ONLY_CAPABILITIES);
+    expect(await screen.findByText("Nicio condiție blocantă.")).toBeInTheDocument();
+    expect(screen.getByText("month.close", { selector: "code" })).toBeInTheDocument();
+    expect(screen.getByText("month.reopen", { selector: "code" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pregătește închiderea/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Reopen$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
+  it("treats close and reopen capabilities independently", async () => {
+    const closeApi = makeApi(CLEAR_CHECKLIST);
+    const closeView = renderClose(closeApi, CLOSE_ONLY_CAPABILITIES);
+    expect(await screen.findByRole("button", { name: /Pregătește închiderea/i })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /^Reopen$/i })).not.toBeInTheDocument();
+    closeView.unmount();
+
+    const reopenApi = makeApi(CLOSED_CHECKLIST);
+    renderClose(reopenApi, REOPEN_ONLY_CAPABILITIES);
+    expect(await screen.findByText("month.close", { selector: "code" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pregătește închiderea/i })).not.toBeInTheDocument();
+    const reopen = screen.getByRole("button", { name: /^Reopen$/i });
+    const textarea = screen.getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "motiv valid" } });
+    expect(reopen).toBeEnabled();
+  });
+
   it("blocks preparation while checklist blockers remain", async () => {
     const api = makeApi();
-    render(<Close api={api} months={[MONTH]} monthsError={null} />);
+    renderClose(api);
     expect(await screen.findByRole("button", { name: /Pregătește închiderea/i })).toBeDisabled();
   });
 
@@ -197,7 +235,7 @@ describe("Close page reopen reason validation", () => {
       }),
     } as unknown as ApiClient;
 
-    render(<Close api={api} months={[MONTH]} monthsError={null} />);
+    renderClose(api);
     fireEvent.click(await screen.findByRole("button", { name: /Pregătește închiderea/i }));
     fireEvent.click(screen.getByRole("button", { name: /Confirmă închiderea/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/reîncărcat la revizia 1/i);
@@ -229,7 +267,7 @@ describe("Close page reopen reason validation", () => {
         return { month_id: MONTH.id, revision: 1, new_state: "CLOSED", audit_event_id: 1, blockers: [] };
       }),
     } as unknown as ApiClient;
-    render(<Close api={api} months={[MONTH]} monthsError={null} />);
+    renderClose(api);
     fireEvent.click(await screen.findByRole("button", { name: /Pregătește închiderea/i }));
     expect(screen.getByRole("alertdialog")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Confirmă închiderea/i }));

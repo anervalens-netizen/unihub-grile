@@ -170,7 +170,7 @@ function PageRouter({
     case "exceptions":
       return <Exceptions api={api} months={months} monthsError={monthsError} />;
     case "close":
-      return <Close api={api} months={months} monthsError={monthsError} />;
+      return <Close api={api} months={months} monthsError={monthsError} capabilities={capabilities} />;
     case "jobs":
       return <Jobs api={api} />;
     case "store":
