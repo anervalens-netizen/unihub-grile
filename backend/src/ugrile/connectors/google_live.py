@@ -65,7 +65,7 @@ class GoogleSheetsApiTransport:
         """Build an authorized transport from an externally mounted key file."""
 
         try:
-            credentials = service_account.Credentials.from_service_account_file(
+            credentials = service_account.Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
                 credentials_file,
                 scopes=[SHEETS_SCOPE],
             )
@@ -74,7 +74,7 @@ class GoogleSheetsApiTransport:
                 "Google service-account credentials could not be loaded",
                 details={"code": "GOOGLE_CREDENTIALS_INVALID"},
             ) from exc
-        return cls(AuthorizedSession(credentials))
+        return cls(AuthorizedSession(credentials))  # type: ignore[no-untyped-call]
 
     def existing_row_count(self, spreadsheet_id: str, range_a1: str) -> int:
         url = (
@@ -113,7 +113,7 @@ class GoogleSheetsApiTransport:
         json_body: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         try:
-            response = self._session.request(
+            response = self._session.request(  # type: ignore[no-untyped-call]
                 method,
                 url,
                 json=dict(json_body) if json_body is not None else None,
