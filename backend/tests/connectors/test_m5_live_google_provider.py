@@ -62,6 +62,16 @@ class RecordingTransport:
         return [list(row) for row in self._written[key][: int(match.group(1))]]
 
 
+class OmittingTrailingBlankTransport(RecordingTransport):
+    """Match Google Values GET, which may omit all-blank trailing rows."""
+
+    def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
+        rows = super().read_values(spreadsheet_id, range_a1)
+        while rows and all(value == "" for value in rows[-1]):
+            rows.pop()
+        return rows
+
+
 class FailingTransport(RecordingTransport):
     def batch_update_values(
         self,
@@ -204,8 +214,8 @@ def test_live_provider_writes_reads_back_and_persists_verified_reconciliation(
         ("sheet-live-123", "'Pontaj'!A:G"),
     ]
     assert transport.readbacks == [
-        ("sheet-live-123", "'Grila'!A1:E16"),
-        ("sheet-live-123", "'Pontaj'!A1:G12"),
+        ("sheet-live-123", "'Grila'!A1:E20"),
+        ("sheet-live-123", "'Pontaj'!A1:G15"),
     ]
     assert len(transport.writes) == 1
     spreadsheet_id, writes = transport.writes[0]
@@ -245,6 +255,31 @@ def test_live_provider_writes_reads_back_and_persists_verified_reconciliation(
     assert persisted.generation == "LIVE_V2"
     assert persisted.grila["revision"] == 7
     assert persisted.reconciliation == projection.reconciliation
+
+
+def test_live_readback_accepts_google_omitted_blank_tail_after_stale_row_clear(
+    session,
+    faker_tenant,
+) -> None:
+    binding = _binding(session, faker_tenant)
+    transport = OmittingTrailingBlankTransport(grila_rows=20, pontaj_rows=15)
+    provider = LiveGoogleProjectionProvider(transport)
+
+    projection = provider.write_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        generation="LIVE_V2",
+        payload=_payload(),
+    )
+    session.commit()
+
+    assert binding.generation == "LIVE_V2"
+    assert projection.reconciliation["verified"] is True
+    assert transport.readbacks == [
+        ("sheet-live-123", "'Grila'!A1:E20"),
+        ("sheet-live-123", "'Pontaj'!A1:G15"),
+    ]
 
 
 def test_live_readback_mismatch_is_retryable_and_does_not_advance_last_good(
@@ -291,6 +326,12 @@ def test_live_readback_mismatch_is_retryable_and_does_not_advance_last_good(
     )
     assert persisted is not None
     assert persisted.generation == "GOOD_V1"
+    assert session.query(SheetProjectionRun).filter_by(
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        status="DONE",
+        generation="BAD_V2",
+    ).count() == 0
     failed = session.query(SheetProjectionRun).filter_by(
         tenant_id=faker_tenant["tenant_id"],
         store_id=faker_tenant["store_id"],
@@ -363,6 +404,7 @@ def test_live_transport_failure_preserves_last_good_and_records_diagnostic(
         session,
         tenant_id=faker_tenant["tenant_id"],
         store_id=faker_tenant["store_id"],
+        month_id="month_test",
     )
     assert error == "GOOGLE_LIVE_TRANSPORT_ERROR: simulated provider timeout"
 
@@ -397,7 +439,7 @@ def test_http_transport_classifies_terminal_responses(status_code: int) -> None:
     assert "sheet-secret" not in str(excinfo.value)
 
 
-def test_http_transport_reads_values_and_uses_batch_update_without_network() -> None:
+def test_http_transport_reads_unformatted_values_and_uses_batch_update_without_network() -> None:
     session = FakeAuthorizedSession(
         [
             FakeResponse(200, {"values": [["x"], ["y"]]}),
@@ -414,7 +456,10 @@ def test_http_transport_reads_values_and_uses_batch_update_without_network() -> 
 
     assert result["totalUpdatedCells"] == 2
     assert session.calls[0]["method"] == "GET"
-    assert "%27Grila%27%21A%3AE" in str(session.calls[0]["url"])
+    first_url = str(session.calls[0]["url"])
+    assert "%27Grila%27%21A%3AE" in first_url
+    assert "valueRenderOption=UNFORMATTED_VALUE" in first_url
+    assert "dateTimeRenderOption=SERIAL_NUMBER" in first_url
     assert session.calls[1]["method"] == "POST"
     assert str(session.calls[1]["url"]).endswith("/sheet-1/values:batchUpdate")
     assert session.calls[1]["json"] == {
