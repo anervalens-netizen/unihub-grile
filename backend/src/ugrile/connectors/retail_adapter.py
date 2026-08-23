@@ -118,17 +118,27 @@ class FixtureRetailAdapter:
             )
             for target in fixture.targets
         ]
-        incentives = [
-            RetailIncentiveV1(
-                external_person_id=incentive.person_internal_code,
-                year=incentive.year,
-                month=incentive.month,
-                amount=incentive.amount,
-                currency=incentive.currency,
-                authority_status="fixture",
+        incentive_by_person = {
+            incentive.person_internal_code: incentive for incentive in fixture.incentives
+        }
+        # ``RetailSnapshotV1.complete=True`` means absence cannot carry an
+        # implicit monetary zero. The fixture therefore emits an explicit row
+        # for every person, including explicit zero/no-campaign observations.
+        incentives: list[RetailIncentiveV1] = []
+        for person in fixture.people:
+            incentive = incentive_by_person.get(person.internal_code)
+            incentives.append(
+                RetailIncentiveV1(
+                    external_person_id=person.internal_code,
+                    year=2026,
+                    month=8,
+                    amount=incentive.amount if incentive is not None else 0,
+                    currency=incentive.currency if incentive is not None else "RON",
+                    authority_status=(
+                        "fixture" if incentive is not None else "fixture-explicit-zero"
+                    ),
+                )
             )
-            for incentive in fixture.incentives
-        ]
         cutoff = max(sale.business_date for sale in sales)
         snapshot = RetailSnapshotV1(
             tenant_id=tenant_id,
