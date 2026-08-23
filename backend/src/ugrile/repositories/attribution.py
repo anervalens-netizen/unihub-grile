@@ -1,9 +1,9 @@
 """Sales attribution projection repository.
 
 Reads immutable ``SalesStoreDay`` rows for a tenant/month, writes
-``SalesPersonDayProjection`` rows per calendar revision. All writes happen
-inside the calendar CAS transaction so the projection never gets out of sync
-with the calendar.
+``SalesPersonDayProjection`` rows per calendar revision. Calendar writes and
+Retail accepted-generation refreshes both materialize projections inside their
+own caller transaction.
 
 When M6 Retail snapshots exist for a period, reads are pinned to the last
 accepted Retail generation. Historical generations remain stored for audit but
@@ -123,12 +123,7 @@ def attribute_for_month(
     year: int,
     month: int,
 ) -> tuple[list[AttributedSale], tuple[str, ...]]:
-    """Run attribution for the current revision of the month.
-
-    Returns the attributed rows and the connector generation(s) that
-    produced them, sorted by ``(date, person_id, store_id)`` so callers can
-    persist without further sorting.
-    """
+    """Run attribution for the current calendar using authoritative sales."""
 
     sales = store_sales_for_month(session, tenant_id=tenant_id, year=year, month=month)
     working = working_days_for_month(session, tenant_id=tenant_id, month_id=month_id)
@@ -145,12 +140,11 @@ def persist_attribution(
     revision: int,
     attributed: list[AttributedSale],
 ) -> int:
-    """Bulk-insert one projection row per attributed sale in the caller's tx.
+    """Bulk-insert one generation/revision projection snapshot.
 
-    Prior revisions are preserved by the unique constraint
-    ``uq_sales_person_day_projection``. Bulk execution changes only persistence
-    mechanics; the complete revision snapshot and transaction boundary remain
-    identical to the row-by-row implementation.
+    Historical rows stay immutable. The unique constraint includes generation,
+    so a Retail head advance can materialize a new projection at the same
+    calendar revision without deleting the previous generation's evidence.
     """
 
     values = [
@@ -180,19 +174,19 @@ def list_attribution(
     tenant_id: str,
     month_id: str,
     revision: int,
+    generation: str | None = None,
 ) -> list[SalesPersonDayProjection]:
-    stmt = (
-        select(SalesPersonDayProjection)
-        .where(
-            SalesPersonDayProjection.tenant_id == tenant_id,
-            SalesPersonDayProjection.month_id == month_id,
-            SalesPersonDayProjection.revision == revision,
-        )
-        .order_by(
-            SalesPersonDayProjection.business_date,
-            SalesPersonDayProjection.person_id,
-            SalesPersonDayProjection.store_id,
-        )
+    stmt = select(SalesPersonDayProjection).where(
+        SalesPersonDayProjection.tenant_id == tenant_id,
+        SalesPersonDayProjection.month_id == month_id,
+        SalesPersonDayProjection.revision == revision,
+    )
+    if generation is not None:
+        stmt = stmt.where(SalesPersonDayProjection.generation == generation)
+    stmt = stmt.order_by(
+        SalesPersonDayProjection.business_date,
+        SalesPersonDayProjection.person_id,
+        SalesPersonDayProjection.store_id,
     )
     return list(session.execute(stmt).scalars())
 
