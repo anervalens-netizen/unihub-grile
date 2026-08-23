@@ -84,6 +84,7 @@ class GoogleSheetsApiTransport:
         url = (
             f"{SHEETS_API_BASE}/{quote(spreadsheet_id, safe='')}/values/"
             f"{quote(range_a1, safe='')}"
+            "?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER"
         )
         payload = self._request_json("GET", url)
         values = payload.get("values", [])
