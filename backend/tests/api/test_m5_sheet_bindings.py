@@ -20,6 +20,8 @@ def _body(
     grila: str = "Grila",
     pontaj: str = "Pontaj",
     expected: str | None = None,
+    expected_grila: str = "Grila",
+    expected_pontaj: str = "Pontaj",
     reason: str | None = None,
 ) -> dict[str, str]:
     body = {
@@ -29,6 +31,8 @@ def _body(
     }
     if expected is not None:
         body["expected_current_spreadsheet_id"] = expected
+        body["expected_current_sheet_name_grila"] = expected_grila
+        body["expected_current_sheet_name_pontaj"] = expected_pontaj
     if reason is not None:
         body["reason"] = reason
     return body
@@ -77,7 +81,7 @@ def test_create_get_and_exact_replay_are_idempotent(client, faker_tenant) -> Non
         assert [row.action for row in audits] == ["SHEET_BIND_CREATE"]
 
 
-def test_rebind_requires_cas_reason_and_is_replay_safe(client, faker_tenant) -> None:
+def test_rebind_requires_full_cas_reason_and_is_replay_safe(client, faker_tenant) -> None:
     store_id = faker_tenant["store_id"]
     assert client.put(
         f"/sheet-bindings/{store_id}",
@@ -142,6 +146,45 @@ def test_rebind_requires_cas_reason_and_is_replay_safe(client, faker_tenant) -> 
         assert payload["reason"] == "replace stale workbook"
         assert payload["before"]["spreadsheet_id"] == "sheet-old"
         assert payload["after"]["spreadsheet_id"] == "sheet-new"
+
+
+def test_tab_only_concurrent_rebind_detects_stale_full_identity(client, faker_tenant) -> None:
+    store_id = faker_tenant["store_id"]
+    assert client.put(
+        f"/sheet-bindings/{store_id}",
+        headers=ADMIN,
+        json=_body("sheet-same"),
+    ).status_code == 200
+
+    first = client.put(
+        f"/sheet-bindings/{store_id}",
+        headers=ADMIN,
+        json=_body(
+            "sheet-same",
+            grila="Grila A",
+            pontaj="Pontaj A",
+            expected="sheet-same",
+            reason="rename tabs A",
+        ),
+    )
+    stale_second = client.put(
+        f"/sheet-bindings/{store_id}",
+        headers=ADMIN,
+        json=_body(
+            "sheet-same",
+            grila="Grila B",
+            pontaj="Pontaj B",
+            expected="sheet-same",
+            reason="rename tabs B",
+        ),
+    )
+
+    assert first.status_code == 200, first.text
+    assert stale_second.status_code == 409, stale_second.text
+    assert stale_second.json()["details"]["code"] == "SHEET_BINDING_STALE"
+    readback = client.get(f"/sheet-bindings/{store_id}", headers=ADMIN)
+    assert readback.json()["sheet_name_grila"] == "Grila A"
+    assert readback.json()["sheet_name_pontaj"] == "Pontaj A"
 
 
 def test_spreadsheet_identity_cannot_be_shared_between_stores(client, faker_tenant) -> None:
