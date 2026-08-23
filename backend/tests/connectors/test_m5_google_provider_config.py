@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
 
-from ugrile.connectors.google import (
-    GoogleAdapterError,
-    StoreProjection,
-    read_store_projection,
-)
+from ugrile.connectors.google import StoreProjection, read_store_projection
 from ugrile.connectors.google_provider import (
     FakeGoogleProjectionProvider,
+    GoogleProviderConfigurationError,
+    LiveGoogleProjectionProvider,
     build_google_projection_provider,
 )
 from ugrile.core.config import Settings
@@ -24,6 +22,18 @@ GOOGLE_ENV_KEYS = (
     "UGRILE_GOOGLE_CREDENTIALS_FILE",
     "UGRILE_GOOGLE_LIVE_MUTATIONS_ENABLED",
 )
+
+
+class NoopLiveTransport:
+    def existing_row_count(self, spreadsheet_id: str, range_a1: str) -> int:
+        return 0
+
+    def batch_update_values(
+        self,
+        spreadsheet_id: str,
+        data: Sequence[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        return {"spreadsheetId": spreadsheet_id, "totalUpdatedCells": 0}
 
 
 def _settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
@@ -48,7 +58,7 @@ def test_live_provider_requires_explicit_mutation_opt_in(
     monkeypatch.setenv("UGRILE_GOOGLE_PROVIDER", "live")
     settings = Settings(_env_file=None)
 
-    with pytest.raises(GoogleAdapterError) as excinfo:
+    with pytest.raises(GoogleProviderConfigurationError) as excinfo:
         build_google_projection_provider(settings)
 
     assert excinfo.value.details == {"code": "GOOGLE_LIVE_MUTATIONS_DISABLED"}
@@ -62,7 +72,7 @@ def test_live_provider_requires_external_credentials_path(
     monkeypatch.setenv("UGRILE_GOOGLE_LIVE_MUTATIONS_ENABLED", "true")
     settings = Settings(_env_file=None)
 
-    with pytest.raises(GoogleAdapterError) as excinfo:
+    with pytest.raises(GoogleProviderConfigurationError) as excinfo:
         build_google_projection_provider(settings)
 
     assert excinfo.value.details == {"code": "GOOGLE_CREDENTIALS_FILE_REQUIRED"}
@@ -79,13 +89,13 @@ def test_live_provider_rejects_missing_credentials_file(
     monkeypatch.setenv("UGRILE_GOOGLE_CREDENTIALS_FILE", str(missing))
     settings = Settings(_env_file=None)
 
-    with pytest.raises(GoogleAdapterError) as excinfo:
+    with pytest.raises(GoogleProviderConfigurationError) as excinfo:
         build_google_projection_provider(settings)
 
     assert excinfo.value.details == {"code": "GOOGLE_CREDENTIALS_FILE_UNAVAILABLE"}
 
 
-def test_live_config_never_reads_or_exposes_credential_contents(
+def test_live_config_does_not_expose_credential_contents(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -100,12 +110,13 @@ def test_live_config_never_reads_or_exposes_credential_contents(
 
     assert secret not in repr(settings)
     assert str(credentials) not in repr(settings)
-    with pytest.raises(GoogleAdapterError) as excinfo:
-        build_google_projection_provider(settings)
+    provider = build_google_projection_provider(
+        settings,
+        live_transport=NoopLiveTransport(),
+    )
 
-    assert excinfo.value.details == {"code": "GOOGLE_LIVE_TRANSPORT_UNAVAILABLE"}
-    assert secret not in str(excinfo.value)
-    assert secret not in repr(excinfo.value.details)
+    assert isinstance(provider, LiveGoogleProjectionProvider)
+    assert secret not in repr(provider)
 
 
 def test_fake_provider_preserves_existing_projection_semantics(
