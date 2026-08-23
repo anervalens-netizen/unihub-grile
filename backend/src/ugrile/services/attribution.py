@@ -50,6 +50,7 @@ class AttributionSummary:
 class AttributionService:
     def __init__(self, session: Session) -> None:
         self.session = session
+        self._accepted_generation_cache: dict[tuple[str, str], str | None] = {}
 
     def rebuild_for_month(
         self,
@@ -82,11 +83,15 @@ class AttributionService:
         return count, tuple(attributed), generations
 
     def _accepted_generation(self, *, tenant_id: str, month: Month) -> str | None:
-        return accepted_retail_generation_key(
-            self.session,
-            tenant_id=tenant_id,
-            period=f"{month.year:04d}-{month.month:02d}",
-        )
+        period = f"{month.year:04d}-{month.month:02d}"
+        key = (tenant_id, period)
+        if key not in self._accepted_generation_cache:
+            self._accepted_generation_cache[key] = accepted_retail_generation_key(
+                self.session,
+                tenant_id=tenant_id,
+                period=period,
+            )
+        return self._accepted_generation_cache[key]
 
     def latest_attribution(
         self, *, tenant_id: str, month: Month
@@ -129,6 +134,8 @@ class AttributionService:
             tenant_id=tenant_id,
             year=month.year,
             month=month.month,
+            generation=generation,
+            resolve_accepted_generation=False,
         )
         working = working_days_for_month(
             self.session, tenant_id=tenant_id, month_id=month.id
