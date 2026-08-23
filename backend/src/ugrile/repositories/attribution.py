@@ -40,28 +40,33 @@ def store_sales_for_month(
     tenant_id: str,
     year: int,
     month: int,
+    generation: str | None = None,
+    resolve_accepted_generation: bool = True,
 ) -> list[StoreDaySale]:
     """Return authoritative store/day sales for the tenant/month.
 
-    Retail-backed periods consume exactly one accepted generation. Periods that
-    predate the M6 accepted-generation ledger keep legacy fixture semantics so
-    this change does not reinterpret historical fixture data.
+    By default the repository resolves an accepted Retail head itself. A caller
+    that already resolved the head can pass ``generation`` and set
+    ``resolve_accepted_generation=False``; passing ``None`` in that mode means
+    intentional legacy all-generation semantics and avoids a duplicate query.
     """
 
     first = date(year, month, 1)
     last = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
-    accepted_generation = accepted_retail_generation_key(
-        session,
-        tenant_id=tenant_id,
-        period=f"{year:04d}-{month:02d}",
-    )
+    effective_generation = generation
+    if resolve_accepted_generation and effective_generation is None:
+        effective_generation = accepted_retail_generation_key(
+            session,
+            tenant_id=tenant_id,
+            period=f"{year:04d}-{month:02d}",
+        )
     stmt = select(SalesStoreDay).where(
         SalesStoreDay.tenant_id == tenant_id,
         SalesStoreDay.business_date >= first,
         SalesStoreDay.business_date < last,
     )
-    if accepted_generation is not None:
-        stmt = stmt.where(SalesStoreDay.generation == accepted_generation)
+    if effective_generation is not None:
+        stmt = stmt.where(SalesStoreDay.generation == effective_generation)
     stmt = stmt.order_by(
         SalesStoreDay.store_id,
         SalesStoreDay.business_date,
