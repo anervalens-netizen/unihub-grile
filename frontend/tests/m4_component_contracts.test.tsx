@@ -81,7 +81,7 @@ describe("FE-015 shared component contracts", () => {
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
 
     rerender(<MonthSelector months={[]} value={null} onChange={vi.fn()} error={null} />);
-    expect(screen.getByText(/Nicio lună disponibilă pentru organizație/i)).toBeInTheDocument();
+    expect(screen.getByText(/Nu există luni disponibile pentru organizația curentă/i)).toBeInTheDocument();
     expect(screen.queryByText(/ingest\/fixture/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
