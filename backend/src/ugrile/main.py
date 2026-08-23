@@ -40,6 +40,7 @@ from .core.correlation import (
     resolve_request_correlation_id,
 )
 from .core.logging import configure_logging, get_logger, safe_exception_fields
+from .core.metrics import observe_http_request
 from .domain.errors import DomainError
 
 configure_logging()
@@ -79,13 +80,20 @@ def create_app() -> FastAPI:
                 response = await call_next(request)
             except Exception as exc:
                 unhandled_failure = True
+                duration_seconds = perf_counter() - started
+                observe_http_request(
+                    method=request.method,
+                    route=_route_template(request),
+                    status_code=500,
+                    duration_seconds=duration_seconds,
+                )
                 log.error(
                     "http_request_failed",
                     correlation_id=correlation_id,
                     method=request.method,
                     route=_route_template(request),
                     status_code=500,
-                    duration_ms=round((perf_counter() - started) * 1000, 2),
+                    duration_ms=round(duration_seconds * 1000, 2),
                     **safe_exception_fields(exc),
                 )
                 response = JSONResponse(
@@ -97,13 +105,20 @@ def create_app() -> FastAPI:
                 )
             response.headers[CORRELATION_HEADER] = correlation_id
             if not unhandled_failure:
+                duration_seconds = perf_counter() - started
+                observe_http_request(
+                    method=request.method,
+                    route=_route_template(request),
+                    status_code=response.status_code,
+                    duration_seconds=duration_seconds,
+                )
                 log.info(
                     "http_request_completed",
                     correlation_id=correlation_id,
                     method=request.method,
                     route=_route_template(request),
                     status_code=response.status_code,
-                    duration_ms=round((perf_counter() - started) * 1000, 2),
+                    duration_ms=round(duration_seconds * 1000, 2),
                 )
             return response
 
