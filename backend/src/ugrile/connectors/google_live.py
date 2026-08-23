@@ -112,8 +112,8 @@ class GoogleSheetsApiTransport:
                 "Google service-account credentials have no client identity",
                 details={"code": "GOOGLE_CREDENTIALS_INVALID"},
             )
-        return cls(  # type: ignore[no-untyped-call]
-            AuthorizedSession(credentials),
+        return cls(
+            AuthorizedSession(credentials),  # type: ignore[no-untyped-call]
             managed_editor_email=editor_email,
         )
 
