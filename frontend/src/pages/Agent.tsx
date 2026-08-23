@@ -9,6 +9,7 @@ import {
   type PersonSummary,
   type SheetProjection,
 } from "../api/client";
+import { isolatedRead } from "../api/isolatedRead";
 import { MonthSelector } from "../components/MonthSelector";
 import { ProgramMatrix } from "../components/ProgramMatrix";
 
@@ -28,6 +29,7 @@ export function Agent({ api, personId, months, monthsError }: AgentProps) {
   const [epay, setEpay] = useState<EpayFreshness | null>(null);
   const [projection, setProjection] = useState<SheetProjection | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [subsystemErrors, setSubsystemErrors] = useState<string[]>([]);
 
   useEffect(() => {
     setMonthId((current) => current ?? months[0]?.id ?? null);
@@ -36,10 +38,17 @@ export function Agent({ api, personId, months, monthsError }: AgentProps) {
   useEffect(() => {
     if (!monthId || !personId) {
       setGrid(null);
+      setPerson(null);
+      setAttribution(null);
+      setGridRows([]);
+      setEpay(null);
+      setProjection(null);
+      setSubsystemErrors([]);
       return;
     }
     let cancelled = false;
     setError(null);
+    setSubsystemErrors([]);
     api
       .get<ProgramGrid>(`/months/${monthId}/program?perspective=people`)
       .then(async (response) => {
@@ -48,17 +57,16 @@ export function Agent({ api, personId, months, monthsError }: AgentProps) {
         if (!storeId) {
           throw new Error("Magazinul de bază al agentului nu este disponibil în program.");
         }
-        const [attributionResponse, gridResponse, freshnessResponse, projectionResponse] =
-          await Promise.all([
-            api.get<AttributionResponse>(`/months/${monthId}/attribution`),
-            api.get<GridCalculation[]>(`/months/${monthId}/grid`),
-            api.get<EpayFreshness>(
-              `/months/${monthId}/epay/freshness?store_id=${encodeURIComponent(storeId)}`,
-            ),
-            api.get<SheetProjection>(
-              `/months/${monthId}/sheet-projection?store_id=${encodeURIComponent(storeId)}`,
-            ),
-          ]);
+        const [attributionRead, gridRead, freshnessRead, projectionRead] = await Promise.all([
+          isolatedRead(api.get<AttributionResponse>(`/months/${monthId}/attribution`)),
+          isolatedRead(api.get<GridCalculation[]>(`/months/${monthId}/grid`)),
+          isolatedRead(api.get<EpayFreshness>(
+            `/months/${monthId}/epay/freshness?store_id=${encodeURIComponent(storeId)}`,
+          )),
+          isolatedRead(api.get<SheetProjection>(
+            `/months/${monthId}/sheet-projection?store_id=${encodeURIComponent(storeId)}`,
+          )),
+        ]);
         if (cancelled) return;
         setGrid({ ...response, rows: response.rows.filter((candidate) => candidate.row_id === personId) });
         setPerson({
@@ -70,13 +78,19 @@ export function Agent({ api, personId, months, monthsError }: AgentProps) {
           home_store_id: storeId,
           is_active: true,
         });
-        setAttribution({
-          ...attributionResponse,
-          rows: attributionResponse.rows.filter((item) => item.person_id === personId),
-        });
-        setGridRows(gridResponse.filter((item) => item.person_id === personId));
-        setEpay(freshnessResponse);
-        setProjection(projectionResponse);
+        setAttribution(attributionRead.value ? {
+          ...attributionRead.value,
+          rows: attributionRead.value.rows.filter((item) => item.person_id === personId),
+        } : null);
+        setGridRows(gridRead.value?.filter((item) => item.person_id === personId) ?? []);
+        setEpay(freshnessRead.value);
+        setProjection(projectionRead.value);
+        setSubsystemErrors([
+          attributionRead.error ? `Vânzări/atribuire: ${attributionRead.error}` : null,
+          gridRead.error ? `Grilă: ${gridRead.error}` : null,
+          freshnessRead.error ? `E-pay: ${freshnessRead.error}` : null,
+          projectionRead.error ? `Sheet: ${projectionRead.error}` : null,
+        ].filter((message): message is string => message !== null));
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -98,6 +112,12 @@ export function Agent({ api, personId, months, monthsError }: AgentProps) {
         <MonthSelector months={months} value={monthId} onChange={setMonthId} error={monthsError} />
       </header>
       {error && <p className="error" role="alert">{error}</p>}
+      {subsystemErrors.length > 0 && (
+        <div className="error" role="alert">
+          <strong>Date parțial indisponibile.</strong>
+          <ul>{subsystemErrors.map((message) => <li key={message}>{message}</li>)}</ul>
+        </div>
+      )}
       {grid && grid.rows.length === 0 && (
         <p className="muted">Persoana nu are rânduri în calendarul acestei luni.</p>
       )}

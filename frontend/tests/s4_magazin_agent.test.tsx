@@ -48,9 +48,10 @@ interface ApiOptions {
   programRevisions?: number[];
   postFailures?: Array<{ status: number; code?: string }>;
   jobsFailure?: boolean;
+  failPaths?: string[];
 }
 
-function apiForPage({ programRevisions = [2], postFailures = [], jobsFailure = false }: ApiOptions = {}) {
+function apiForPage({ programRevisions = [2], postFailures = [], jobsFailure = false, failPaths = [] }: ApiOptions = {}) {
   const calls: string[] = [];
   let programRead = 0;
   let postAttempt = 0;
@@ -61,12 +62,14 @@ function apiForPage({ programRevisions = [2], postFailures = [], jobsFailure = f
     return { job_id: "job-1", path };
   }), get: vi.fn(async (path: string) => {
     calls.push(path);
-    if (path === "/catalog/stores") return [store];
-    if (path === "/catalog/people?store_id=store_x") return [person];
     if (path === JOB_DIAGNOSTICS_PATH) {
       if (jobsFailure) throw new Error("jobs unavailable");
       return diagnostics;
     }
+    const failedToken = failPaths.find((token) => path.includes(token));
+    if (failedToken) throw new Error(`${failedToken} unavailable`);
+    if (path === "/catalog/stores") return [store];
+    if (path === "/catalog/people?store_id=store_x") return [person];
     if (path.includes("/program/choices")) return choices;
     if (path.includes("/program?perspective=")) {
       const revision = programRevisions[Math.min(programRead, programRevisions.length - 1)] ?? 2;
@@ -131,6 +134,17 @@ describe("Magazin and Agent contract routes", () => {
     expect(screen.getByText("2/2")).toBeInTheDocument();
   });
 
+  it("keeps store calendar and other data when an independent subsystem read fails", async () => {
+    const { api } = apiForPage({ failPaths: ["/epay/freshness"] });
+    render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} capabilities={MANAGER_CAPABILITIES} />);
+    expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Editează calendarul/i })).toBeInTheDocument();
+    expect(screen.getAllByText(/126/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("alert")).toHaveTextContent(/E-pay: \/epay\/freshness unavailable/);
+    fireEvent.click(screen.getByRole("tab", { name: "Calendar" }));
+    expect(screen.getByRole("button", { name: /Alice pe 2026-08-01/i })).toBeInTheDocument();
+  });
+
   it("keeps manager calendar editing but removes admin-only sync/export actions", async () => {
     const { api } = apiForPage();
     render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} capabilities={MANAGER_CAPABILITIES} />);
@@ -168,5 +182,14 @@ describe("Magazin and Agent contract routes", () => {
     expect(calls).toContain(`/months/${MONTH.id}/epay/freshness?store_id=store_x`);
     expect(calls).toContain(`/months/${MONTH.id}/sheet-projection?store_id=store_x`);
     expect(calls.some((path) => path.includes("/agents/") || path.includes("/people/"))).toBe(false);
+  });
+
+  it("keeps agent schedule and sales when Sheet read fails", async () => {
+    const { api } = apiForPage({ failPaths: ["/sheet-projection"] });
+    render(<Agent api={api} personId="person_a" months={[MONTH]} monthsError={null} />);
+    expect(await screen.findByText("Alice")).toBeInTheDocument();
+    expect(screen.getByText(/125.50 RON/)).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/Sheet: \/sheet-projection unavailable/);
+    expect(screen.getByText("fără proiecție")).toBeInTheDocument();
   });
 });

@@ -13,6 +13,7 @@ import {
   type SheetProjection,
   type StoreSummary,
 } from "../api/client";
+import { isolatedRead } from "../api/isolatedRead";
 import { hasCapability, type Capability } from "../capabilities";
 import { MonthSelector } from "../components/MonthSelector";
 import { ProgramMatrix } from "../components/ProgramMatrix";
@@ -98,33 +99,61 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
     setSaveError(null);
     if (!monthId || !storeId) {
       setGrid(null);
+      setTotals(null);
+      setStore(null);
+      setAllStores([]);
+      setPeople([]);
+      setAttribution(null);
+      setGridRows([]);
+      setFreshness(null);
+      setProjection(null);
+      setError(null);
       return;
     }
     let cancelled = false;
     setError(null);
     const query = `?store_id=${encodeURIComponent(storeId)}`;
     Promise.all([
-      api.get<ProgramGrid>(`/months/${monthId}/program?perspective=people`),
-      api.get<PontajTotalsResponse>(`/months/${monthId}/pontaj-totals`),
-      api.get<StoreSummary[]>("/catalog/stores"),
-      api.get<PersonSummary[]>(`/catalog/people?store_id=${encodeURIComponent(storeId)}`),
-      api.get<AttributionResponse>(`/months/${monthId}/attribution`),
-      api.get<GridCalculation[]>(`/months/${monthId}/grid`),
-      api.get<EpayFreshness>(`/months/${monthId}/epay/freshness${query}`),
-      api.get<SheetProjection>(`/months/${monthId}/sheet-projection${query}`),
+      isolatedRead(api.get<ProgramGrid>(`/months/${monthId}/program?perspective=people`)),
+      isolatedRead(api.get<PontajTotalsResponse>(`/months/${monthId}/pontaj-totals`)),
+      isolatedRead(api.get<StoreSummary[]>("/catalog/stores")),
+      isolatedRead(api.get<PersonSummary[]>(`/catalog/people?store_id=${encodeURIComponent(storeId)}`)),
+      isolatedRead(api.get<AttributionResponse>(`/months/${monthId}/attribution`)),
+      isolatedRead(api.get<GridCalculation[]>(`/months/${monthId}/grid`)),
+      isolatedRead(api.get<EpayFreshness>(`/months/${monthId}/epay/freshness${query}`)),
+      isolatedRead(api.get<SheetProjection>(`/months/${monthId}/sheet-projection${query}`)),
     ])
-      .then(([gridResponse, totalsResponse, storesResponse, peopleResponse, attributionResponse, gridResponseRows, freshnessResponse, projectionResponse]) => {
+      .then(([programRead, totalsRead, storesRead, peopleRead, attributionRead, gridRead, freshnessRead, projectionRead]) => {
         if (cancelled) return;
-        const filteredGrid = filterGridForStore(gridResponse, storeId);
+        const program = programRead.value;
+        const storesResponse = storesRead.value ?? [];
+        setGrid(program ? filterGridForStore(program, storeId) : null);
+        setTotals(totalsRead.value);
         setAllStores(storesResponse.filter((item) => item.is_active));
         setStore(storesResponse.find((item) => item.id === storeId) ?? null);
-        setPeople(peopleResponse.filter((item) => item.is_active));
-        setGrid(filteredGrid);
-        setTotals(totalsResponse);
-        setAttribution({ ...attributionResponse, rows: attributionResponse.rows.filter((row) => row.store_id === storeId) });
-        setGridRows(gridResponseRows.filter((row) => row.store_id === storeId && row.revision === gridResponse.revision));
-        setFreshness(freshnessResponse);
-        setProjection(projectionResponse);
+        setPeople(peopleRead.value?.filter((item) => item.is_active) ?? []);
+        setAttribution(attributionRead.value ? {
+          ...attributionRead.value,
+          rows: attributionRead.value.rows.filter((row) => row.store_id === storeId),
+        } : null);
+        setGridRows(
+          gridRead.value && program
+            ? gridRead.value.filter((row) => row.store_id === storeId && row.revision === program.revision)
+            : [],
+        );
+        setFreshness(freshnessRead.value);
+        setProjection(projectionRead.value);
+        const failures = [
+          programRead.error ? `Calendar: ${programRead.error}` : null,
+          totalsRead.error ? `Pontaj: ${totalsRead.error}` : null,
+          storesRead.error ? `Catalog magazine: ${storesRead.error}` : null,
+          peopleRead.error ? `Echipă: ${peopleRead.error}` : null,
+          attributionRead.error ? `Vânzări/atribuire: ${attributionRead.error}` : null,
+          gridRead.error ? `Grilă: ${gridRead.error}` : null,
+          freshnessRead.error ? `E-pay: ${freshnessRead.error}` : null,
+          projectionRead.error ? `Sheet: ${projectionRead.error}` : null,
+        ].filter((message): message is string => message !== null);
+        setError(failures.length > 0 ? `Date parțial indisponibile — ${failures.join(" · ")}` : null);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
