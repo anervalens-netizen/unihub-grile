@@ -111,6 +111,58 @@ def _assert_no_input_conflict(
             )
 
 
+def _normalized_grid_range(value: Any) -> dict[str, int]:
+    raw = _mapping(value)
+    result: dict[str, int] = {}
+    for key in (
+        "sheetId",
+        "startRowIndex",
+        "endRowIndex",
+        "startColumnIndex",
+        "endColumnIndex",
+    ):
+        item = raw.get(key)
+        if type(item) is int:
+            result[key] = item
+    return result
+
+
+def _normalized_unprotected(value: Any) -> list[dict[str, int]]:
+    return [_normalized_grid_range(item) for item in _list(value)]
+
+
+def _text_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    return [str(item) for item in value if isinstance(item, str) and item]
+
+
+def _matches_expected(
+    protected: Mapping[str, Any],
+    *,
+    expected: Mapping[str, Any],
+    editor_email: str,
+) -> bool:
+    if protected.get("description") != expected.get("description"):
+        return False
+    if _normalized_grid_range(protected.get("range")) != _normalized_grid_range(
+        expected.get("range")
+    ):
+        return False
+    if protected.get("warningOnly") is True:
+        return False
+    editors = _mapping(protected.get("editors"))
+    if sorted(_text_list(editors.get("users"))) != [editor_email]:
+        return False
+    if _text_list(editors.get("groups")):
+        return False
+    if editors.get("domainUsersCanEdit") is True:
+        return False
+    return _normalized_unprotected(protected.get("unprotectedRanges")) == (
+        _normalized_unprotected(expected.get("unprotectedRanges"))
+    )
+
+
 def build_protection_requests(
     state: Mapping[str, Any],
     *,
@@ -119,7 +171,7 @@ def build_protection_requests(
     person_count: int,
     editor_email: str,
 ) -> tuple[dict[str, Any], ...]:
-    """Return idempotent add/update/delete requests for the managed protections."""
+    """Return only material add/update/delete requests for managed protections."""
 
     if not editor_email:
         raise GoogleProtectionContractError(
@@ -155,16 +207,19 @@ def build_protection_requests(
                     "managed protected range has no numeric id",
                     details={"code": "GOOGLE_SHEET_CONTROL_STATE_INVALID", "tab": tab_name},
                 )
-            requests.append(
-                {
-                    "updateProtectedRange": {
-                        "protectedRange": {**expected, "protectedRangeId": first_id},
-                        "fields": (
-                            "range,description,warningOnly,editors,unprotectedRanges"
-                        ),
+            if not _matches_expected(
+                managed[0], expected=expected, editor_email=editor_email
+            ):
+                requests.append(
+                    {
+                        "updateProtectedRange": {
+                            "protectedRange": {**expected, "protectedRangeId": first_id},
+                            "fields": (
+                                "range,description,warningOnly,editors,unprotectedRanges"
+                            ),
+                        }
                     }
-                }
-            )
+                )
             for duplicate in managed[1:]:
                 duplicate_id = duplicate.get("protectedRangeId")
                 if type(duplicate_id) is not int:
@@ -181,26 +236,6 @@ def build_protection_requests(
         else:
             requests.append({"addProtectedRange": {"protectedRange": expected}})
     return tuple(requests)
-
-
-def _normalized_grid_range(value: Any) -> dict[str, int]:
-    raw = _mapping(value)
-    result: dict[str, int] = {}
-    for key in (
-        "sheetId",
-        "startRowIndex",
-        "endRowIndex",
-        "startColumnIndex",
-        "endColumnIndex",
-    ):
-        item = raw.get(key)
-        if type(item) is int:
-            result[key] = item
-    return result
-
-
-def _normalized_unprotected(value: Any) -> list[dict[str, int]]:
-    return [_normalized_grid_range(item) for item in _list(value)]
 
 
 def attest_protection_state(
@@ -233,37 +268,19 @@ def attest_protection_state(
                 "managed Sheet protection is missing or duplicated",
                 details={"code": "GOOGLE_PROTECTION_ATTESTATION_FAILED", "tab": tab_name},
             )
-        protected = managed[0]
-        expected_range = {"sheetId": sheet_id}
-        if _normalized_grid_range(protected.get("range")) != expected_range:
+        expected = _expected_protection(
+            sheet_id=sheet_id,
+            tab_name=tab_name,
+            editor_email=editor_email,
+            unprotected=unprotected,
+        )
+        if not _matches_expected(
+            managed[0], expected=expected, editor_email=editor_email
+        ):
             raise GoogleProtectionContractError(
-                "managed protection does not cover the full bound tab",
+                "managed protection does not exactly match the editable-cell contract",
                 details={"code": "GOOGLE_PROTECTION_ATTESTATION_FAILED", "tab": tab_name},
             )
-        if protected.get("warningOnly") is True:
-            raise GoogleProtectionContractError(
-                "managed protection is warning-only instead of enforced",
-                details={"code": "GOOGLE_PROTECTION_ATTESTATION_FAILED", "tab": tab_name},
-            )
-        editors = _mapping(protected.get("editors"))
-        users = sorted(_text_list(editors.get("users")))
-        if users != [editor_email] or editors.get("domainUsersCanEdit") is True:
-            raise GoogleProtectionContractError(
-                "managed protection editor set does not match the service account",
-                details={"code": "GOOGLE_PROTECTION_ATTESTATION_FAILED", "tab": tab_name},
-            )
-        expected_unprotected = [unprotected] if unprotected is not None else []
-        if _normalized_unprotected(protected.get("unprotectedRanges")) != expected_unprotected:
-            raise GoogleProtectionContractError(
-                "managed protection exposes an unexpected editable range",
-                details={"code": "GOOGLE_PROTECTION_ATTESTATION_FAILED", "tab": tab_name},
-            )
-
-
-def _text_list(value: Any) -> list[str]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        return []
-    return [str(item) for item in value if isinstance(item, str) and item]
 
 
 __all__ = [
