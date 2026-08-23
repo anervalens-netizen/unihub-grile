@@ -206,7 +206,7 @@ def test_worker_failure_log_keeps_type_not_exception_message(monkeypatch) -> Non
             {
                 "kind": "NOOP",
                 "attempts": 1,
-                "max_attempts": 1,
+                "max_attempts": 3,
                 "retryable": False,
                 "error_type": "RuntimeError",
             },
