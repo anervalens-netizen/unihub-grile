@@ -24,7 +24,7 @@ SHEETS_API_BASE = "https://sheets.googleapis.com/v4/spreadsheets"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 _CONTROL_FIELDS = (
     "sheets(properties(sheetId,title),"
-    "protectedRanges(protectedRangeId,range,namedRangeId,tableId,description,warningOnly,"
+    "protectedRanges(protectedRangeId,range,namedRangeId,description,warningOnly,"
     "unprotectedRanges,editors))"
 )
 
