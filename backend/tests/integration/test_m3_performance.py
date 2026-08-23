@@ -30,16 +30,18 @@ pytestmark = [pytest.mark.postgres, pytest.mark.performance]
 
 # PostgreSQL optimized calibration, run 32589115250 / head 911ae5b:
 # overview=21, program=6, grid=5, original 8-read store_screen=43 SELECTs.
-# FE-005 adds the mounted, capability-gated job diagnostics read. For ADMIN that
-# route has exactly two bounded SELECTs (active + terminal history), so the real
-# 9-read Store screen contract is 45 SELECTs. Any further SQL round-trip remains
-# a visible regression. Latency ceilings remain deliberately wider than the
-# sample to avoid treating shared-runner jitter as an application failure.
+# FE-005 adds the mounted, capability-gated job diagnostics HTTP request. On the
+# dev-header identity path that request executes one principal lookup plus two
+# bounded ADMIN diagnostics reads (active queue + terminal history), measured as
+# exactly +3 SELECTs in run 32625821433. The real 9-read Store screen contract is
+# therefore 46 SELECTs. Any further SQL round-trip remains a visible regression.
+# Latency ceilings remain deliberately wider than samples so shared-runner jitter
+# is not treated as an application failure.
 QUERY_BUDGETS = {
     "overview": 21,
     "program": 6,
     "grid": 5,
-    "store_screen": 45,
+    "store_screen": 46,
 }
 LATENCY_BUDGET_MS = {
     "overview": 2000.0,
