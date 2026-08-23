@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const layoutSource = readFileSync(new URL("../src/components/Layout.tsx", import.meta.url), "utf8");
-const responsiveSource = readFileSync(new URL("../src/styles/responsive.css", import.meta.url), "utf8");
+const layoutSource = readFileSync(join(process.cwd(), "src/components/Layout.tsx"), "utf8");
+const responsiveSource = readFileSync(join(process.cwd(), "src/styles/responsive.css"), "utf8");
 
 function mediaBlock(maxWidth: number, nextMaxWidth?: number): string {
   const startToken = `@media (max-width: ${maxWidth}px)`;
