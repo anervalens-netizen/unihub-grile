@@ -17,7 +17,7 @@ Every authenticated UniHub Grile API route must have an explicit capability and 
 - `holiday.write` — mutate holiday calendars/overrides; admin-only.
 - `epay.read` — read E-pay freshness/readback state within store scope.
 - `epay.write` — record E-pay readback for an allowed store.
-- `sheet.read` — read projection/canary state within store scope.
+- `sheet.read` — read projection/canary/reconciliation state within store scope.
 - `sheet.sync` — enqueue Sheet projection for an allowed store.
 - `sheet.bind` — read/create/rebind the permanent store↔Google-Sheet identity; admin-only.
 - `export.read` — read/download export runs only when their requested store set is within scope.
@@ -52,7 +52,8 @@ Admins are tenant-wide unless a more restrictive product rule applies. Managers 
 | E-pay freshness | `epay.read` | requested store | manager effective scope; admin tenant-wide |
 | E-pay readback | `epay.write` | requested store and submitted working agents | admin in current UI policy; resource scope still mandatory |
 | Sheet binding GET/PUT | `sheet.bind` | tenant + exact store; spreadsheet id globally unique | admin-only; rebind requires CAS identity + reason |
-| Sheet projection read | `sheet.read` | requested store | manager effective scope; admin tenant-wide |
+| Sheet projection read | `sheet.read` | requested month + exact store; only a snapshot carrying matching `metadata.month_id` is eligible | manager effective scope; admin tenant-wide |
+| Sheet reconciliation read | `sheet.read` | requested month + exact store; legacy/unscoped snapshots fail closed | manager effective scope; admin tenant-wide |
 | Sheet projection enqueue | `sheet.sync` | requested store + pinned Sheet identity | admin in current product policy; resource scope mandatory |
 | export/store | `export.create` | requested store | admin currently; future manager policy may grant scoped export |
 | export/bulk, pontaj-only | `export.create` | explicit store set; when omitted resolve to caller-visible set, never implicit tenant-wide for manager | admin currently |
@@ -80,6 +81,7 @@ Admins are tenant-wide unless a more restrictive product rule applies. Managers 
 14. A store has at most one permanent Sheet binding and one Google spreadsheet id may not be bound to multiple stores, including across tenants.
 15. Sheet projection jobs pin the binding identity seen at enqueue. A later rebind must make the older job fail terminally before provider I/O; it must never redirect that job to the replacement Sheet.
 16. Projection publication may advance `generation`, but live projection is never allowed to create/discover/rebind a Sheet identity as a side effect.
+17. Month-scoped Sheet projection/reconciliation reads must prove exact `metadata.month_id`; a successful snapshot for one month and historical snapshots without month identity are not valid evidence for another requested month.
 
 ## M1 re-attestation result
 
