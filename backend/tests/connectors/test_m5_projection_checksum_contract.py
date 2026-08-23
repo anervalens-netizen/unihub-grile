@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -11,8 +12,23 @@ from ugrile.repositories.models import SheetBinding
 
 
 class EchoTransport:
+    managed_editor_email = "svc-checksum@example.test"
+
     def __init__(self) -> None:
         self.written: dict[str, list[list[Any]]] = {}
+        self._next_protection_id = 100
+        self.control_state: dict[str, Any] = {
+            "sheets": [
+                {
+                    "properties": {"sheetId": 101, "title": "Grila"},
+                    "protectedRanges": [],
+                },
+                {
+                    "properties": {"sheetId": 202, "title": "Pontaj"},
+                    "protectedRanges": [],
+                },
+            ]
+        }
 
     def existing_row_count(self, spreadsheet_id: str, range_a1: str) -> int:
         return 0
@@ -23,15 +39,69 @@ class EchoTransport:
         data: Sequence[Mapping[str, Any]],
     ) -> Mapping[str, Any]:
         for item in data:
-            key = "Grila" if "Grila" in str(item["range"]) else "Pontaj"
+            range_a1 = str(item["range"])
+            key = self._value_key(range_a1)
             values = item["values"]
             assert isinstance(values, list)
             self.written[key] = [list(row) for row in values]
         return {"spreadsheetId": spreadsheet_id}
 
     def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
-        key = "Grila" if "Grila" in range_a1 else "Pontaj"
-        return [list(row) for row in self.written[key]]
+        key = self._value_key(range_a1)
+        return [list(row) for row in self.written.get(key, [])]
+
+    def read_control_state(self, spreadsheet_id: str) -> Mapping[str, Any]:
+        return copy.deepcopy(self.control_state)
+
+    def batch_update_spreadsheet(
+        self,
+        spreadsheet_id: str,
+        requests_: Sequence[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        for request in requests_:
+            if "addProtectedRange" in request:
+                payload = copy.deepcopy(
+                    dict(request["addProtectedRange"])["protectedRange"]
+                )
+                assert isinstance(payload, dict)
+                payload["protectedRangeId"] = self._next_protection_id
+                self._next_protection_id += 1
+                sheet_id = int(dict(payload["range"])["sheetId"])
+                self._sheet(sheet_id)["protectedRanges"].append(payload)
+            elif "updateProtectedRange" in request:
+                update = dict(request["updateProtectedRange"])
+                payload = copy.deepcopy(dict(update["protectedRange"]))
+                protection_id = int(payload["protectedRangeId"])
+                sheet_id = int(dict(payload["range"])["sheetId"])
+                sheet = self._sheet(sheet_id)
+                sheet["protectedRanges"] = [
+                    payload if item.get("protectedRangeId") == protection_id else item
+                    for item in sheet["protectedRanges"]
+                ]
+            elif "deleteProtectedRange" in request:
+                protection_id = int(
+                    dict(request["deleteProtectedRange"])["protectedRangeId"]
+                )
+                for sheet in self.control_state["sheets"]:
+                    sheet["protectedRanges"] = [
+                        item
+                        for item in sheet["protectedRanges"]
+                        if item.get("protectedRangeId") != protection_id
+                    ]
+            else:
+                raise AssertionError(f"unexpected control request: {request}")
+        return {"spreadsheetId": spreadsheet_id}
+
+    def _value_key(self, range_a1: str) -> str:
+        if "Grila" in range_a1 and "!G" in range_a1:
+            return "Epay"
+        return "Grila" if "Grila" in range_a1 else "Pontaj"
+
+    def _sheet(self, sheet_id: int) -> dict[str, Any]:
+        for sheet in self.control_state["sheets"]:
+            if sheet["properties"]["sheetId"] == sheet_id:
+                return sheet
+        raise AssertionError(f"unknown sheet id {sheet_id}")
 
 
 def _payload(store_id: str) -> dict[str, Any]:

@@ -19,6 +19,7 @@ from .api.error_contract import (
     http_error_response,
     validation_error_response,
 )
+from .api.google_epay import router as google_epay_router
 from .api.grid import router as grid_router
 from .api.health import router as health_router
 from .api.ingest import router as ingest_router
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(s5b_router)
     app.include_router(sheet_bindings_router)
     app.include_router(sheet_reconciliation_router)
+    app.include_router(google_epay_router)
     app.include_router(worker_router)
     return app
 

@@ -15,6 +15,13 @@ from ..domain.errors import DomainError
 from ..repositories.models import SheetBinding, SheetProjectionRun
 from . import google as fake_google
 from .google import StoreProjection
+from .google_epay_layout import (
+    epay_read_range,
+    epay_write_range,
+    parse_epay_readback,
+    preserved_epay_values,
+    render_epay_values,
+)
 from .google_live import (
     GoogleRetryableTransportError,
     GoogleSheetsApiTransport,
@@ -26,6 +33,7 @@ from .google_projection_format import (
     render_grila_values,
     render_pontaj_values,
 )
+from .google_sheet_protection import attest_protection_state, build_protection_requests
 
 
 class GoogleProviderConfigurationError(DomainError):
@@ -103,7 +111,7 @@ class FakeGoogleProjectionProvider:
 
 
 class LiveGoogleProjectionProvider:
-    """Real Google Sheets publisher with mandatory structural readback verification."""
+    """Real Google Sheets publisher with mandatory readback + protection proof."""
 
     name = "live"
 
@@ -154,7 +162,44 @@ class LiveGoogleProjectionProvider:
 
         grila_values = render_grila_values(payload, generation=generation)
         pontaj_values = render_pontaj_values(payload, generation=generation)
+        person_ids = _projection_person_ids(grila)
+        metadata = payload.get("metadata")
+        month_id = _required_metadata_text(metadata, "month_id")
+        revision = _required_metadata_int(metadata, "revision")
         try:
+            epay_existing = self._transport.read_values(
+                binding.spreadsheet_id,
+                epay_read_range(binding.sheet_name_grila),
+            )
+            preserved = preserved_epay_values(epay_existing, month_id=month_id)
+            epay_values = render_epay_values(
+                month_id=month_id,
+                revision=revision,
+                person_ids=person_ids,
+                preserved=preserved,
+            )
+            control_state = self._transport.read_control_state(binding.spreadsheet_id)
+            protection_requests = build_protection_requests(
+                control_state,
+                grila_tab=binding.sheet_name_grila,
+                pontaj_tab=binding.sheet_name_pontaj,
+                person_count=len(person_ids),
+                editor_email=self._transport.managed_editor_email,
+            )
+            if protection_requests:
+                self._transport.batch_update_spreadsheet(
+                    binding.spreadsheet_id,
+                    protection_requests,
+                )
+            attested_state = self._transport.read_control_state(binding.spreadsheet_id)
+            attest_protection_state(
+                attested_state,
+                grila_tab=binding.sheet_name_grila,
+                pontaj_tab=binding.sheet_name_pontaj,
+                person_count=len(person_ids),
+                editor_email=self._transport.managed_editor_email,
+            )
+
             grila_existing_rows = self._transport.existing_row_count(
                 binding.spreadsheet_id,
                 f"{_quote_sheet(binding.sheet_name_grila)}!A:E",
@@ -165,6 +210,11 @@ class LiveGoogleProjectionProvider:
             )
             grila_write = _pad_rows(grila_values, width=5, existing_rows=grila_existing_rows)
             pontaj_write = _pad_rows(pontaj_values, width=7, existing_rows=pontaj_existing_rows)
+            epay_write = _pad_rows(
+                epay_values,
+                width=3,
+                existing_rows=max(len(epay_existing), 4),
+            )
             self._transport.batch_update_values(
                 binding.spreadsheet_id,
                 [
@@ -184,6 +234,14 @@ class LiveGoogleProjectionProvider:
                         "majorDimension": "ROWS",
                         "values": pontaj_write,
                     },
+                    {
+                        "range": (
+                            f"{_quote_sheet(binding.sheet_name_grila)}!G1:"
+                            f"I{len(epay_write)}"
+                        ),
+                        "majorDimension": "ROWS",
+                        "values": epay_write,
+                    },
                 ],
             )
             grila_readback = self._transport.read_values(
@@ -200,6 +258,10 @@ class LiveGoogleProjectionProvider:
                     f"G{len(pontaj_write)}"
                 ),
             )
+            epay_readback = self._transport.read_values(
+                binding.spreadsheet_id,
+                epay_write_range(binding.sheet_name_grila, len(epay_write) - 4),
+            )
             _require_reconciled_matrix(
                 sheet="Grila",
                 expected=grila_write,
@@ -212,6 +274,20 @@ class LiveGoogleProjectionProvider:
                 actual=pontaj_readback,
                 width=7,
             )
+            epay_structure = parse_epay_readback(
+                epay_readback,
+                month_id=month_id,
+                revision=revision,
+                expected_person_ids=person_ids,
+            )
+            if not epay_structure.structure_valid:
+                raise GoogleRetryableTransportError(
+                    "Google E-pay input block readback did not match its managed identity",
+                    details={
+                        "code": "GOOGLE_EPAY_LAYOUT_MISMATCH",
+                        "errors": list(epay_structure.structural_errors),
+                    },
+                )
             reconciliation = reconciliation_metadata(
                 payload,
                 generation=generation,
@@ -220,20 +296,20 @@ class LiveGoogleProjectionProvider:
                 grila_values=grila_readback[: len(grila_values)],
                 pontaj_values=pontaj_readback[: len(pontaj_values)],
             )
-        except DomainError as exc:
+        except (DomainError, ValueError) as exc:
+            error = _normalize_live_error(exc)
             _record_live_failure(
                 session,
                 tenant_id=tenant_id,
                 store_id=store_id,
                 generation=generation,
                 payload=payload,
-                exc=exc,
+                exc=error,
             )
-            raise
+            raise error from exc if error is not exc else None
 
         binding.generation = generation
         binding.updated_at = datetime.now(tz=UTC)
-        metadata = payload.get("metadata")
         persisted_payload = {
             "metadata": dict(metadata) if isinstance(metadata, Mapping) else {},
             "grila": dict(grila),
@@ -263,6 +339,39 @@ class LiveGoogleProjectionProvider:
         )
 
 
+def build_google_live_transport(
+    settings: Settings | None = None,
+    *,
+    require_mutations: bool = False,
+) -> GoogleSheetsTransport:
+    """Build live transport behind explicit provider/credential gates."""
+
+    resolved = settings or get_settings()
+    if resolved.google_provider != "live":
+        raise GoogleProviderConfigurationError(
+            "live Google provider is not selected",
+            details={"code": "GOOGLE_LIVE_PROVIDER_REQUIRED"},
+        )
+    if require_mutations and not resolved.google_live_mutations_enabled:
+        raise GoogleProviderConfigurationError(
+            "live Google mutations are disabled",
+            details={"code": "GOOGLE_LIVE_MUTATIONS_DISABLED"},
+        )
+    credentials_file = resolved.google_credentials_file
+    if not credentials_file:
+        raise GoogleProviderConfigurationError(
+            "live Google provider requires an external credentials file",
+            details={"code": "GOOGLE_CREDENTIALS_FILE_REQUIRED"},
+        )
+    credentials_path = Path(credentials_file).expanduser()
+    if not credentials_path.is_file():
+        raise GoogleProviderConfigurationError(
+            "configured Google credentials file is not available",
+            details={"code": "GOOGLE_CREDENTIALS_FILE_UNAVAILABLE"},
+        )
+    return GoogleSheetsApiTransport.from_service_account_file(str(credentials_path))
+
+
 def build_google_projection_provider(
     settings: Settings | None = None,
     *,
@@ -273,31 +382,60 @@ def build_google_projection_provider(
     resolved = settings or get_settings()
     if resolved.google_provider == "fake":
         return FakeGoogleProjectionProvider()
-
+    transport = live_transport or build_google_live_transport(
+        resolved,
+        require_mutations=True,
+    )
     if not resolved.google_live_mutations_enabled:
         raise GoogleProviderConfigurationError(
             "live Google mutations are disabled",
             details={"code": "GOOGLE_LIVE_MUTATIONS_DISABLED"},
         )
-
-    credentials_file = resolved.google_credentials_file
-    if not credentials_file:
-        raise GoogleProviderConfigurationError(
-            "live Google provider requires an external credentials file",
-            details={"code": "GOOGLE_CREDENTIALS_FILE_REQUIRED"},
-        )
-
-    credentials_path = Path(credentials_file).expanduser()
-    if not credentials_path.is_file():
-        raise GoogleProviderConfigurationError(
-            "configured Google credentials file is not available",
-            details={"code": "GOOGLE_CREDENTIALS_FILE_UNAVAILABLE"},
-        )
-
-    transport = live_transport or GoogleSheetsApiTransport.from_service_account_file(
-        str(credentials_path)
-    )
     return LiveGoogleProjectionProvider(transport)
+
+
+def _projection_person_ids(grila: Mapping[str, Any]) -> list[str]:
+    rows = grila.get("rows")
+    if not isinstance(rows, list):
+        return []
+    person_ids = {
+        str(row.get("person_id"))
+        for row in rows
+        if isinstance(row, Mapping)
+        and row.get("status") == "WORKING"
+        and isinstance(row.get("person_id"), str)
+        and row.get("person_id")
+    }
+    return sorted(person_ids)
+
+
+def _required_metadata_text(metadata: Any, key: str) -> str:
+    value = metadata.get(key) if isinstance(metadata, Mapping) else None
+    if not isinstance(value, str) or not value:
+        raise GoogleProviderConfigurationError(
+            "projection metadata is incomplete",
+            details={"code": "GOOGLE_PROJECTION_METADATA_INVALID", "field": key},
+        )
+    return value
+
+
+def _required_metadata_int(metadata: Any, key: str) -> int:
+    value = metadata.get(key) if isinstance(metadata, Mapping) else None
+    if type(value) is not int:
+        raise GoogleProviderConfigurationError(
+            "projection metadata is incomplete",
+            details={"code": "GOOGLE_PROJECTION_METADATA_INVALID", "field": key},
+        )
+    return value
+
+
+def _normalize_live_error(exc: DomainError | ValueError) -> DomainError:
+    if isinstance(exc, DomainError):
+        return exc
+    return GoogleProviderConfigurationError(
+        "Google Sheet E-pay layout exceeds its bounded contract",
+        details={"code": "GOOGLE_EPAY_LAYOUT_LIMIT"},
+    )
 
 
 def _binding_identity(binding: SheetBinding) -> tuple[str, str, str]:
@@ -445,5 +583,6 @@ __all__ = [
     "GoogleProjectionProvider",
     "GoogleProviderConfigurationError",
     "LiveGoogleProjectionProvider",
+    "build_google_live_transport",
     "build_google_projection_provider",
 ]
