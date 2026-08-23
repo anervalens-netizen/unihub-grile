@@ -53,6 +53,7 @@ def _projection_payload(month: Month, faker_tenant) -> dict[str, object]:
         "month": month.month,
         "month_revision": month.revision,
         "revision": month.revision,
+        "projected_at": "2026-08-23T12:00:00+00:00",
         "binding_spreadsheet_id": fake_spreadsheet_id(
             faker_tenant["tenant_id"], faker_tenant["store_id"]
         ),

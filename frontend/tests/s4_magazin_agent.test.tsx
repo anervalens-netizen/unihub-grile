@@ -12,6 +12,7 @@ const person = { id: "person_a", tenant_id: "tenant_acme", internal_code: "PA", 
 const ADMIN_CAPABILITIES = new Set<Capability>(["schedule.read", "schedule.write", "grid.read", "epay.read", "sheet.read", "sheet.sync", "export.create", "jobs.read"]);
 const MANAGER_CAPABILITIES = new Set<Capability>(["schedule.read", "schedule.write", "grid.read", "epay.read", "sheet.read", "jobs.read"]);
 const JOB_DIAGNOSTICS_PATH = "/worker/jobs/diagnostics?terminal_limit=50";
+const PROJECTION_CHECKSUM = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 function makeGrid(revision = 2) {
   return { month_id: MONTH.id, year: 2026, month: 8, revision, dates: ["2026-08-01"], legend: ["NORMAL"], rows: [{ row_id: "person_a", label: "Alice", home_store_id: "store_x", cells: [{ business_date: "2026-08-01", person_id: "person_a", store_id: "store_x", status: "WORKING", working_kind: "NORMAL", display_name: "Alice", home_store_id: "store_x", badge: "NORMAL", locked: false }] }] };
@@ -80,6 +81,7 @@ function apiForPage({ programRevisions = [2], postFailures = [], jobsFailure = f
     if (path.includes("/attribution")) return { month_id: MONTH.id, revision: 2, total_rows: 1, company_total: "125.50", rows: [{ person_id: "person_a", store_id: "store_x", business_date: "2026-08-01", amount: "125.50", currency: "RON", generation: "g1", working_kind: "NORMAL", revision: 2 }], anomalies: [{ code: "ATTRIBUTION_WARNING", store_id: "store_x" }] };
     if (path.includes("/grid")) return [{ id: 1, tenant_id: "tenant_acme", month_id: MONTH.id, store_id: "store_x", person_id: "person_a", rule_pack_version: "v1", revision: 2, inputs_hash: "in", outputs_hash: "out", payload: gridPayload }];
     if (path.includes("/epay/freshness")) return { store_id: "store_x", is_fresh: true, fresh_count: 2, expected_count: 2, threshold: "2026-08-01" };
+    if (path.includes("/sheet-reconciliation")) return { store_id: "store_x", month_id: MONTH.id, available: true, generation: "g1", format_version: "v2", revision: 2, rule_pack_version: "v1", projected_at: "2026-08-23T12:00:00+00:00", verification_mode: "live_readback", verified: true, grila_rows: 1, pontaj_rows: 1, grila_checksum_sha256: "a".repeat(64), pontaj_checksum_sha256: "b".repeat(64), projection_checksum_sha256: PROJECTION_CHECKSUM };
     if (path.includes("/sheet-projection")) return { store_id: "store_x", generation: "g1", last_success_generation: "g1", last_run_at: null, last_error: null, failures: 0, payload: null };
     throw new Error(`unexpected GET ${path}`);
   }) } as unknown as ApiClient;
@@ -95,6 +97,10 @@ describe("Magazin and Agent contract routes", () => {
     expect(screen.getByText("g1")).toBeInTheDocument();
     expect(screen.getByText("Deschisă · rev. 2")).toBeInTheDocument();
     expect(screen.getByText("1 grilă · 1 atribuire")).toBeInTheDocument();
+    expect(screen.getByText("Verificat")).toHaveClass("text-ok");
+    expect(screen.getByText("rev. 2 · v1")).toBeInTheDocument();
+    expect(screen.getByText("v2 · 0123456789ab")).toBeInTheDocument();
+    expect(screen.getByText("2026-08-23T12:00:00+00:00")).toBeInTheDocument();
     expect(await screen.findByText(/Export XLSX #71/)).toBeInTheDocument();
     expect(screen.getByText(/Sheet #72/)).toBeInTheDocument();
     expect(screen.getByText(/Finalizat · 1\/3/)).toHaveClass("text-ok");
@@ -121,6 +127,7 @@ describe("Magazin and Agent contract routes", () => {
     });
     await waitFor(() => expect(calls.filter((path) => path === JOB_DIAGNOSTICS_PATH)).toHaveLength(initialDiagnosticsReads + 2));
     expect(calls).toContain("/catalog/people?store_id=store_x");
+    expect(calls).toContain(`/months/${MONTH.id}/sheet-reconciliation?store_id=store_x`);
     expect(calls.some((path) => path.includes("store_id=store_x"))).toBe(true);
     expect(calls.some((path) => path.includes("/store/"))).toBe(false);
     expect((api.post as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([`/months/${MONTH.id}/sheet-projection/enqueue`, { store_id: "store_x" }]);

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
@@ -277,17 +278,28 @@ def get_sheet_projection(
             session,
             tenant_id=principal.tenant_id,
             store_id=store_id,
+            month_id=month.id,
         )
     except GoogleAdapterError as exc:
         raise HTTPException(
             status_code=exc.http_status,
             detail={"code": exc.code, "message": exc.message, "details": exc.details},
         ) from exc
-    last_run = google_last_run_at(session, tenant_id=principal.tenant_id, store_id=store_id)
-    last_error = google_last_error(session, tenant_id=principal.tenant_id, store_id=store_id)
+    last_run = google_last_run_at(
+        session,
+        tenant_id=principal.tenant_id,
+        store_id=store_id,
+        month_id=month.id,
+    )
+    last_error = google_last_error(
+        session,
+        tenant_id=principal.tenant_id,
+        store_id=store_id,
+        month_id=month.id,
+    )
     failures_value = 0
     if projection is not None:
-        run = (
+        runs = (
             session.query(SheetProjectionRun)
             .filter_by(
                 tenant_id=principal.tenant_id,
@@ -295,10 +307,16 @@ def get_sheet_projection(
                 generation=projection.generation,
             )
             .order_by(SheetProjectionRun.id.desc())
-            .first()
         )
-        if run is not None:
-            failures_value = int(run.failures or 0)
+        for run in runs:
+            try:
+                persisted = json.loads(run.payload or "{}")
+            except json.JSONDecodeError:
+                continue
+            metadata = persisted.get("metadata") if isinstance(persisted, dict) else None
+            if isinstance(metadata, dict) and metadata.get("month_id") == month.id:
+                failures_value = int(run.failures or 0)
+                break
     response_payload: SheetProjectionPayloadOut | None = None
     if projection is not None:
         response_payload = SheetProjectionPayloadOut(
@@ -360,6 +378,7 @@ def post_sheet_projection_enqueue(
         "binding_spreadsheet_id": binding_identity[0],
         "binding_sheet_name_grila": binding_identity[1],
         "binding_sheet_name_pontaj": binding_identity[2],
+        "projected_at": datetime.now(tz=UTC).isoformat(),
         "enqueued_by": principal.user_id,
     }
     existing = _existing_projection_job(

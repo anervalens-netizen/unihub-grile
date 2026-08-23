@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -20,7 +21,9 @@ from ugrile.repositories.models import SheetBinding, SheetProjectionRun
 class RecordingTransport:
     def __init__(self) -> None:
         self.reads: list[tuple[str, str]] = []
+        self.readbacks: list[tuple[str, str]] = []
         self.writes: list[tuple[str, Sequence[Mapping[str, Any]]]] = []
+        self._written: dict[str, list[list[Any]]] = {}
 
     def existing_row_count(self, spreadsheet_id: str, range_a1: str) -> int:
         self.reads.append((spreadsheet_id, range_a1))
@@ -32,7 +35,19 @@ class RecordingTransport:
         data: Sequence[Mapping[str, Any]],
     ) -> Mapping[str, Any]:
         self.writes.append((spreadsheet_id, data))
+        for item in data:
+            key = "Grila" if "Grila" in str(item["range"]) else "Pontaj"
+            raw_values = item["values"]
+            assert isinstance(raw_values, list)
+            self._written[key] = [list(row) for row in raw_values]
         return {"spreadsheetId": spreadsheet_id}
+
+    def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
+        self.readbacks.append((spreadsheet_id, range_a1))
+        key = "Grila" if "Grila" in range_a1 else "Pontaj"
+        match = re.search(r"(\d+)$", range_a1)
+        assert match is not None
+        return [list(row) for row in self._written[key][: int(match.group(1))]]
 
 
 def _payload() -> dict[str, Any]:
@@ -78,6 +93,7 @@ def test_live_provider_rejects_rebound_sheet_before_any_provider_io(session, fak
 
     assert excinfo.value.details["code"] == "GOOGLE_SHEET_BINDING_STALE"
     assert transport.reads == []
+    assert transport.readbacks == []
     assert transport.writes == []
     assert session.query(SheetProjectionRun).count() == 0
 
@@ -104,6 +120,7 @@ def test_live_provider_rejects_tab_only_rebind_before_any_provider_io(session, f
 
     assert excinfo.value.details["code"] == "GOOGLE_SHEET_BINDING_STALE"
     assert transport.reads == []
+    assert transport.readbacks == []
     assert transport.writes == []
 
 
@@ -124,9 +141,14 @@ def test_live_provider_accepts_exact_binding_pin(session, faker_tenant) -> None:
     )
 
     assert projection.generation == "LIVE_V1"
+    assert projection.reconciliation["verified"] is True
     assert transport.reads == [
         ("sheet-original", "'Grila'!A:E"),
         ("sheet-original", "'Pontaj'!A:G"),
+    ]
+    assert transport.readbacks == [
+        ("sheet-original", "'Grila'!A1:E15"),
+        ("sheet-original", "'Pontaj'!A1:G11"),
     ]
     assert len(transport.writes) == 1
     assert transport.writes[0][0] == "sheet-original"
