@@ -31,6 +31,8 @@ def _bind(client, store_id: str, spreadsheet_id: str, *, expected: str | None = 
     }
     if expected is not None:
         body["expected_current_spreadsheet_id"] = expected
+        body["expected_current_sheet_name_grila"] = "Grila"
+        body["expected_current_sheet_name_pontaj"] = "Pontaj"
         body["reason"] = "replace workbook"
     response = client.put(f"/sheet-bindings/{store_id}", headers=ADMIN, json=body)
     assert response.status_code == 200, response.text
