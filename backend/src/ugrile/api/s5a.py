@@ -3,13 +3,14 @@
 All store-facing operations pass through the central capability/resource-scope
 boundary. Tenant equality alone is not sufficient authorization.
 
-Sheet projection enqueue is revision-bound and idempotent. Replays of the same
-logical projection return the existing durable job, while reuse of a key for a
-different month/store/revision fails closed.
+Sheet projection enqueue is revision-bound, binding-bound and idempotent.
+Replays of the same logical projection return the existing durable job, while
+reuse of a key for a different month/store/revision/binding fails closed.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,9 +28,14 @@ from ..api.schemas import (
     SheetProjectionOut,
     SheetProjectionPayloadOut,
 )
-from ..connectors.google import GoogleAdapterError, read_store_projection
+from ..connectors.google import (
+    GoogleAdapterError,
+    fake_spreadsheet_id,
+    read_store_projection,
+)
 from ..connectors.google import last_error as google_last_error
 from ..connectors.google import last_run_at as google_last_run_at
+from ..core.config import get_settings
 from ..domain.enums import JobKind
 from ..domain.errors import ConflictError, DomainError
 from ..repositories.models import Month, OutboxJob, SheetProjectionRun
@@ -38,6 +44,7 @@ from ..services.auth import Principal, assert_same_tenant
 from ..services.authorization import Capability, authorize, authorize_store_for_month
 from ..services.epay import freshness_for_month, record_readback
 from ..services.month_write_gate import lock_month_for_financial_write
+from ..services.sheet_bindings import get_sheet_binding
 from ..services.snapshot_revision import calendar_data_revision
 from ..worker.worker import enqueue
 
@@ -76,6 +83,9 @@ def _projection_semantic_payload(payload: dict[str, object]) -> dict[str, object
             "month",
             "month_revision",
             "revision",
+            "binding_spreadsheet_id",
+            "binding_sheet_name_grila",
+            "binding_sheet_name_pontaj",
         )
     }
 
@@ -110,6 +120,57 @@ def _existing_projection_job(
     return row
 
 
+def _projection_binding_identity(
+    session: Session,
+    *,
+    tenant_id: str,
+    store_id: str,
+) -> tuple[str, str, str]:
+    """Resolve the complete Sheet identity to pin into a durable projection job."""
+
+    binding = get_sheet_binding(
+        session,
+        tenant_id=tenant_id,
+        store_id=store_id,
+    )
+    if binding is not None:
+        return (
+            binding.spreadsheet_id,
+            binding.sheet_name_grila,
+            binding.sheet_name_pontaj,
+        )
+    if get_settings().google_provider == "fake":
+        return (fake_spreadsheet_id(tenant_id, store_id), "Grila", "Pontaj")
+    raise ConflictError(
+        "live Google projection requires an explicit store Sheet binding",
+        details={"code": "SHEET_BINDING_REQUIRED", "store_id": store_id},
+    )
+
+
+def _default_projection_idempotency_key(
+    *,
+    month_id: str,
+    store_id: str,
+    month_revision: int,
+    data_revision: int,
+    binding_identity: tuple[str, str, str],
+) -> str:
+    material = "\0".join(
+        (
+            month_id,
+            store_id,
+            str(month_revision),
+            str(data_revision),
+            *binding_identity,
+        )
+    ).encode()
+    digest = hashlib.sha256(material).hexdigest()[:32]
+    return (
+        f"{JobKind.GOOGLE_PROJECTION_STORE.value}:{digest}:"
+        f"m{month_revision}:d{data_revision}"
+    )
+
+
 @router.post("/{month_id}/epay/readback", response_model=EpayReadbackOut)
 def post_epay_readback(
     month_id: str,
@@ -117,12 +178,7 @@ def post_epay_readback(
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> EpayReadbackOut:
-    """Persist E-pay close input only while the month is writable.
-
-    Capability is checked before acquiring a database lock. The month row is
-    then locked before resource-scope validation and snapshot persistence, so
-    close/reopen and E-pay acceptance serialize on the same financial period.
-    """
+    """Persist E-pay close input only while the month is writable."""
 
     authorize(principal, Capability.EPAY_WRITE)
     month = lock_month_for_financial_write(
@@ -243,9 +299,9 @@ def get_sheet_projection(
         )
         if run is not None:
             failures_value = int(run.failures or 0)
-    payload: SheetProjectionPayloadOut | None = None
+    response_payload: SheetProjectionPayloadOut | None = None
     if projection is not None:
-        payload = SheetProjectionPayloadOut(
+        response_payload = SheetProjectionPayloadOut(
             grila=dict(projection.grila),
             pontaj=dict(projection.pontaj),
         )
@@ -257,7 +313,7 @@ def get_sheet_projection(
         last_run_at=last_run.isoformat() if last_run else None,
         last_error=last_error,
         failures=failures_value,
-        payload=payload,
+        payload=response_payload,
     )
 
 
@@ -282,9 +338,17 @@ def post_sheet_projection_enqueue(
         month_id=month.id,
         fallback_revision=month.revision,
     )
-    idempotency_key = payload.idempotency_key or (
-        f"{JobKind.GOOGLE_PROJECTION_STORE.value}:{month.id}:{payload.store_id}:"
-        f"m{month.revision}:d{data_revision}"
+    binding_identity = _projection_binding_identity(
+        session,
+        tenant_id=principal.tenant_id,
+        store_id=payload.store_id,
+    )
+    idempotency_key = payload.idempotency_key or _default_projection_idempotency_key(
+        month_id=month.id,
+        store_id=payload.store_id,
+        month_revision=month.revision,
+        data_revision=data_revision,
+        binding_identity=binding_identity,
     )
     job_payload: dict[str, object] = {
         "month_id": month.id,
@@ -293,6 +357,9 @@ def post_sheet_projection_enqueue(
         "month": month.month,
         "month_revision": month.revision,
         "revision": data_revision,
+        "binding_spreadsheet_id": binding_identity[0],
+        "binding_sheet_name_grila": binding_identity[1],
+        "binding_sheet_name_pontaj": binding_identity[2],
         "enqueued_by": principal.user_id,
     }
     existing = _existing_projection_job(

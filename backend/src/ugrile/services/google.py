@@ -12,11 +12,13 @@ Projection contract
 * Input: a ``month_id`` + ``store_id`` pair plus the calendar revision.
 * The service materialises the Grila + Pontaj lattice for the store from
   canonical tables and hands the deterministic dict to the configured provider.
+* The durable job may pin the complete Sheet binding identity observed at
+  enqueue; the provider must reject a later mismatch before publication.
+* Calls without a binding pin retain the pre-GS-003 provider-seam shape; the
+  durable worker always supplies the pin.
 * The provider returns the accepted ``StoreProjection`` value object.
 * Fake-provider failure injection (``UGR_S5_GOOGLE_FAIL=1``) preserves the
   existing last-good projection semantics.
-* Live provider selection fails closed until the explicit live transport is
-  implemented and separately authorized.
 
 Tenant safety
 -------------
@@ -177,6 +179,9 @@ class GoogleProjectionService:
         month: int,
         revision: int,
         generation: str | None = None,
+        expected_spreadsheet_id: str | None = None,
+        expected_sheet_name_grila: str | None = None,
+        expected_sheet_name_pontaj: str | None = None,
     ) -> ProjectionOutcome:
         """Build and publish the projection for one store/month."""
 
@@ -188,8 +193,6 @@ class GoogleProjectionService:
                 "store not found for projection",
                 details={"tenant_id": tenant_id, "store_id": store_id},
             )
-        # Read-only target lookup so the payload carries the target
-        # fingerprint even when the calendar has no WORKING rows yet.
         target = _latest_store_target(
             self.session,
             tenant_id=tenant_id,
@@ -206,9 +209,6 @@ class GoogleProjectionService:
             revision=revision,
             generation=gen,
         )
-        # Embed the target fingerprint in the structural payload so
-        # structural readback can prove the projection respects the
-        # versioned target input.
         payload_dict: dict[str, Any] = {
             "grila": {
                 **payload.grila,
@@ -222,13 +222,29 @@ class GoogleProjectionService:
             },
             "pontaj": dict(payload.pontaj),
         }
-        projection = self.provider.write_store_projection(
-            self.session,
-            tenant_id=tenant_id,
-            store_id=store_id,
-            generation=gen,
-            payload=payload_dict,
-        )
+        if (
+            expected_spreadsheet_id is None
+            and expected_sheet_name_grila is None
+            and expected_sheet_name_pontaj is None
+        ):
+            projection = self.provider.write_store_projection(
+                self.session,
+                tenant_id=tenant_id,
+                store_id=store_id,
+                generation=gen,
+                payload=payload_dict,
+            )
+        else:
+            projection = self.provider.write_store_projection(
+                self.session,
+                tenant_id=tenant_id,
+                store_id=store_id,
+                generation=gen,
+                payload=payload_dict,
+                expected_spreadsheet_id=expected_spreadsheet_id,
+                expected_sheet_name_grila=expected_sheet_name_grila,
+                expected_sheet_name_pontaj=expected_sheet_name_pontaj,
+            )
         return ProjectionOutcome(
             store_id=store_id,
             generation=gen,

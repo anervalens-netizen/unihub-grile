@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..core.config import Settings, get_settings
 from ..domain.errors import DomainError
-from ..repositories.models import SheetProjectionRun
+from ..repositories.models import SheetBinding, SheetProjectionRun
 from . import google as fake_google
 from .google import StoreProjection
 from .google_live import (
@@ -38,6 +38,9 @@ class GoogleProjectionProvider(Protocol):
         store_id: str,
         generation: str,
         payload: Mapping[str, Any],
+        expected_spreadsheet_id: str | None = None,
+        expected_sheet_name_grila: str | None = None,
+        expected_sheet_name_pontaj: str | None = None,
     ) -> StoreProjection:
         """Publish one store projection and return the accepted projection."""
         ...
@@ -56,13 +59,39 @@ class FakeGoogleProjectionProvider:
         store_id: str,
         generation: str,
         payload: Mapping[str, Any],
+        expected_spreadsheet_id: str | None = None,
+        expected_sheet_name_grila: str | None = None,
+        expected_sheet_name_pontaj: str | None = None,
     ) -> StoreProjection:
+        expected = _expected_binding_identity(
+            store_id=store_id,
+            spreadsheet_id=expected_spreadsheet_id,
+            sheet_name_grila=expected_sheet_name_grila,
+            sheet_name_pontaj=expected_sheet_name_pontaj,
+        )
+        binding = fake_google.binding_for(
+            session,
+            tenant_id=tenant_id,
+            store_id=store_id,
+        )
+        if expected is not None:
+            if binding is None:
+                deterministic = (
+                    fake_google.fake_spreadsheet_id(tenant_id, store_id),
+                    "Grila",
+                    "Pontaj",
+                )
+                if expected != deterministic:
+                    raise _stale_binding_error(store_id)
+            elif _binding_identity(binding) != expected:
+                raise _stale_binding_error(store_id)
         return fake_google.write_store_projection(
             session,
             tenant_id=tenant_id,
             store_id=store_id,
             generation=generation,
             payload=payload,
+            spreadsheet_id=expected[0] if expected is not None else None,
         )
 
 
@@ -82,6 +111,9 @@ class LiveGoogleProjectionProvider:
         store_id: str,
         generation: str,
         payload: Mapping[str, Any],
+        expected_spreadsheet_id: str | None = None,
+        expected_sheet_name_grila: str | None = None,
+        expected_sheet_name_pontaj: str | None = None,
     ) -> StoreProjection:
         grila, pontaj = _validate_live_payload(
             tenant_id=tenant_id,
@@ -104,6 +136,14 @@ class LiveGoogleProjectionProvider:
                 "store Sheet binding is missing required tab names",
                 details={"code": "GOOGLE_SHEET_TAB_BINDING_INVALID", "store_id": store_id},
             )
+        expected = _expected_binding_identity(
+            store_id=store_id,
+            spreadsheet_id=expected_spreadsheet_id,
+            sheet_name_grila=expected_sheet_name_grila,
+            sheet_name_pontaj=expected_sheet_name_pontaj,
+        )
+        if expected is not None and _binding_identity(binding) != expected:
+            raise _stale_binding_error(store_id)
 
         grila_values = _grila_values(grila, generation=generation)
         pontaj_values = _pontaj_values(pontaj, generation=generation)
@@ -209,6 +249,39 @@ def build_google_projection_provider(
         str(credentials_path)
     )
     return LiveGoogleProjectionProvider(transport)
+
+
+def _binding_identity(binding: SheetBinding) -> tuple[str, str, str]:
+    return (
+        binding.spreadsheet_id,
+        binding.sheet_name_grila,
+        binding.sheet_name_pontaj,
+    )
+
+
+def _expected_binding_identity(
+    *,
+    store_id: str,
+    spreadsheet_id: str | None,
+    sheet_name_grila: str | None,
+    sheet_name_pontaj: str | None,
+) -> tuple[str, str, str] | None:
+    values = (spreadsheet_id, sheet_name_grila, sheet_name_pontaj)
+    if values == (None, None, None):
+        return None
+    if any(not isinstance(value, str) or not value for value in values):
+        raise GoogleProviderConfigurationError(
+            "projection Sheet binding pin is incomplete",
+            details={"code": "GOOGLE_SHEET_BINDING_PIN_INVALID", "store_id": store_id},
+        )
+    return (str(spreadsheet_id), str(sheet_name_grila), str(sheet_name_pontaj))
+
+
+def _stale_binding_error(store_id: str) -> GoogleProviderConfigurationError:
+    return GoogleProviderConfigurationError(
+        "projection Sheet binding changed after the job was enqueued",
+        details={"code": "GOOGLE_SHEET_BINDING_STALE", "store_id": store_id},
+    )
 
 
 def _validate_live_payload(

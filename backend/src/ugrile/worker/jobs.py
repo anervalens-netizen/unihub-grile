@@ -21,12 +21,12 @@ Revision-bound side effects
 ---------------------------
 
 Exports and Sheet projections pin both ``month_revision`` and the
-calendar-derived data revision when they are enqueued. The worker locks the
-in-tenant Month row and revalidates both identities before any side effect.
-That lock remains held for the handler transaction, so calendar edits,
-close/reopen, rendering and projection publication cannot interleave into a
-mixed snapshot. Obsolete jobs fail terminally instead of silently rendering a
-newer revision.
+calendar-derived data revision when they are enqueued. Sheet projection jobs
+also pin the complete store↔Sheet identity (spreadsheet + Grila/Pontaj tabs).
+The worker locks the in-tenant Month row and revalidates the revisions before
+any side effect; the provider revalidates the binding pin before publication.
+Obsolete jobs fail terminally instead of silently rendering a newer snapshot
+or being redirected by a later rebind.
 """
 
 from __future__ import annotations
@@ -114,14 +114,7 @@ def _build_payload_for_tenant(tenant_id: str) -> Any:
 
 
 def _job_fixture_ingest(session: Session, tenant_id: str, payload: dict[str, Any]) -> JobResult:
-    """Apply the canonical fixture, scoped to the job's tenant.
-
-    The previous attempt always applied the canonical ``tenant_fixture``
-    payload, which silently overrode the caller-supplied tenant. The job row
-    carries the tenant id in its ``tenant_id`` column AND may carry an
-    explicit ``tenant_token`` override in the payload; the handler honours
-    both.
-    """
+    """Apply the canonical fixture, scoped to the job's tenant."""
 
     override = payload.get("tenant_token")
     target_tenant_id = make_tenant_id(str(override)) if override else tenant_id
@@ -172,12 +165,7 @@ def _job_export_scaffold(
     kind: JobKind,
     label: str,
 ) -> JobResult:
-    """Persist a typed ``ImportRun``/``ExportRun`` stub and return progress.
-
-    The S5 adapter will replace this body with the actual writer; the
-    S4 contract requires that enqueue/list/deduplication/SKIP LOCKED work
-    end-to-end on the seeded fixture before the adapter lands.
-    """
+    """Persist a typed ``ImportRun``/``ExportRun`` stub and return progress."""
 
     summary = {
         "tenant_id": tenant_id,
@@ -235,11 +223,7 @@ def _resolve_export_run_id(
     *,
     kind: JobKind,
 ) -> int:
-    """Read the pre-created ``export_run_id`` from the job payload.
-
-    The API enqueue path always sets this; missing here means a stale or
-    hand-crafted job that bypassed the contract.
-    """
+    """Read the pre-created ``export_run_id`` from the job payload."""
 
     raw = payload.get("export_run_id")
     if not isinstance(raw, int) or raw <= 0:
@@ -258,12 +242,7 @@ def _mark_export_run_failed(
     tenant_id: str,
     exc: BaseException,
 ) -> None:
-    """Best-effort transition of the ExportRun to FAILED.
-
-    The error string is intentionally compact — the worker also writes
-    a more detailed reason on the OutboxJob row, which remains the
-    authoritative job log.
-    """
+    """Best-effort transition of the ExportRun to FAILED."""
 
     from ..services.xlsx_export import finalize_export_run
 
@@ -301,6 +280,16 @@ def _required_revision(payload: dict[str, Any], key: str) -> int:
                 "revision_key": key,
                 "value": value,
             },
+        )
+    return value
+
+
+def _required_string(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise DomainError(
+            "job is missing required string metadata",
+            details={"code": "JOB_METADATA_MISSING", "metadata_key": key},
         )
     return value
 
@@ -531,7 +520,7 @@ def _job_export_pontaj_only(session: Session, tenant_id: str, payload: dict[str,
 def _job_google_projection_store(
     session: Session, tenant_id: str, payload: dict[str, Any]
 ) -> JobResult:
-    """Project only the calendar snapshot attested when the job was queued."""
+    """Project only the snapshot and Sheet identity attested at enqueue."""
 
     from ..connectors.google import GoogleAdapterError
     from ..services.google import GoogleProjectionService
@@ -567,6 +556,9 @@ def _job_google_projection_store(
                 "payload_month": month_num,
             },
         )
+    binding_spreadsheet_id = _required_string(payload, "binding_spreadsheet_id")
+    binding_sheet_name_grila = _required_string(payload, "binding_sheet_name_grila")
+    binding_sheet_name_pontaj = _required_string(payload, "binding_sheet_name_pontaj")
     service = GoogleProjectionService(session)
     outcome = service.project_store_for_month(
         tenant_id=tenant_id,
@@ -576,9 +568,10 @@ def _job_google_projection_store(
         month=month_num,
         revision=data_revision,
         generation=payload.get("generation"),
+        expected_spreadsheet_id=binding_spreadsheet_id,
+        expected_sheet_name_grila=binding_sheet_name_grila,
+        expected_sheet_name_pontaj=binding_sheet_name_pontaj,
     )
-    # Re-raise so the worker can mark the row FAILED; the last-good row
-    # is preserved by the adapter.
     try:
         service.session.flush()
     except GoogleAdapterError:

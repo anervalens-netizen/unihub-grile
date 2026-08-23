@@ -611,6 +611,7 @@ class SheetBinding(Base, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "store_id", name="uq_sheet_binding_tenant_store"),
+        UniqueConstraint("spreadsheet_id", name="uq_sheet_binding_spreadsheet_id"),
         ForeignKeyConstraint(
             ["tenant_id", "store_id"],
             ["stores.tenant_id", "stores.id"],
