@@ -1,4 +1,4 @@
-/** Command Center coverage for the manager overview. */
+/** Situație generală coverage for the manager overview. */
 
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -97,6 +97,7 @@ describe("Overview command center", () => {
     const api = makeApi();
     render(<Overview api={api} months={[MONTH]} monthsError={null} />);
     expect(await screen.findByText("2/4")).toBeInTheDocument();
+    expect(screen.getByText("Situație generală — program și grile")).toBeInTheDocument();
     expect(screen.getByText("Persoane")).toBeInTheDocument();
     expect(screen.getByText("6")).toBeInTheDocument();
     expect(screen.getByText("Calendar")).toBeInTheDocument();
@@ -104,8 +105,9 @@ describe("Overview command center", () => {
     expect(screen.getByText("Targeturi")).toBeInTheDocument();
     expect(screen.getByText("E-pay")).toBeInTheDocument();
     expect(screen.getByText("OK")).toBeInTheDocument();
-    expect(screen.getByText("Sync / export")).toBeInTheDocument();
+    expect(screen.getByText("Sincronizare / export")).toBeInTheDocument();
     expect(screen.getByText("1 în lucru")).toBeInTheDocument();
+    expect(screen.getByText("Deschisă · rev. 1")).toBeInTheDocument();
     expect(screen.getByText("60")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Demo Store X/i })).toBeInTheDocument();
     expect(screen.getByText("Magazin fără agent")).toBeInTheDocument();
@@ -114,11 +116,11 @@ describe("Overview command center", () => {
     expect(screen.getByText("Alice")).toBeInTheDocument();
   });
 
-  it("keeps the hub usable when the auxiliary people-scope read fails", async () => {
+  it("keeps the hub usable when the auxiliary people-area read fails", async () => {
     const api = makeApi({ failPeopleProgram: true });
     render(<Overview api={api} months={[MONTH]} monthsError={null} />);
     expect(await screen.findByText("2/4")).toBeInTheDocument();
-    expect(screen.getByText("scope indisponibil")).toBeInTheDocument();
+    expect(screen.getByText("arie indisponibilă")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
@@ -147,6 +149,6 @@ describe("Overview command center", () => {
 
   it("renders gracefully when no months are available", () => {
     render(<Overview api={makeApi()} months={[]} monthsError={null} />);
-    expect(screen.getByText(/Nicio lună disponibilă/)).toBeInTheDocument();
+    expect(screen.getByText(/Nu există luni disponibile/)).toBeInTheDocument();
   });
 });
