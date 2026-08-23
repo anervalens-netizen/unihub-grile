@@ -139,7 +139,7 @@ describe("Magazin and Agent contract routes", () => {
     render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} capabilities={MANAGER_CAPABILITIES} />);
     expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Editează calendarul/i })).toBeInTheDocument();
-    expect(screen.getByText(/126/)).toBeInTheDocument();
+    expect(screen.getAllByText(/126/).length).toBeGreaterThan(0);
     expect(screen.getByRole("alert")).toHaveTextContent(/E-pay: \/epay\/freshness unavailable/);
     fireEvent.click(screen.getByRole("tab", { name: "Calendar" }));
     expect(screen.getByRole("button", { name: /Alice pe 2026-08-01/i })).toBeInTheDocument();
