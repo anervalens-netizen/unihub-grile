@@ -1,15 +1,18 @@
 """Runtime configuration loaded from environment with safe defaults.
 
 Standalone development remains deterministic, while production-capable settings
-must make identity and external-provider boundaries explicit.
+must make identity and external-provider boundaries explicit. Unsafe production
+combinations are rejected while settings are constructed, before API/worker
+startup can advertise readiness.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -98,6 +101,48 @@ class Settings(BaseSettings):
         validation_alias="UGRILE_GOOGLE_LIVE_MUTATIONS_ENABLED",
         description="Explicit second gate for live Google mutations.",
     )
+
+    @model_validator(mode="after")
+    def validate_runtime_safety(self) -> Self:
+        """Reject configurations that could falsely look production-safe."""
+
+        credentials = self.google_credentials_file
+        if self.google_live_mutations_enabled:
+            if self.google_provider != "live":
+                raise ValueError(
+                    "live Google mutations require UGRILE_GOOGLE_PROVIDER=live"
+                )
+            if not credentials:
+                raise ValueError(
+                    "live Google mutations require UGRILE_GOOGLE_CREDENTIALS_FILE"
+                )
+
+        if self.google_provider == "live" and credentials:
+            if not Path(credentials).is_absolute():
+                raise ValueError("UGRILE_GOOGLE_CREDENTIALS_FILE must be an absolute path")
+
+        if self.app_env != "prod":
+            return self
+
+        violations: list[str] = []
+        if self.identity_provider == "dev_headers":
+            violations.append("IDENTITY_PROVIDER=dev_headers is forbidden in prod")
+        if not self.database_url.startswith(("postgresql://", "postgresql+psycopg://")):
+            violations.append("prod requires PostgreSQL DATABASE_URL")
+        if "://grile:grile@" in self.database_url:
+            violations.append("development database credentials are forbidden in prod")
+        if self.database_echo:
+            violations.append("DATABASE_ECHO must be false in prod")
+        if self.google_provider != "live":
+            violations.append("UGRILE_GOOGLE_PROVIDER=fake is forbidden in prod")
+        if not credentials:
+            violations.append("prod live Google provider requires a credential file path")
+        elif not Path(credentials).is_absolute():
+            violations.append("prod Google credential file path must be absolute")
+
+        if violations:
+            raise ValueError("unsafe prod configuration: " + "; ".join(violations))
+        return self
 
 
 @lru_cache(maxsize=1)
