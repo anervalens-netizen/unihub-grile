@@ -11,6 +11,8 @@ The contract is explicit:
   ``read_store_projection(store_id)`` so the manager UI / canary readback can
   verify the structural shape of a Grila + Pontaj projection without touching
   any Google API.
+* Successful fake projections persist the same format/checksum reconciliation
+  envelope that the live provider exposes after remote readback verification.
 * Provider failure is simulated via ``UGR_S5_GOOGLE_FAIL=1`` while last-good
   projection state remains readable.
 
@@ -22,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -30,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from ..domain.errors import DomainError
 from ..repositories.models import SheetBinding, SheetProjectionRun
+from .google_projection_format import reconciliation_metadata
 
 
 class GoogleAdapterError(DomainError):
@@ -45,6 +48,7 @@ class StoreProjection:
     grila: Mapping[str, Any]
     pontaj: Mapping[str, Any]
     last_success_generation: str | None
+    reconciliation: Mapping[str, Any] = field(default_factory=dict)
 
 
 def _now_utc() -> datetime:
@@ -243,6 +247,19 @@ def write_store_projection(
         generation=generation,
         spreadsheet_id=resolved_spreadsheet_id,
     )
+    reconciliation = reconciliation_metadata(
+        payload,
+        generation=generation,
+        verification_mode="fake_local",
+        verified=True,
+    )
+    metadata = payload.get("metadata")
+    persisted_payload = {
+        "metadata": dict(metadata) if isinstance(metadata, Mapping) else {},
+        "grila": dict(grila),
+        "pontaj": dict(pontaj),
+        "reconciliation": reconciliation,
+    }
     now = _now_utc()
     run = SheetProjectionRun(
         tenant_id=tenant_id,
@@ -251,12 +268,7 @@ def write_store_projection(
         last_error=None,
         last_success_generation=generation,
         last_run_at=now,
-        payload=_json_dumps(
-            {
-                "grila": dict(grila),
-                "pontaj": dict(pontaj),
-            }
-        ),
+        payload=_json_dumps(persisted_payload),
         generation=generation,
         failures=0,
     )
@@ -267,6 +279,7 @@ def write_store_projection(
         grila=dict(grila),
         pontaj=dict(pontaj),
         last_success_generation=generation,
+        reconciliation=reconciliation,
     )
 
 
@@ -282,12 +295,16 @@ def read_store_projection(
     if row is None or row.last_success_generation is None:
         return None
     payload = _json_loads(row.payload)
+    reconciliation = payload.get("reconciliation")
     return StoreProjection(
         store_id=store_id,
         generation=row.last_success_generation,
         grila=payload.get("grila", {}),
         pontaj=payload.get("pontaj", {}),
         last_success_generation=row.last_success_generation,
+        reconciliation=(
+            dict(reconciliation) if isinstance(reconciliation, Mapping) else {}
+        ),
     )
 
 
