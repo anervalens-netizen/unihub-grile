@@ -26,7 +26,7 @@ def capture_failure(page: Page, name: str) -> None:
 
 def exercise_desktop(page: Page) -> None:
     page.goto(BASE_URL, wait_until="domcontentloaded")
-    expect(page.get_by_role("heading", name="Situație generală — program și grile")).to_be_visible()
+    expect(page.get_by_role("heading", name="Situație generală — program și grile", level=2)).to_be_visible()
     expect(page.get_by_role("table", name="Magazine și stare operațională")).to_be_visible()
     expect(page.get_by_role("button", name="Performance Store 000", exact=True).first).to_be_visible()
     assert_no_request_error(page)
@@ -49,7 +49,7 @@ def exercise_desktop(page: Page) -> None:
     nav(page, "Hub")
     first_store = page.get_by_role("button", name="Performance Store 000", exact=True).first
     first_store.click()
-    expect(page.get_by_role("heading", name="Performance Store 000")).to_be_visible()
+    expect(page.get_by_role("heading", name="Performance Store 000", level=2)).to_be_visible()
     control_tab = page.get_by_role("tab", name="Control")
     expect(control_tab).to_have_attribute("aria-selected", "true")
     control_tab.focus()
@@ -61,16 +61,16 @@ def exercise_desktop(page: Page) -> None:
     assert_no_request_error(page)
 
     nav(page, "Excepții")
-    expect(page.get_by_role("heading", name="Excepții")).to_be_visible()
+    expect(page.get_by_role("heading", name="Excepții", level=2)).to_be_visible()
     assert_no_request_error(page)
 
     nav(page, "Management")
-    expect(page.get_by_role("heading", name="Management lună")).to_be_visible()
+    expect(page.get_by_role("heading", name="Management lună", level=2)).to_be_visible()
     expect(page.get_by_role("region", name="Validări")).to_be_visible()
     assert_no_request_error(page)
 
     nav(page, "Joburi")
-    expect(page.get_by_role("heading", name="Joburi și sincronizări")).to_be_visible()
+    expect(page.get_by_role("heading", name="Joburi și sincronizări", level=2)).to_be_visible()
     assert_no_request_error(page)
 
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -79,7 +79,7 @@ def exercise_desktop(page: Page) -> None:
 
 def exercise_mobile(page: Page) -> None:
     page.goto(BASE_URL, wait_until="domcontentloaded")
-    expect(page.get_by_role("heading", name="Situație generală — program și grile")).to_be_visible()
+    expect(page.get_by_role("heading", name="Situație generală — program și grile", level=2)).to_be_visible()
     expect(page.locator(".app-sidebar")).to_be_visible()
     expect(page.locator("nav.app-nav")).to_be_visible()
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
