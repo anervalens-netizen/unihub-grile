@@ -24,11 +24,7 @@ from ..domain.enums import (
 class HealthReport(BaseModel):
     status: Literal["ok", "degraded", "down"]
     database: bool
-    schema_version: str | None
-    expected_schema_version: str
-    schema_current: bool
-    worker_enabled: bool
-    stale_running_jobs: int | None
+    schema_version: str
     app_version: str
 
 
@@ -123,63 +119,288 @@ class CalendarProjectionOut(BaseModel):
     pontaj_count: int
 
 
-class CloseIn(BaseModel):
-    expected_revision: int
+class SchedulePreviewOut(BaseModel):
+    base_revision: int
+    changes: int
+    errors: list[dict[str, object]]
+    warnings: list[dict[str, object]]
 
 
-class ReopenIn(BaseModel):
-    reason: str = Field(min_length=3, max_length=500)
+class PontajRowOut(BaseModel):
+    person_id: str
+    business_date: date
+    status: DayStatus
+    start_time: time | None
+    end_time: time | None
+    pause_minutes: int
+    hours: Decimal
+
+
+class PontajPersonTotalsOut(BaseModel):
+    person_id: str
+    working_days: int
+    leave_days: int
+    off_days: int
+    total_hours: Decimal
+
+
+class PontajMonthOut(BaseModel):
+    month_id: str
+    revision: int
+    rows: list[PontajRowOut]
+    totals: list[PontajPersonTotalsOut]
+
+
+class ConflictOut(BaseModel):
+    code: str
+    message: str
+    store_id: str | None = None
+    person_id: str | None = None
+    business_date: str | None = None
+    person_ids: list[str] | None = None
+    store_ids: list[str] | None = None
+
+
+class CoverageReport(BaseModel):
+    month_id: str
+    conflicts: list[ConflictOut]
+
+
+class IngestResult(BaseModel):
+    tenant: str
+    generation: str
+    stores: int
+    people: int
+    sales: int
+
+
+class JobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tenant_id: str
+    kind: str
+    status: str
+    idempotency_key: str
+    attempts: int
+    last_error: str | None
+    payload: str
+
+
+class IngestRequest(BaseModel):
+    tenant_token: str = Field(default="fixture", min_length=1, max_length=64)
+    enqueue: bool = Field(
+        default=False,
+        description="When true, the API enqueues a background job instead of running inline.",
+    )
+
+
+class AttributionRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    person_id: str
+    store_id: str
+    business_date: date
+    amount: Decimal
+    currency: str
+    generation: str
+    working_kind: WorkingKind
+    revision: int
+
+
+class AttributionMonthOut(BaseModel):
+    month_id: str
+    revision: int
+    total_rows: int
+    company_total: Decimal
+    rows: list[AttributionRowOut]
+    anomalies: list[dict[str, object]]
+
+
+class SalaryUpsertIn(BaseModel):
+    person_id: str = Field(min_length=1)
+    effective_from: date
+    effective_to: date | None = None
+    salary: Decimal
+    tickets: Decimal
+    flip: Decimal = Decimal("0")
+    source: str = "HR_MASTER"
+    notes: str | None = None
+
+
+class SalaryMasterOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tenant_id: str
+    person_id: str
+    effective_from: date
+    effective_to: date | None
+    salary: Decimal
+    tickets: Decimal
+    flip: Decimal
+    source: str
+    notes: str | None = None
+
+
+class GridCalculationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tenant_id: str
+    month_id: str
+    store_id: str
+    person_id: str
+    rule_pack_version: str
+    revision: int
+    inputs_hash: str
+    outputs_hash: str
+    payload: str
+
+
+class GridComputeOut(BaseModel):
+    month_id: str
+    revision: int
+    rule_pack_version: str
+    snapshots: list[GridCalculationOut]
+
+
+class HolidayMarkerOut(BaseModel):
+    """One versioned Romanian legal holiday marker for a business date.
+
+    ``override_active`` / ``override_reason`` are ``None`` when no admin
+    override exists for the date. Informational only: the marker never
+    changes schedule, Pontaj, target or pay (docs/MOBIUP_RULE_PACK.md §9).
+    """
+
+    version: str
+    business_date: date
+    label: str
+    is_active: bool
+    override_active: bool | None = None
+    override_reason: str | None = None
+
+
+class HolidayCalendarUpsertIn(BaseModel):
+    version: str = Field(min_length=1, max_length=64)
+    business_date: date
+    label: str = Field(min_length=1, max_length=128)
+    is_active: bool = True
+
+
+class HolidayOverrideIn(BaseModel):
+    version: str = Field(min_length=1, max_length=64)
+    business_date: date
+    is_active: bool
+    reason: str = Field(min_length=4, max_length=512)
+
+
+class HolidayMonthOut(BaseModel):
+    month_id: str
+    markers: list[HolidayMarkerOut]
 
 
 class BlockerOut(BaseModel):
-    code: str
-    store_id: str | None = None
-    person_id: str | None = None
-    business_date: date | None = None
+    code: CloseBlockerCode
+    store_id: str | None
+    person_id: str | None
+    business_date: date | None
     message: str
+
+
+class CloseIn(BaseModel):
+    expected_revision: int | None = None
 
 
 class CloseOutcomeOut(BaseModel):
     month_id: str
     revision: int
     new_state: MonthState
-    audit_event_id: int | None
+    audit_event_id: int
     blockers: list[BlockerOut]
+
+
+class ReopenIn(BaseModel):
+    reason: str = Field(min_length=4, max_length=512)
 
 
 class CloseEventOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    tenant_id: str
     month_id: str
-    event_type: str
-    actor_id: str
-    actor_role: str
-    reason: str | None
+    action: str
     previous_state: str
     new_state: str
-    revision: int
-    previous_digest: str | None
+    revision_before: int
+    revision_after: int
+    actor_id: str
+    reason: str | None
+    blockers: str
+    previous_event_digest: str | None
     event_digest: str
-    created_at: str
 
 
-class CalendarCellEditIn(BaseModel):
-    person_id: str
-    business_date: date
-    status: DayStatus
-    store_id: str | None = None
-    working_kind: WorkingKind | None = None
+# ---------------------------------------------------------------------------
+# S4 Manager UI schemas
+# ---------------------------------------------------------------------------
+
+
+class OverviewKpiOut(BaseModel):
+    stores_total: int
+    stores_covered: int
+    days_uncovered: int
+    conflicts: int
+    extra_home_days: int
+    extra_other_days: int
+    sales_unattributed: int
+    epay_invalid: int
+    epay_fresh: bool
+    sheet_sync_total: int
+    sheet_sync_stale: int
+    sheet_sync_error: int
+
+
+class OverviewManagerRowOut(BaseModel):
+    user_id: str
+    display_name: str
+    stores_covered: int
+    stores_total: int
+    days_uncovered: int
+    last_sync: str | None
+
+
+class OverviewNeedsAttentionOut(BaseModel):
+    code: str
+    severity: int
+    title: str
+    detail: str
+    store_id: str | None
+    person_id: str | None
+    business_date: date | None
+
+
+class OverviewOut(BaseModel):
+    month_id: str
+    year: int
+    month: int
+    state: MonthState
+    revision: int
+    rule_pack_version: str | None
+    kpis: OverviewKpiOut
+    managers: list[OverviewManagerRowOut]
+    needs_attention: list[OverviewNeedsAttentionOut]
 
 
 class ProgramCellOut(BaseModel):
     business_date: date
-    person_id: str
+    person_id: str | None
     store_id: str | None
-    status: DayStatus
-    working_kind: WorkingKind | None
-    hours: Decimal
+    status: str
+    working_kind: str | None
+    display_name: str | None
+    home_store_id: str | None
+    badge: str | None
     locked: bool
 
 
@@ -215,145 +436,198 @@ class ProgramChoicesOut(BaseModel):
     choices: list[ProgramChoiceOut]
 
 
-class OverviewKpiOut(BaseModel):
-    active_stores: int
-    active_people: int
-    working_assignments: int
-    coverage_gaps: int
-    exceptions: int
-    grid_people: int
-    epay_fresh: bool
-
-
-class OverviewManagerRowOut(BaseModel):
-    manager_id: str
-    manager_name: str
-    store_count: int
-    working_assignments: int
-    coverage_gaps: int
-    exception_count: int
-
-
-class OverviewNeedsAttentionOut(BaseModel):
-    code: str
-    severity: str
-    store_id: str | None
-    person_id: str | None
-    business_date: date | None
-    message: str
-
-
-class OverviewOut(BaseModel):
-    month_id: str
-    year: int
-    month: int
-    state: str
-    revision: int
-    rule_pack_version: str
-    kpis: OverviewKpiOut
-    managers: list[OverviewManagerRowOut]
-    needs_attention: list[OverviewNeedsAttentionOut]
-
-
 class ExceptionOut(BaseModel):
     code: str
-    severity: str
+    severity: int
+    title: str
+    detail: str
+    blocking_close: bool
     store_id: str | None
     person_id: str | None
     business_date: date | None
-    message: str
-    source: str
+    action_hint: str
 
 
 class ChecklistItemOut(BaseModel):
     code: str
+    severity: int
+    title: str
+    detail: str
     blocking: bool
-    message: str
-    store_id: str | None = None
-    person_id: str | None = None
-    business_date: date | None = None
 
 
 class CloseChecklistOut(BaseModel):
     month_id: str
     revision: int
-    state: str
+    state: MonthState
     blockers: list[ChecklistItemOut]
-    generated_at: str
+    generated_at: str | None
     export_summary: list[dict[str, object]]
     job_summary: list[dict[str, object]]
     expected_revision: int
 
 
+class CalendarCellEditIn(BaseModel):
+    person_id: str = Field(min_length=1)
+    business_date: date
+    status: DayStatus
+    store_id: str | None = None
+    working_kind: WorkingKind | None = None
+
+
 class ReopenWithReasonIn(BaseModel):
-    reason: str = Field(min_length=3, max_length=500)
+    reason: str = Field(min_length=4, max_length=512)
+    expected_revision: int | None = None
 
 
-class WorkerJobDiagnosticOut(BaseModel):
-    id: int
-    kind: str
-    status: str
-    attempts: int
-    run_after: str
-    locked_at: str | None
-    locked_by: str | None
-    last_error: str | None
-    created_at: str
-    updated_at: str
+class JobEnqueueIn(BaseModel):
+    kind: str = Field(min_length=1, max_length=64)
+    idempotency_key: str | None = Field(default=None, max_length=128)
 
 
-class WorkerDiagnosticsOut(BaseModel):
-    active: list[WorkerJobDiagnosticOut]
-    recent_terminal: list[WorkerJobDiagnosticOut]
+# ---------------------------------------------------------------------------
+# S5a — E-pay fresh readback
+# ---------------------------------------------------------------------------
 
 
-class SheetBindingCreateIn(BaseModel):
+class EpayReadbackItemIn(BaseModel):
+    person_id: str = Field(min_length=1)
+    category: Literal["UNDER_50", "AT_OR_OVER_50"]
+    value: int | float | str | None = None
+
+
+class EpayReadbackIn(BaseModel):
+    store_id: str = Field(min_length=1)
+    observations: list[EpayReadbackItemIn] = Field(min_length=1)
+
+
+class EpayReadbackItemOut(BaseModel):
+    person_id: str
+    category: str
+    value: int | None
+    raw_value: str | None
+    is_valid: bool
+
+
+class EpayReadbackOut(BaseModel):
     store_id: str
-    spreadsheet_id: str = Field(min_length=1, max_length=256)
+    month_id: str
+    observed_at: str
+    valid_count: int
+    invalid_count: int
+    items: list[EpayReadbackItemOut]
+
+
+class EpayFreshnessOut(BaseModel):
+    store_id: str
+    is_fresh: bool
+    fresh_count: int
+    expected_count: int
+    threshold: str
+
+
+# ---------------------------------------------------------------------------
+# S5a — Google projection structural readback
+# ---------------------------------------------------------------------------
+
+
+class SheetBindingConfigureIn(BaseModel):
+    spreadsheet_id: str = Field(min_length=1, max_length=128)
+    sheet_name_grila: str = Field(default="Grila", min_length=1, max_length=64)
+    sheet_name_pontaj: str = Field(default="Pontaj", min_length=1, max_length=64)
+    expected_current_spreadsheet_id: str | None = Field(default=None, max_length=128)
+    reason: str | None = Field(default=None, max_length=512)
 
 
 class SheetBindingOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    tenant_id: str
     store_id: str
-    configured: bool
-    sheet_identity_hint: str | None
-    created_at: str | None
-    updated_at: str | None
+    spreadsheet_id: str
+    sheet_name_grila: str
+    sheet_name_pontaj: str
+    generation: str
 
 
-class SheetBindingCanaryOut(BaseModel):
+class SheetProjectionPayloadOut(BaseModel):
+    grila: dict[str, object]
+    pontaj: dict[str, object]
+
+
+class SheetProjectionOut(BaseModel):
     store_id: str
-    configured: bool
-    sheet_identity_hint: str
-    provider: str
-    live_mutation_gate: bool
+    generation: str
+    last_success_generation: str | None
+    last_run_at: str | None
+    last_error: str | None
+    failures: int
+    payload: SheetProjectionPayloadOut | None
 
 
-class SheetReconciliationOut(BaseModel):
-    store_id: str
-    month_id: str
-    available: bool
-    generation: str | None = None
-    format_version: str | None = None
-    revision: int | None = None
-    rule_pack_version: str | None = None
-    projected_at: str | None = None
-    verification_mode: str | None = None
-    verified: bool | None = None
-    grila_rows: int | None = None
-    pontaj_rows: int | None = None
-    grila_checksum: str | None = None
-    pontaj_checksum: str | None = None
-    projection_checksum: str | None = None
+class SheetProjectionEnqueueIn(BaseModel):
+    store_id: str = Field(min_length=1)
+    idempotency_key: str | None = Field(default=None, max_length=128)
 
 
-class EpayGoogleReadbackOut(BaseModel):
-    month_id: str
-    store_id: str
-    revision: int
-    observation_count: int
-    person_count: int
-    observed_at: str
-    fresh: bool
-
-
-__all__ = [name for name in globals() if not name.startswith("_")]
+__all__ = [
+    "AssignmentCreate",
+    "AssignmentOut",
+    "AttributionMonthOut",
+    "AttributionRowOut",
+    "BlockerOut",
+    "CalendarApplyIn",
+    "CalendarCellEditIn",
+    "CalendarChangeIn",
+    "CalendarProjectionOut",
+    "ChecklistItemOut",
+    "CloseChecklistOut",
+    "CloseEventOut",
+    "CloseIn",
+    "CloseOutcomeOut",
+    "ConflictOut",
+    "CoverageReport",
+    "EpayFreshnessOut",
+    "EpayReadbackIn",
+    "EpayReadbackItemIn",
+    "EpayReadbackItemOut",
+    "EpayReadbackOut",
+    "ExceptionOut",
+    "GridCalculationOut",
+    "GridComputeOut",
+    "HealthReport",
+    "HolidayCalendarUpsertIn",
+    "HolidayMarkerOut",
+    "HolidayMonthOut",
+    "HolidayOverrideIn",
+    "IngestRequest",
+    "IngestResult",
+    "JobEnqueueIn",
+    "JobOut",
+    "MonthOut",
+    "OverviewKpiOut",
+    "OverviewManagerRowOut",
+    "OverviewNeedsAttentionOut",
+    "OverviewOut",
+    "PersonOut",
+    "PontajMonthOut",
+    "PontajPersonTotalsOut",
+    "PontajRowOut",
+    "ProgramCellOut",
+    "ProgramChoiceOut",
+    "ProgramChoicesOut",
+    "ProgramGridOut",
+    "ProgramRowOut",
+    "ReopenIn",
+    "ReopenWithReasonIn",
+    "SalaryMasterOut",
+    "SalaryUpsertIn",
+    "SchedulePreviewOut",
+    "SheetBindingConfigureIn",
+    "SheetBindingOut",
+    "SheetProjectionEnqueueIn",
+    "SheetProjectionOut",
+    "SheetProjectionPayloadOut",
+    "StoreOut",
+    "TenantOut",
+]
