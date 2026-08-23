@@ -278,7 +278,6 @@ class HolidayMarkerOut(BaseModel):
     label: str
     is_active: bool
     override_active: bool | None = None
-    override_reason: str | None = None
 
 
 class HolidayCalendarUpsertIn(BaseModel):
@@ -531,6 +530,25 @@ class EpayFreshnessOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SheetBindingConfigureIn(BaseModel):
+    spreadsheet_id: str = Field(min_length=1, max_length=128)
+    sheet_name_grila: str = Field(default="Grila", min_length=1, max_length=64)
+    sheet_name_pontaj: str = Field(default="Pontaj", min_length=1, max_length=64)
+    expected_current_spreadsheet_id: str | None = Field(default=None, max_length=128)
+    reason: str | None = Field(default=None, max_length=512)
+
+
+class SheetBindingOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    tenant_id: str
+    store_id: str
+    spreadsheet_id: str
+    sheet_name_grila: str
+    sheet_name_pontaj: str
+    generation: str
+
+
 class SheetProjectionPayloadOut(BaseModel):
     grila: dict[str, object]
     pontaj: dict[str, object]
@@ -604,6 +622,8 @@ __all__ = [
     "SalaryMasterOut",
     "SalaryUpsertIn",
     "SchedulePreviewOut",
+    "SheetBindingConfigureIn",
+    "SheetBindingOut",
     "SheetProjectionEnqueueIn",
     "SheetProjectionOut",
     "SheetProjectionPayloadOut",
