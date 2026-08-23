@@ -41,7 +41,8 @@ code.
 
 The concrete URL, path parameters and query string are deliberately not logged.
 An unmatched route is recorded as `route=unmatched` rather than echoing the
-requested path.
+requested path. Uvicorn's default access log is disabled in the programmatic
+entrypoint so it cannot bypass this contract by emitting raw request targets.
 
 ## Worker events
 
@@ -97,7 +98,7 @@ because the log call exists.
   "route": "/months/{month_id}/program/cell",
   "status_code": 200,
   "duration_ms": 34.2,
-  "log_level": "info",
+  "level": "info",
   "timestamp": "2026-08-23T18:00:00Z"
 }
 ```
