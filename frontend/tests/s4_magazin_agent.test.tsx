@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { Magazin } from "../src/pages/Magazin";
 import { Agent } from "../src/pages/Agent";
@@ -11,6 +11,7 @@ const store = { id: "store_x", tenant_id: "tenant_acme", company_code: "ACME", i
 const person = { id: "person_a", tenant_id: "tenant_acme", internal_code: "PA", external_code: null, display_name: "Alice", home_store_id: "store_x", is_active: true };
 const ADMIN_CAPABILITIES = new Set<Capability>(["schedule.read", "schedule.write", "grid.read", "epay.read", "sheet.read", "sheet.sync", "export.create", "jobs.read"]);
 const MANAGER_CAPABILITIES = new Set<Capability>(["schedule.read", "schedule.write", "grid.read", "epay.read", "sheet.read", "jobs.read"]);
+const JOB_DIAGNOSTICS_PATH = "/worker/jobs/diagnostics?terminal_limit=50";
 
 function makeGrid(revision = 2) {
   return { month_id: MONTH.id, year: 2026, month: 8, revision, dates: ["2026-08-01"], legend: ["NORMAL"], rows: [{ row_id: "person_a", label: "Alice", home_store_id: "store_x", cells: [{ business_date: "2026-08-01", person_id: "person_a", store_id: "store_x", status: "WORKING", working_kind: "NORMAL", display_name: "Alice", home_store_id: "store_x", badge: "NORMAL", locked: false }] }] };
@@ -62,7 +63,7 @@ function apiForPage({ programRevisions = [2], postFailures = [], jobsFailure = f
     calls.push(path);
     if (path === "/catalog/stores") return [store];
     if (path === "/catalog/people?store_id=store_x") return [person];
-    if (path === "/worker/jobs/diagnostics?terminal_limit=50") {
+    if (path === JOB_DIAGNOSTICS_PATH) {
       if (jobsFailure) throw new Error("jobs unavailable");
       return diagnostics;
     }
@@ -104,10 +105,18 @@ describe("Magazin and Agent contract routes", () => {
     expect(screen.getByText("TARGET_ZERO")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Control" }));
-    fireEvent.click(screen.getByRole("button", { name: /Sincronizează Sheet/i }));
-    fireEvent.click(screen.getByRole("button", { name: /Exportă XLSX/i }));
+    const initialDiagnosticsReads = calls.filter((path) => path === JOB_DIAGNOSTICS_PATH).length;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Sincronizează Sheet/i }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await waitFor(() => expect(calls.filter((path) => path === JOB_DIAGNOSTICS_PATH)).toHaveLength(initialDiagnosticsReads + 1));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Exportă XLSX/i }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await waitFor(() => expect(calls.filter((path) => path === JOB_DIAGNOSTICS_PATH)).toHaveLength(initialDiagnosticsReads + 2));
     expect(calls).toContain("/catalog/people?store_id=store_x");
-    expect(calls).toContain("/worker/jobs/diagnostics?terminal_limit=50");
     expect(calls.some((path) => path.includes("store_id=store_x"))).toBe(true);
     expect(calls.some((path) => path.includes("/store/"))).toBe(false);
     expect((api.post as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([`/months/${MONTH.id}/sheet-projection/enqueue`, { store_id: "store_x" }]);
