@@ -136,6 +136,51 @@ def test_api_request_logging_uses_correlation_and_route_template_without_url_dat
     assert "salary=9999" not in emitted
 
 
+def test_unhandled_api_error_returns_generic_envelope_and_safe_log(monkeypatch) -> None:
+    import ugrile.main as main_module
+
+    recorder = _Recorder()
+    monkeypatch.setattr(main_module, "log", recorder)
+    app = main_module.create_app()
+
+    @app.get("/ops-001-boom")
+    def _boom() -> None:
+        raise RuntimeError("Alice salary=9999")
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/ops-001-boom?authorization=top-secret",
+            headers={"X-Correlation-ID": "ops_boom_123"},
+        )
+
+    assert response.status_code == 500
+    assert response.headers["X-Correlation-ID"] == "ops_boom_123"
+    assert response.json() == {
+        "code": "INTERNAL_ERROR",
+        "message": "internal server error",
+        "details": {},
+    }
+    failed = [event for event in recorder.events if event[1] == "http_request_failed"]
+    assert failed == [
+        (
+            "error",
+            "http_request_failed",
+            {
+                "correlation_id": "ops_boom_123",
+                "method": "GET",
+                "route": "/ops-001-boom",
+                "status_code": 500,
+                "duration_ms": failed[0][2]["duration_ms"],
+                "error_type": "RuntimeError",
+            },
+        )
+    ]
+    emitted = _event_text(recorder.events) + response.text
+    assert "Alice" not in emitted
+    assert "9999" not in emitted
+    assert "top-secret" not in emitted
+
+
 def test_worker_failure_log_keeps_type_not_exception_message(monkeypatch) -> None:
     recorder = _Recorder()
     monkeypatch.setattr(worker_module, "log", recorder)
