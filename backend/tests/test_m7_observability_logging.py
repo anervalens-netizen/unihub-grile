@@ -33,7 +33,7 @@ def test_pii_safe_event_drops_unknown_sensitive_and_non_scalar_fields() -> None:
     marker = "Alice Salary 9999"
     raw: dict[str, Any] = {
         "event": "sample",
-        "log_level": "info",
+        "level": "info",
         "timestamp": "2026-08-23T18:00:00Z",
         "correlation_id": "req_safe_123",
         "method": "POST",
@@ -54,7 +54,7 @@ def test_pii_safe_event_drops_unknown_sensitive_and_non_scalar_fields() -> None:
 
     assert sanitized == {
         "event": "sample",
-        "log_level": "info",
+        "level": "info",
         "timestamp": "2026-08-23T18:00:00Z",
         "correlation_id": "req_safe_123",
         "method": "POST",
