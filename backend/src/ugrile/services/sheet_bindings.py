@@ -71,14 +71,16 @@ def configure_sheet_binding(
     sheet_name_pontaj: str,
     actor_id: str,
     expected_current_spreadsheet_id: str | None = None,
+    expected_current_sheet_name_grila: str | None = None,
+    expected_current_sheet_name_pontaj: str | None = None,
     reason: str | None = None,
 ) -> SheetBindingChange:
     """Create or explicitly rebind one store under a row lock.
 
-    Initial creation is idempotent. Changing an existing identity requires a
-    compare-and-swap value (``expected_current_spreadsheet_id``) plus a reason.
-    An exact replay of an already-applied identity is also idempotent, even if
-    the caller still carries the previous CAS value after losing the response.
+    Initial creation is idempotent. Changing an existing identity requires the
+    complete last-seen identity (spreadsheet + both tab names) plus a reason.
+    An exact replay of an already-applied identity is idempotent even if the
+    caller still carries the previous CAS identity after losing the response.
     A Google spreadsheet may belong to only one store globally.
     """
 
@@ -128,7 +130,14 @@ def configure_sheet_binding(
         )
 
     if binding is None:
-        if expected_current_spreadsheet_id is not None:
+        if any(
+            value is not None
+            for value in (
+                expected_current_spreadsheet_id,
+                expected_current_sheet_name_grila,
+                expected_current_sheet_name_pontaj,
+            )
+        ):
             raise ConflictError(
                 "sheet binding does not exist at the expected identity",
                 details={"code": "SHEET_BINDING_STALE"},
@@ -170,7 +179,12 @@ def configure_sheet_binding(
     if current_identity == requested_identity:
         return SheetBindingChange(binding=binding, created=False, changed=False)
 
-    if expected_current_spreadsheet_id != binding.spreadsheet_id:
+    expected_identity = (
+        expected_current_spreadsheet_id,
+        expected_current_sheet_name_grila,
+        expected_current_sheet_name_pontaj,
+    )
+    if expected_identity != current_identity:
         raise ConflictError(
             "sheet binding changed since it was read",
             details={"code": "SHEET_BINDING_STALE"},
