@@ -1,29 +1,28 @@
-"""S5a Google projection service.
+"""Google projection service for the durable worker.
 
-This module orchestrates the fake Google adapter for the
-``GOOGLE_PROJECTION_STORE`` job. The service is invoked **only** by the
-durable worker; the API layer enqueues, the worker executes (see
-``ugrile.worker.jobs._job_google_projection_store``).
+The service is invoked **only** by the durable worker; the API layer enqueues and
+the worker executes (see ``ugrile.worker.jobs._job_google_projection_store``).
+The deterministic projection builder is provider-agnostic. Publication goes
+through :class:`GoogleProjectionProvider`; the safe default resolves to the
+local fake provider and performs no network I/O.
 
 Projection contract
 -------------------
 
 * Input: a ``month_id`` + ``store_id`` pair plus the calendar revision.
 * The service materialises the Grila + Pontaj lattice for the store from
-  the canonical tables and hands the deterministic dict to the fake
-  adapter.
-* The adapter writes the projection into ``sheet_projection_runs`` +
-  ``sheet_bindings`` and returns the ``StoreProjection`` value object.
-* On provider failure (``UGR_S5_GOOGLE_FAIL=1``), the adapter raises
-  ``GoogleAdapterError``; the service re-raises it after the worker has
-  marked the job row ``FAILED``. The last-good projection remains
-  untouched.
+  canonical tables and hands the deterministic dict to the configured provider.
+* The provider returns the accepted ``StoreProjection`` value object.
+* Fake-provider failure injection (``UGR_S5_GOOGLE_FAIL=1``) preserves the
+  existing last-good projection semantics.
+* Live provider selection fails closed until the explicit live transport is
+  implemented and separately authorized.
 
 Tenant safety
 -------------
 
-Every read scopes by ``tenant_id`` first; the projection never crosses
-tenant boundaries.
+Every read scopes by ``tenant_id`` first; the projection never crosses tenant
+boundaries.
 """
 
 from __future__ import annotations
@@ -35,10 +34,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..connectors.google import (
-    GoogleAdapterError,
-    StoreProjection,
-    write_store_projection,
+from ..connectors.google import GoogleAdapterError, StoreProjection
+from ..connectors.google_provider import (
+    GoogleProjectionProvider,
+    build_google_projection_provider,
 )
 from ..domain.enums import ConnectorGeneration, DayStatus
 from ..repositories.models import (
@@ -53,7 +52,7 @@ from ..repositories.models import (
 
 @dataclass(frozen=True, slots=True)
 class ProjectionPayload:
-    """Structural projection payload ready for the adapter."""
+    """Structural projection payload ready for the provider."""
 
     store_id: str
     generation: str
@@ -160,8 +159,13 @@ def _build_payload(
 
 
 class GoogleProjectionService:
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        provider: GoogleProjectionProvider | None = None,
+    ) -> None:
         self.session = session
+        self.provider = provider or build_google_projection_provider()
 
     def project_store_for_month(
         self,
@@ -174,12 +178,7 @@ class GoogleProjectionService:
         revision: int,
         generation: str | None = None,
     ) -> ProjectionOutcome:
-        """Build and write the projection for one store/month.
-
-        The function validates the (tenant, store) tuple up-front, then
-        delegates to the fake adapter. The adapter is the sole writer;
-        this service does not touch ``sheet_projection_runs`` directly.
-        """
+        """Build and publish the projection for one store/month."""
 
         store = self.session.execute(
             select(Store).where(Store.tenant_id == tenant_id, Store.id == store_id)
@@ -223,7 +222,7 @@ class GoogleProjectionService:
             },
             "pontaj": dict(payload.pontaj),
         }
-        projection = write_store_projection(
+        projection = self.provider.write_store_projection(
             self.session,
             tenant_id=tenant_id,
             store_id=store_id,

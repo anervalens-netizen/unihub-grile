@@ -1,7 +1,7 @@
 """Runtime configuration loaded from environment with safe defaults.
 
 Standalone development remains deterministic, while production-capable settings
-must make identity and fixture boundaries explicit.
+must make identity and external-provider boundaries explicit.
 """
 
 from __future__ import annotations
@@ -59,6 +59,29 @@ class Settings(BaseSettings):
     # Connector / fixture ingestion. Retail remains read-only during the
     # standalone plugin-candidate program.
     connector_default: str = "fixture-v1"
+
+    # Google provider contract. Fake/local is the safe default. Selecting live
+    # never authorizes a mutation by itself: live writes also require an
+    # explicit mutation opt-in and an external credentials file path.
+    google_provider: Literal["fake", "live"] = Field(
+        default="fake",
+        validation_alias="UGRILE_GOOGLE_PROVIDER",
+        description="Google projection provider. 'fake' performs no network I/O.",
+    )
+    google_credentials_file: str | None = Field(
+        default=None,
+        validation_alias="UGRILE_GOOGLE_CREDENTIALS_FILE",
+        repr=False,
+        description=(
+            "Path to an externally mounted Google credential file. Credential JSON "
+            "must never be provided inline or committed to the repository."
+        ),
+    )
+    google_live_mutations_enabled: bool = Field(
+        default=False,
+        validation_alias="UGRILE_GOOGLE_LIVE_MUTATIONS_ENABLED",
+        description="Explicit second gate for live Google mutations.",
+    )
 
 
 @lru_cache(maxsize=1)

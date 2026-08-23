@@ -21,6 +21,7 @@ overrides them.
 | `QUALITY_GATES.md` | evidence, scoring and server-test-ready gate |
 | `../AGENTS.md` | agent execution/governance rules |
 | `operations/local-commands.md` | current local development/verification workflow |
+| `operations/google-provider-config.md` | Google provider selection, secrets and live-mutation gates |
 
 ## Historical material
 
