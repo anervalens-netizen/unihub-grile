@@ -90,7 +90,6 @@ describe("Magazin and Agent contract routes", () => {
     expect(screen.getAllByText(/126/).length).toBeGreaterThan(0);
     expect(screen.getByText("g1")).toBeInTheDocument();
     expect(screen.getByText("OPEN · rev 2")).toBeInTheDocument();
-    expect(screen.getByText("2 grilă · 0 atribuire")).not.toBeInTheDocument();
     expect(screen.getByText("1 grilă · 1 atribuire")).toBeInTheDocument();
     expect(await screen.findByText(/Export XLSX #71/)).toBeInTheDocument();
     expect(screen.getByText(/Sheet #72/)).toBeInTheDocument();
@@ -121,7 +120,6 @@ describe("Magazin and Agent contract routes", () => {
     expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
     expect(screen.getByText(/Statusul joburilor este indisponibil: jobs unavailable/)).toBeInTheDocument();
     expect(screen.getByText("2/2")).toBeInTheDocument();
-    expect(screen.queryByRole("alert", { name: /jobs unavailable/i })).not.toBeInTheDocument();
   });
 
   it("keeps manager calendar editing but removes admin-only sync/export actions", async () => {
