@@ -34,6 +34,7 @@ class GoogleProjectionProvider(Protocol):
         payload: Mapping[str, Any],
     ) -> StoreProjection:
         """Publish one store projection and return the accepted projection."""
+        ...
 
 
 class FakeGoogleProjectionProvider:
