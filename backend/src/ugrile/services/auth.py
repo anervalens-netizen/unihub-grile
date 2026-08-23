@@ -33,6 +33,11 @@ class Principal:
     tenant_id: str
     role: RoleName
     email: str
+    # Optional host-provided ceiling used by a future trusted identity adapter.
+    # ``None`` preserves the standalone role-derived capability set. A finite
+    # set can only narrow authority; ``capabilities_for`` never lets it widen a
+    # Grile role.
+    capability_ceiling: frozenset[str] | None = None
 
 
 def load_principal(session: Session, *, user_id: str, tenant_id: str) -> Principal:

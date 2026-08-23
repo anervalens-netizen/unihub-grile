@@ -71,9 +71,21 @@ _ROLE_CAPABILITIES: dict[RoleName, frozenset[Capability]] = {
 
 
 def capabilities_for(principal: Principal) -> frozenset[Capability]:
-    """Return the finite capability set for the principal's application role."""
+    """Return the finite effective capability set for one principal.
 
-    return _ROLE_CAPABILITIES.get(principal.role, frozenset())
+    The Grile role is always the authority ceiling. A future trusted host
+    identity adapter may provide an additional ``capability_ceiling`` to narrow
+    that set for the current host session, but it can never widen the role.
+    """
+
+    role_capabilities = _ROLE_CAPABILITIES.get(principal.role, frozenset())
+    if principal.capability_ceiling is None:
+        return role_capabilities
+    return frozenset(
+        capability
+        for capability in role_capabilities
+        if capability.value in principal.capability_ceiling
+    )
 
 
 def authorize(principal: Principal, capability: Capability) -> None:
