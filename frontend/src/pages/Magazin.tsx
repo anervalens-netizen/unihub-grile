@@ -17,6 +17,7 @@ import { isolatedRead } from "../api/isolatedRead";
 import { hasCapability, type Capability } from "../capabilities";
 import { MonthSelector } from "../components/MonthSelector";
 import { ProgramMatrix } from "../components/ProgramMatrix";
+import { LoadingState, RequestError, requestErrorMessage } from "../components/RequestState";
 import { navigate } from "../router";
 
 export interface MagazinProps {
@@ -71,6 +72,8 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
   const [jobDiagnostics, setJobDiagnostics] = useState<JobDiagnostics | null>(null);
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<StoreTab>("control");
   const [editing, setEditing] = useState<Editing | null>(null);
@@ -108,10 +111,21 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
       setFreshness(null);
       setProjection(null);
       setError(null);
+      setLoading(false);
       return;
     }
     let cancelled = false;
+    setGrid(null);
+    setTotals(null);
+    setStore(null);
+    setAllStores([]);
+    setPeople([]);
+    setAttribution(null);
+    setGridRows([]);
+    setFreshness(null);
+    setProjection(null);
     setError(null);
+    setLoading(true);
     const query = `?store_id=${encodeURIComponent(storeId)}`;
     Promise.all([
       isolatedRead(api.get<ProgramGrid>(`/months/${monthId}/program?perspective=people`)),
@@ -156,12 +170,15 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
         setError(failures.length > 0 ? `Date parțial indisponibile — ${failures.join(" · ")}` : null);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(requestErrorMessage(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [api, monthId, storeId]);
+  }, [api, monthId, storeId, reloadToken]);
 
   useEffect(() => {
     if (!monthId || !storeId || !canReadJobs) {
@@ -176,12 +193,12 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
         if (!cancelled) setJobDiagnostics(response);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setJobsError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setJobsError(requestErrorMessage(e));
       });
     return () => {
       cancelled = true;
     };
-  }, [api, monthId, storeId, canReadJobs]);
+  }, [api, monthId, storeId, canReadJobs, reloadToken]);
 
   const salesByPerson = useMemo(() => {
     const map = new Map<string, number>();
@@ -220,6 +237,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
   const storeWorkingDays = totals ? Object.entries(totals.totals).filter(([personId]) => peopleIds.has(personId)).reduce((sum, [, bucket]) => sum + bucket.working_days, 0) : 0;
   const matrixPeople = useMemo(() => buildMatrixPeople(grid, people), [grid, people]);
   const currentMonth = months.find((month) => month.id === monthId) ?? null;
+  const retry = () => setReloadToken((value) => value + 1);
 
   function enqueue(requiredCapability: Capability, path: string, body: Record<string, string>) {
     if (!monthId || !hasCapability(capabilities, requiredCapability)) return;
@@ -232,11 +250,11 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
             setJobDiagnostics(await api.get<JobDiagnostics>("/worker/jobs/diagnostics?terminal_limit=50"));
             setJobsError(null);
           } catch (e: unknown) {
-            setJobsError(e instanceof Error ? e.message : String(e));
+            setJobsError(requestErrorMessage(e));
           }
         }
       })
-      .catch((e: unknown) => setActionMessage(e instanceof Error ? e.message : String(e)));
+      .catch((e: unknown) => setActionMessage(requestErrorMessage(e)));
   }
 
   async function configureEditor(rowId: string, cell: ProgramCell, preferred?: EditValue): Promise<void> {
@@ -278,7 +296,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
     } catch (e: unknown) {
       if (requestId === choiceRequestId.current) {
         setEditing(null);
-        setSaveError(e instanceof Error ? e.message : String(e));
+        setSaveError(requestErrorMessage(e));
       }
     } finally {
       if (requestId === choiceRequestId.current) setChoiceLoading(false);
@@ -302,7 +320,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
       await configureEditor(activeEditing.rowId, cell, draft);
       setSaveError(`Programul s-a schimbat între timp. Am încărcat revizia ${freshGrid.revision}; verifică valorile păstrate și salvează din nou.`);
     } catch (e: unknown) {
-      setSaveError(`Programul s-a schimbat între timp, iar reîncărcarea reviziei curente a eșuat: ${e instanceof Error ? e.message : String(e)}`);
+      setSaveError(`Programul s-a schimbat între timp, iar reîncărcarea reviziei curente a eșuat: ${requestErrorMessage(e)}`);
     } finally {
       setChoiceLoading(false);
     }
@@ -339,7 +357,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
           // Keep the typed close error even if the refresh fails.
         }
       } else {
-        setSaveError(e instanceof Error ? e.message : String(e));
+        setSaveError(requestErrorMessage(e));
       }
     } finally {
       setSaving(false);
@@ -364,161 +382,174 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
         <div className="store-hero-actions">
           <MonthSelector months={months} value={monthId} onChange={setMonthId} error={monthsError} />
           {currentMonth && <span className="context-pill">{currentMonth.state} · rev {grid?.revision ?? currentMonth.revision}</span>}
-          <span className={`operational-chip ${freshness?.is_fresh ? "ok" : "warn"}`}>{freshness?.is_fresh ? "Date actualizate" : "Verifică E-pay"}</span>
+          {!loading && <span className={`operational-chip ${freshness?.is_fresh ? "ok" : "warn"}`}>{freshness?.is_fresh ? "Date actualizate" : "Verifică E-pay"}</span>}
         </div>
       </section>
 
-      {error && <p className="error" role="alert">{error}</p>}
+      {error && <RequestError message={error} onRetry={retry} />}
       {saveError && <p className="error" role="alert">{saveError}</p>}
       {actionMessage && <p className="action-message" role="status">{actionMessage}</p>}
+      {loading && <LoadingState>Încarc detaliile magazinului…</LoadingState>}
 
-      <section className="kpi-strip store-kpis">
-        <Metric label="Agenți" value={String(people.length)} detail="alocați magazinului" />
-        <Metric label="Vânzări atribuite" value={`${formatMoney(storeSalesTotal)} RON`} detail={`${attribution?.rows.length ?? 0} înregistrări`} />
-        <Metric label="Pontaj" value={`${storeHours.toFixed(1)} h`} detail={`${storeWorkingDays} zile lucrate`} />
-        <Metric label="Grile calculate" value={String(gridRows.length)} detail={`revizia ${grid?.revision ?? "—"}`} />
-        <Metric label="Anomalii" value={String(gridAnomalyCount + storeAttributionAnomalies.length)} detail={`${gridAnomalyCount} grilă · ${storeAttributionAnomalies.length} atribuire`} />
-        <Metric label="E-pay" value={`${freshness?.fresh_count ?? 0}/${freshness?.expected_count ?? 0}`} detail={freshness?.is_fresh ? "proaspăt" : "necesită sync"} />
-      </section>
-
-      <div className="segmented-tabs" role="tablist" aria-label="Secțiuni magazin">
-        <TabButton active={activeTab === "control"} onClick={() => setActiveTab("control")}>Control</TabButton>
-        <TabButton active={activeTab === "calendar"} onClick={() => setActiveTab("calendar")}>Calendar</TabButton>
-        <TabButton active={activeTab === "payroll"} onClick={() => setActiveTab("payroll")}>Grilă & Pontaj</TabButton>
-      </div>
-
-      {activeTab === "control" && (
-        <div className="store-control-grid">
-          <section className="panel store-team-panel">
-            <div className="panel-heading">
-              <div><span className="eyebrow">ECHIPĂ</span><h3>Agenți și vânzări</h3></div>
-              <span className="context-pill">{formatMoney(storeSalesTotal)} RON</span>
-            </div>
-            <div className="agent-performance-list">
-              {people.map((person) => {
-                const sales = salesByPerson.get(person.id) ?? 0;
-                const bucket = totals?.totals[person.id];
-                return (
-                  <button type="button" className="agent-performance-row" key={person.id} onClick={() => navigate("agent", person.id)}>
-                    <span className="manager-avatar">{initials(person.display_name)}</span>
-                    <span className="agent-row-copy"><strong>{person.display_name}</strong><small>{bucket?.working_days ?? 0} zile · {bucket?.hours.toFixed(1) ?? "0.0"} h</small></span>
-                    <span className="agent-sales"><strong>{formatMoney(sales)}</strong><small>RON</small></span>
-                    <span className="store-open">→</span>
-                  </button>
-                );
-              })}
-              {people.length === 0 && <div className="empty-state"><strong>Niciun agent activ.</strong><span>Adaugă sau realocă agenți din sursa de catalog.</span></div>}
-            </div>
+      {!loading && (
+        <>
+          <section className="kpi-strip store-kpis">
+            <Metric label="Agenți" value={String(people.length)} detail="alocați magazinului" />
+            <Metric label="Vânzări atribuite" value={`${formatMoney(storeSalesTotal)} RON`} detail={`${attribution?.rows.length ?? 0} înregistrări`} />
+            <Metric label="Pontaj" value={`${storeHours.toFixed(1)} h`} detail={`${storeWorkingDays} zile lucrate`} />
+            <Metric label="Grile calculate" value={String(gridRows.length)} detail={`revizia ${grid?.revision ?? "—"}`} />
+            <Metric label="Anomalii" value={String(gridAnomalyCount + storeAttributionAnomalies.length)} detail={`${gridAnomalyCount} grilă · ${storeAttributionAnomalies.length} atribuire`} />
+            <Metric label="E-pay" value={freshness ? `${freshness.fresh_count}/${freshness.expected_count}` : "—"} detail={freshness ? (freshness.is_fresh ? "proaspăt" : "necesită sync") : "indisponibil"} />
           </section>
 
-          <section className="panel store-actions-panel">
-            <div className="panel-heading"><div><span className="eyebrow">ACȚIUNI</span><h3>Operațiuni magazin</h3></div></div>
-            {canEditSchedule && (
-              <button type="button" className="operation-card" onClick={() => setActiveTab("calendar")}>
-                <span className="operation-icon">▦</span><span><strong>Editează calendarul</strong><small>Program, suplimentare, mutări</small></span><span>→</span>
-              </button>
-            )}
-            {canSyncSheet && (
-              <button type="button" className="operation-card" onClick={() => enqueue("sheet.sync", "/sheet-projection/enqueue", { store_id: storeId })}>
-                <span className="operation-icon">↻</span><span><strong>Sincronizează Sheet</strong><small>{projection?.last_success_generation ? `Ultima generație ${projection.last_success_generation}` : "Fără sincronizare reușită"}</small></span><span>→</span>
-              </button>
-            )}
-            {canCreateExport && (
-              <button type="button" className="operation-card" onClick={() => enqueue("export.create", "/export/store", { store_id: storeId })}>
-                <span className="operation-icon">⇩</span><span><strong>Exportă XLSX</strong><small>Grilă și pontaj magazin</small></span><span>→</span>
-              </button>
-            )}
-            {!hasStoreAction && <p className="muted">Nu există operațiuni de modificare disponibile pentru sesiunea curentă.</p>}
-          </section>
-
-          <section className="panel sync-panel">
-            <div className="panel-heading"><div><span className="eyebrow">INTEGRITATE DATE</span><h3>Sync & export</h3></div></div>
-            <div className="sync-status-row"><span>E-pay</span><strong className={freshness?.is_fresh ? "text-ok" : "text-warn"}>{freshness?.is_fresh ? "Proaspăt" : "Stale / indisponibil"}</strong></div>
-            <div className="sync-status-row"><span>Sheet projection</span><strong>{projection?.last_success_generation ?? "—"}</strong></div>
-            <div className="sync-status-row"><span>Erori Sheet</span><strong className={projection?.last_error ? "text-err" : "text-ok"}>{projection?.last_error ? "Există" : "0"}</strong></div>
-            {projection?.last_error && <p className="error-text compact-error">{projection.last_error}</p>}
-            {jobsError && <p className="error-text compact-error">Statusul joburilor este indisponibil: {jobsError}</p>}
-            {canReadJobs && !jobsError && storeJobs.length === 0 && <div className="sync-status-row"><span>Joburi sync/export</span><strong>Fără activitate recentă</strong></div>}
-            {storeJobs.map((job) => (
-              <div className="sync-status-row" key={job.id} title={job.last_error ?? ""}>
-                <span>{jobKindLabel(job.kind)} #{job.id}</span>
-                <strong className={job.state === "FAILED" ? "text-err" : job.state === "DONE" ? "text-ok" : "text-warn"}>
-                  {jobStateLabel(job.state)} · {job.attempts}/{job.max_attempts}
-                </strong>
-              </div>
-            ))}
-          </section>
-        </div>
-      )}
-
-      {activeTab === "calendar" && (
-        <section className="panel calendar-panel">
-          <div className="panel-heading">
-            <div><span className="eyebrow">PROGRAM LUNAR</span><h3>Calendar magazin</h3></div>
-            <span className="context-pill">{canEditSchedule ? "click pe o zi pentru editare" : "doar citire"}</span>
+          <div className="segmented-tabs" role="tablist" aria-label="Secțiuni magazin">
+            <TabButton active={activeTab === "control"} onClick={() => setActiveTab("control")}>Control</TabButton>
+            <TabButton active={activeTab === "calendar"} onClick={() => setActiveTab("calendar")}>Calendar</TabButton>
+            <TabButton active={activeTab === "payroll"} onClick={() => setActiveTab("payroll")}>Grilă & Pontaj</TabButton>
           </div>
-          {choiceLoading && <p className="muted" role="status">Actualizez opțiunile de editare…</p>}
-          {grid ? (
-            <ProgramMatrix
-              grid={grid}
-              viewportHeight={520}
-              onCellClick={canEditSchedule ? beginEdit : undefined}
-              editing={editing}
-              editValue={editValue}
-              people={editPeople.length > 0 ? editPeople : matrixPeople}
-              stores={editStores.length > 0 ? editStores : allStores.map((item) => ({ id: item.id, label: item.name || item.internal_code }))}
-              onEditChange={canEditSchedule ? setEditValue : undefined}
-              onSave={canEditSchedule ? saveCell : undefined}
-              onCancelEdit={canEditSchedule ? () => {
-                choiceRequestId.current += 1;
-                setEditing(null);
-                setSaveError(null);
-              } : undefined}
-              saving={saving || choiceLoading}
-            />
-          ) : <div className="loading-panel">Încarc calendarul…</div>}
-        </section>
-      )}
 
-      {activeTab === "payroll" && (
-        <div className="payroll-grid">
-          <section className="panel">
-            <div className="panel-heading"><div><span className="eyebrow">PONTAJ</span><h3>Ore și zile</h3></div></div>
-            <div className="data-table-wrap">
-              <table className="data-table">
-                <thead><tr><th>Agent</th><th>Zile</th><th>Concediu</th><th>Ore</th></tr></thead>
-                <tbody>
+          {activeTab === "control" && (
+            <div className="store-control-grid">
+              <section className="panel store-team-panel">
+                <div className="panel-heading">
+                  <div><span className="eyebrow">ECHIPĂ</span><h3>Agenți și vânzări</h3></div>
+                  <span className="context-pill">{formatMoney(storeSalesTotal)} RON</span>
+                </div>
+                <div className="agent-performance-list">
                   {people.map((person) => {
+                    const sales = salesByPerson.get(person.id) ?? 0;
                     const bucket = totals?.totals[person.id];
-                    return <tr key={person.id}><td><strong>{person.display_name}</strong></td><td>{bucket?.working_days ?? 0}</td><td>{bucket?.leave_days ?? 0}</td><td>{bucket?.hours.toFixed(2) ?? "0.00"}</td></tr>;
+                    return (
+                      <button type="button" className="agent-performance-row" key={person.id} onClick={() => navigate("agent", person.id)}>
+                        <span className="manager-avatar">{initials(person.display_name)}</span>
+                        <span className="agent-row-copy"><strong>{person.display_name}</strong><small>{bucket?.working_days ?? 0} zile · {bucket?.hours.toFixed(1) ?? "0.0"} h</small></span>
+                        <span className="agent-sales"><strong>{formatMoney(sales)}</strong><small>RON</small></span>
+                        <span className="store-open">→</span>
+                      </button>
+                    );
                   })}
-                </tbody>
-              </table>
-            </div>
-          </section>
+                  {people.length === 0 && <div className="empty-state"><strong>Niciun agent disponibil.</strong><span>Catalogul nu are agenți activi disponibili pentru acest magazin.</span></div>}
+                </div>
+              </section>
 
-          <section className="panel">
-            <div className="panel-heading"><div><span className="eyebrow">GRILĂ</span><h3>Componente și anomalii</h3></div><span className="count-badge">{gridRows.length}</span></div>
-            <div className="grid-calculation-list">
-              {gridRows.map((row) => {
-                const detail = gridDetails.get(row.id);
-                const epay = asRecord(detail?.inputs.epay);
-                return (
-                  <article className="grid-calculation-card" key={row.id}>
-                    <div><span>Agent</span><strong>{people.find((person) => person.id === row.person_id)?.display_name ?? row.person_id}</strong></div>
-                    <div><span>Total grilă</span><strong>{moneyComponent(detail, "total_salary")}</strong></div>
-                    <div><span>Comision principal</span><strong>{moneyComponent(detail, "main_commission")}</strong></div>
-                    <div><span>Comision E-pay</span><strong>{moneyComponent(detail, "epay_commission")}</strong></div>
-                    <div><span>E-pay input</span><strong>{epay ? `${numericValue(epay.under_50)} / ${numericValue(epay.at_or_over_50)}` : "—"}</strong></div>
-                    <div><span>Anomalii</span><strong className={(detail?.anomalies.length ?? 0) > 0 ? "text-warn" : "text-ok"}>{detail ? detail.anomalies.length : "—"}</strong></div>
-                    <small>{detail?.anomalies.length ? detail.anomalies.map((item) => String(item.code ?? "ANOMALY")).join(" · ") : `rev ${row.revision} · ${row.rule_pack_version}`}</small>
-                  </article>
-                );
-              })}
-              {gridRows.length === 0 && <div className="empty-state"><strong>Fără calcul disponibil.</strong><span>Grila server-side nu are încă rezultate pentru revizia curentă.</span></div>}
+              <section className="panel store-actions-panel">
+                <div className="panel-heading"><div><span className="eyebrow">ACȚIUNI</span><h3>Operațiuni magazin</h3></div></div>
+                {canEditSchedule && (
+                  <button type="button" className="operation-card" onClick={() => setActiveTab("calendar")}>
+                    <span className="operation-icon">▦</span><span><strong>Editează calendarul</strong><small>Program, suplimentare, mutări</small></span><span>→</span>
+                  </button>
+                )}
+                {canSyncSheet && (
+                  <button type="button" className="operation-card" onClick={() => enqueue("sheet.sync", "/sheet-projection/enqueue", { store_id: storeId })}>
+                    <span className="operation-icon">↻</span><span><strong>Sincronizează Sheet</strong><small>{projection?.last_success_generation ? `Ultima generație ${projection.last_success_generation}` : "Fără sincronizare reușită"}</small></span><span>→</span>
+                  </button>
+                )}
+                {canCreateExport && (
+                  <button type="button" className="operation-card" onClick={() => enqueue("export.create", "/export/store", { store_id: storeId })}>
+                    <span className="operation-icon">⇩</span><span><strong>Exportă XLSX</strong><small>Grilă și pontaj magazin</small></span><span>→</span>
+                  </button>
+                )}
+                {!hasStoreAction && <p className="muted">Nu există operațiuni de modificare disponibile pentru sesiunea curentă.</p>}
+              </section>
+
+              <section className="panel sync-panel">
+                <div className="panel-heading"><div><span className="eyebrow">INTEGRITATE DATE</span><h3>Sync & export</h3></div></div>
+                <div className="sync-status-row"><span>E-pay</span><strong className={freshness?.is_fresh ? "text-ok" : "text-warn"}>{freshness ? (freshness.is_fresh ? "Proaspăt" : "Stale") : "Indisponibil"}</strong></div>
+                <div className="sync-status-row"><span>Sheet projection</span><strong>{projection?.last_success_generation ?? "—"}</strong></div>
+                <div className="sync-status-row"><span>Erori Sheet</span><strong className={projection?.last_error ? "text-err" : "text-ok"}>{projection?.last_error ? "Există" : projection ? "0" : "—"}</strong></div>
+                {projection?.last_error && <p className="error-text compact-error">{projection.last_error}</p>}
+                {jobsError && <RequestError message={`Statusul joburilor este indisponibil: ${jobsError}`} onRetry={retry} />}
+                {canReadJobs && !jobsError && storeJobs.length === 0 && <div className="sync-status-row"><span>Joburi sync/export</span><strong>Fără activitate recentă</strong></div>}
+                {storeJobs.map((job) => (
+                  <div className="sync-status-row" key={job.id} title={job.last_error ?? ""}>
+                    <span>{jobKindLabel(job.kind)} #{job.id}</span>
+                    <strong className={job.state === "FAILED" ? "text-err" : job.state === "DONE" ? "text-ok" : "text-warn"}>
+                      {jobStateLabel(job.state)} · {job.attempts}/{job.max_attempts}
+                    </strong>
+                  </div>
+                ))}
+              </section>
             </div>
-          </section>
-        </div>
+          )}
+
+          {activeTab === "calendar" && (
+            <section className="panel calendar-panel">
+              <div className="panel-heading">
+                <div><span className="eyebrow">PROGRAM LUNAR</span><h3>Calendar magazin</h3></div>
+                <span className="context-pill">{canEditSchedule ? "click pe o zi pentru editare" : "doar citire"}</span>
+              </div>
+              {choiceLoading && <p className="muted" role="status">Actualizez opțiunile de editare…</p>}
+              {grid ? (
+                grid.rows.length > 0 ? (
+                  <ProgramMatrix
+                    grid={grid}
+                    viewportHeight={520}
+                    onCellClick={canEditSchedule ? beginEdit : undefined}
+                    editing={editing}
+                    editValue={editValue}
+                    people={editPeople.length > 0 ? editPeople : matrixPeople}
+                    stores={editStores.length > 0 ? editStores : allStores.map((item) => ({ id: item.id, label: item.name || item.internal_code }))}
+                    onEditChange={canEditSchedule ? setEditValue : undefined}
+                    onSave={canEditSchedule ? saveCell : undefined}
+                    onCancelEdit={canEditSchedule ? () => {
+                      choiceRequestId.current += 1;
+                      setEditing(null);
+                      setSaveError(null);
+                    } : undefined}
+                    saving={saving || choiceLoading}
+                  />
+                ) : <div className="empty-state"><strong>Calendar gol.</strong><span>Nu există rânduri de program pentru acest magazin în luna selectată.</span></div>
+              ) : (
+                <div className="empty-state"><strong>Calendar indisponibil.</strong><span>Read-ul de Program a eșuat. Folosește „Reîncearcă” din mesajul de eroare de mai sus.</span></div>
+              )}
+            </section>
+          )}
+
+          {activeTab === "payroll" && (
+            <div className="payroll-grid">
+              <section className="panel">
+                <div className="panel-heading"><div><span className="eyebrow">PONTAJ</span><h3>Ore și zile</h3></div></div>
+                {people.length === 0 ? (
+                  <div className="empty-state"><strong>Fără pontaj vizibil.</strong><span>Nu există agenți disponibili pentru afișarea pontajului.</span></div>
+                ) : (
+                  <div className="data-table-wrap">
+                    <table className="data-table">
+                      <thead><tr><th>Agent</th><th>Zile</th><th>Concediu</th><th>Ore</th></tr></thead>
+                      <tbody>
+                        {people.map((person) => {
+                          const bucket = totals?.totals[person.id];
+                          return <tr key={person.id}><td><strong>{person.display_name}</strong></td><td>{bucket?.working_days ?? 0}</td><td>{bucket?.leave_days ?? 0}</td><td>{bucket?.hours.toFixed(2) ?? "0.00"}</td></tr>;
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+
+              <section className="panel">
+                <div className="panel-heading"><div><span className="eyebrow">GRILĂ</span><h3>Componente și anomalii</h3></div><span className="count-badge">{gridRows.length}</span></div>
+                <div className="grid-calculation-list">
+                  {gridRows.map((row) => {
+                    const detail = gridDetails.get(row.id);
+                    const epay = asRecord(detail?.inputs.epay);
+                    return (
+                      <article className="grid-calculation-card" key={row.id}>
+                        <div><span>Agent</span><strong>{people.find((person) => person.id === row.person_id)?.display_name ?? row.person_id}</strong></div>
+                        <div><span>Total grilă</span><strong>{moneyComponent(detail, "total_salary")}</strong></div>
+                        <div><span>Comision principal</span><strong>{moneyComponent(detail, "main_commission")}</strong></div>
+                        <div><span>Comision E-pay</span><strong>{moneyComponent(detail, "epay_commission")}</strong></div>
+                        <div><span>E-pay input</span><strong>{epay ? `${numericValue(epay.under_50)} / ${numericValue(epay.at_or_over_50)}` : "—"}</strong></div>
+                        <div><span>Anomalii</span><strong className={(detail?.anomalies.length ?? 0) > 0 ? "text-warn" : "text-ok"}>{detail ? detail.anomalies.length : "—"}</strong></div>
+                        <small>{detail?.anomalies.length ? detail.anomalies.map((item) => String(item.code ?? "ANOMALY")).join(" · ") : `rev ${row.revision} · ${row.rule_pack_version}`}</small>
+                      </article>
+                    );
+                  })}
+                  {gridRows.length === 0 && <div className="empty-state"><strong>Fără calcul disponibil.</strong><span>Grila server-side nu are rezultate disponibile pentru revizia curentă.</span></div>}
+                </div>
+              </section>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
