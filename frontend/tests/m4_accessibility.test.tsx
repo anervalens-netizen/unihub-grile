@@ -19,8 +19,11 @@ function TabFixture() {
         <button type="button" role="tab" aria-selected={active === "three"} onClick={() => setActive("three")}>Trei</button>
       </div>
       <section>
-        <button type="button" onClick={() => setActive("two")}>Schimbă panelul</button>
-        <span>Panel {active}</span>
+        {active === "one" ? (
+          <button type="button" onClick={() => setActive("two")}>Schimbă panelul</button>
+        ) : (
+          <span>Panel {active}</span>
+        )}
       </section>
     </Layout>
   );
