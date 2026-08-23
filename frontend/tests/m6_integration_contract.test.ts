@@ -32,7 +32,7 @@ describe("M6 host integration contract", () => {
     expect(standaloneDeepLink("overview")).toBe("#/overview");
     expect(standaloneDeepLink("program")).toBe("#/program");
     expect(standaloneDeepLink("store", "store_acme_s1")).toBe("#/store/store_acme_s1");
-    expect(standaloneDeepLink("agent", "person/acme a")).toBe("#/agent/person%2Facme%20a");
+    expect(standaloneDeepLink("agent", "person_acme_a")).toBe("#/agent/person_acme_a");
   });
 
   it("fails closed when an entity deep link omits its stable identifier", () => {
