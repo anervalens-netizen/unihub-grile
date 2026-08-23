@@ -401,10 +401,17 @@ def _record_live_failure(
     payload: Mapping[str, Any],
     exc: DomainError,
 ) -> None:
+    metadata = payload.get("metadata")
+    month_id = (
+        str(metadata.get("month_id"))
+        if isinstance(metadata, Mapping) and metadata.get("month_id")
+        else None
+    )
     last_good = fake_google.read_store_projection(
         session,
         tenant_id=tenant_id,
         store_id=store_id,
+        month_id=month_id,
     )
     detail_code = exc.details.get("code")
     code = detail_code if isinstance(detail_code, str) and detail_code else exc.code
