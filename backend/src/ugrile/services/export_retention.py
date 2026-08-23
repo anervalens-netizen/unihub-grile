@@ -95,8 +95,16 @@ def cleanup_managed_export_artifacts(
     """
 
     settings = get_settings()
-    hours = retention_hours or settings.export_artifact_retention_hours
-    limit = max_operations or settings.export_artifact_max_operations
+    hours = (
+        settings.export_artifact_retention_hours
+        if retention_hours is None
+        else retention_hours
+    )
+    limit = (
+        settings.export_artifact_max_operations
+        if max_operations is None
+        else max_operations
+    )
     if hours < 1 or limit < 1:
         raise DomainError(
             "export retention limits must be positive",
