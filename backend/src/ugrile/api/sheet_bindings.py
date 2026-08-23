@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from pydantic import Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,13 @@ from .deps import current_principal, db_session
 from .schemas import SheetBindingConfigureIn, SheetBindingOut
 
 router = APIRouter(prefix="/sheet-bindings", tags=["google-sheets"])
+
+
+class SheetBindingConfigureRequest(SheetBindingConfigureIn):
+    """Binding request plus the complete last-seen identity for CAS rebinds."""
+
+    expected_current_sheet_name_grila: str | None = Field(default=None, max_length=64)
+    expected_current_sheet_name_pontaj: str | None = Field(default=None, max_length=64)
 
 
 def _out(binding: SheetBinding) -> SheetBindingOut:
@@ -43,13 +51,13 @@ def get_binding(
 @router.put("/{store_id}", response_model=SheetBindingOut)
 def put_binding(
     store_id: str,
-    payload: SheetBindingConfigureIn,
+    payload: SheetBindingConfigureRequest,
     session: Session = Depends(db_session),
     principal: Principal = Depends(current_principal),
 ) -> SheetBindingOut:
     """Create idempotently or explicitly rebind one store.
 
-    Rebinding requires the caller's last-seen spreadsheet id plus a reason.
+    Rebinding requires the complete last-seen Sheet identity plus a reason.
     Database uniqueness remains the final authority for concurrent attempts.
     """
 
@@ -64,6 +72,8 @@ def put_binding(
             sheet_name_pontaj=payload.sheet_name_pontaj,
             actor_id=principal.user_id,
             expected_current_spreadsheet_id=payload.expected_current_spreadsheet_id,
+            expected_current_sheet_name_grila=payload.expected_current_sheet_name_grila,
+            expected_current_sheet_name_pontaj=payload.expected_current_sheet_name_pontaj,
             reason=payload.reason,
         )
         session.commit()
