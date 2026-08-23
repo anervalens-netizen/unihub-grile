@@ -17,7 +17,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..connectors.google_epay_layout import epay_read_range, parse_epay_readback
+from ..domain.errors import NotFoundError
 from ..repositories.models import Person, SiteDayAssignment
+from ..repositories.months import MonthRepository
 from .epay import EpayReadbackResult, record_readback
 from .month_write_gate import lock_month_for_financial_write
 from .sheet_bindings import get_sheet_binding, require_sheet_binding
@@ -107,6 +109,12 @@ def read_epay_from_google_sheet(
 ) -> GoogleEpayReadbackResult:
     """Read exact E-pay cells from the current bound Sheet and persist the attempt."""
 
+    initial_month = MonthRepository(session).get(month_id)
+    if initial_month.tenant_id != tenant_id:
+        raise NotFoundError(
+            "month not found",
+            details={"tenant_id": tenant_id, "month_id": month_id},
+        )
     initial_binding = require_sheet_binding(
         session,
         tenant_id=tenant_id,
@@ -121,7 +129,7 @@ def read_epay_from_google_sheet(
         session,
         tenant_id=tenant_id,
         month_id=month_id,
-        fallback_revision=0,
+        fallback_revision=initial_month.revision,
     )
     initial_people = _working_person_ids(
         session,
