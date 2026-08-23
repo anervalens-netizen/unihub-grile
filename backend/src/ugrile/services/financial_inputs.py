@@ -7,6 +7,10 @@ partial or corrupted while retaining a current-looking revision. This module
 therefore checks current authoritative values and connector generation,
 validates the payload hashes, and reconstructs the complete current canonical
 grid before close.
+
+For Retail-backed periods the accepted-generation ledger is the only authority
+for sales, target versions and incentive versions. Historical rows that are not
+referenced by the current accepted head can never become implicit fallback.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from ..repositories.models import (
     SalesStoreDay,
     StoreTarget,
 )
+from ..repositories.retail_generation import AcceptedRetailGeneration, accepted_retail_generation
 from ..repositories.salary import SalaryRepository
 from .payroll_grid import PayrollGridService
 
@@ -39,9 +44,34 @@ def _as_decimal(value: object) -> Decimal | None:
         return None
 
 
-def _latest_incentive(
-    session: Session, *, tenant_id: str, person_id: str, month: Month
-) -> Decimal:
+def _authoritative_incentive(
+    session: Session,
+    *,
+    tenant_id: str,
+    person_id: str,
+    month: Month,
+    accepted: AcceptedRetailGeneration | None,
+) -> tuple[Decimal, str | None]:
+    if accepted is not None:
+        version = accepted.incentive_version_for(person_id=person_id)
+        if version is None:
+            return Decimal("0"), "accepted Retail snapshot has no incentive input"
+        row = session.execute(
+            select(IncentiveInput).where(
+                IncentiveInput.tenant_id == tenant_id,
+                IncentiveInput.person_id == person_id,
+                IncentiveInput.year == month.year,
+                IncentiveInput.month == month.month,
+                IncentiveInput.version == version,
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return (
+                Decimal("0"),
+                f"accepted Retail incentive version {version} is missing from persistence",
+            )
+        return row.amount, None
+
     row = session.execute(
         select(IncentiveInput)
         .where(
@@ -53,13 +83,39 @@ def _latest_incentive(
         .order_by(IncentiveInput.version.desc(), IncentiveInput.id.desc())
         .limit(1)
     ).scalar_one_or_none()
-    return row.amount if row is not None else Decimal("0")
+    return (row.amount if row is not None else Decimal("0")), None
 
 
-def _latest_target(
-    session: Session, *, tenant_id: str, store_id: str, month: Month
-) -> StoreTarget | None:
-    return session.execute(
+def _authoritative_target(
+    session: Session,
+    *,
+    tenant_id: str,
+    store_id: str,
+    month: Month,
+    accepted: AcceptedRetailGeneration | None,
+) -> tuple[StoreTarget | None, str | None]:
+    if accepted is not None:
+        version = accepted.target_version_for(store_id=store_id, kind="MONTHLY_SALES")
+        if version is None:
+            return None, "accepted Retail snapshot has no MONTHLY_SALES target"
+        row = session.execute(
+            select(StoreTarget).where(
+                StoreTarget.tenant_id == tenant_id,
+                StoreTarget.store_id == store_id,
+                StoreTarget.year == month.year,
+                StoreTarget.month == month.month,
+                StoreTarget.kind == "MONTHLY_SALES",
+                StoreTarget.version == version,
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return (
+                None,
+                f"accepted Retail target version {version} is missing from persistence",
+            )
+        return row, None
+
+    row = session.execute(
         select(StoreTarget)
         .where(
             StoreTarget.tenant_id == tenant_id,
@@ -71,18 +127,13 @@ def _latest_target(
         .order_by(StoreTarget.version.desc(), StoreTarget.id.desc())
         .limit(1)
     ).scalar_one_or_none()
+    return row, None
 
 
-def _latest_sales_generation(
+def _latest_legacy_sales_generation(
     session: Session, *, tenant_id: str, month: Month
 ) -> str | None:
-    """Return the newest persisted generation discriminator for the month.
-
-    The current connector contract uses stable sortable generation strings.
-    Historical generations remain stored for reconciliation, but final close
-    must bind to the newest accepted generation instead of merely comparing
-    the monetary values from an older snapshot.
-    """
+    """Return the historical latest generation when no Retail head exists."""
 
     first = date(month.year, month.month, 1)
     last_day = monthrange(month.year, month.month)[1]
@@ -202,20 +253,26 @@ def financial_input_mismatch(
     if not isinstance(parameters, dict):
         return "grid payload has no canonical parameters"
 
+    period = f"{month.year:04d}-{month.month:02d}"
+    accepted = accepted_retail_generation(
+        session,
+        tenant_id=tenant_id,
+        period=period,
+    )
     persisted_generation = inputs.get("sales_generation")
     if not isinstance(persisted_generation, str) or not persisted_generation:
         return "grid payload has no sales generation discriminator"
-    current_generation = _latest_sales_generation(
-        session,
-        tenant_id=tenant_id,
-        month=month,
+    current_generation = (
+        accepted.generation_key
+        if accepted is not None
+        else _latest_legacy_sales_generation(session, tenant_id=tenant_id, month=month)
     )
     if current_generation is not None and persisted_generation != current_generation:
         return (
-            "sales changed because generation changed: "
+            "sales changed because accepted generation changed: "
             f"grid={persisted_generation}, current={current_generation}"
         )
-    accepted_generation = current_generation or persisted_generation
+    authoritative_generation = current_generation or persisted_generation
 
     first_day = date(month.year, month.month, 1)
     salary, tickets, flip = SalaryRepository(session).find_effective_window(
@@ -226,12 +283,15 @@ def financial_input_mismatch(
     salary = salary if salary is not None else Decimal("0")
     tickets = tickets if tickets is not None else Decimal("0")
     flip = flip if flip is not None else Decimal("0")
-    incentive = _latest_incentive(
+    incentive, incentive_error = _authoritative_incentive(
         session,
         tenant_id=tenant_id,
         person_id=person.id,
         month=month,
+        accepted=accepted,
     )
+    if incentive_error is not None:
+        return f"incentive input is missing from current authority: {incentive_error}"
     expected_parameters = {
         "salary": salary,
         "tickets": tickets,
@@ -264,7 +324,7 @@ def financial_input_mismatch(
             tenant_id=tenant_id,
             store_id=store_id,
             business_date=business_date,
-            generation=accepted_generation,
+            generation=authoritative_generation,
         )
         expected_sales = sale.amount if sale is not None else Decimal("0")
         expected_sim = sale.sim_quantity if sale is not None else 0
@@ -273,22 +333,28 @@ def financial_input_mismatch(
         if actual_sales != expected_sales:
             return (
                 f"sales changed for {store_id}/{business_date.isoformat()} "
-                f"in generation {accepted_generation}: "
+                f"in generation {authoritative_generation}: "
                 f"grid={actual_sales}, current={expected_sales}"
             )
         if not isinstance(actual_sim, int) or actual_sim != expected_sim:
             return (
                 f"SIM quantity changed for {store_id}/{business_date.isoformat()} "
-                f"in generation {accepted_generation}: "
+                f"in generation {authoritative_generation}: "
                 f"grid={actual_sim}, current={expected_sim}"
             )
 
-        target = _latest_target(
+        target, target_error = _authoritative_target(
             session,
             tenant_id=tenant_id,
             store_id=store_id,
             month=month,
+            accepted=accepted,
         )
+        if target_error is not None:
+            return (
+                f"target input is missing from current authority for {store_id}: "
+                f"{target_error}"
+            )
         if target is None:
             expected_target = Decimal("0")
         else:
