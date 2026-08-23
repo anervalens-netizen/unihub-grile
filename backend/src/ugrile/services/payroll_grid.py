@@ -22,6 +22,7 @@ from ..domain.rule_pack import RULE_PACK_VERSION, RulePackParameters, hash_input
 from ..repositories.epay import latest_snapshot
 from ..repositories.holidays import HolidayRepository
 from ..repositories.models import GridCalculation, Month, Person
+from ..repositories.retail_generation import accepted_retail_generation_key
 from ..repositories.salary import SalaryRepository
 from .grid import (
     GridService,
@@ -103,11 +104,22 @@ class PayrollGridService(GridService):
                     ),
                 )
             )
-        incentive = self._incentive_for(
+        incentive, incentive_missing = self._incentive_for_with_status(
             tenant_id=tenant_id,
             person_id=person_id,
             month=month,
         )
+        if incentive_missing:
+            anomalies.append(
+                _anomaly(
+                    GridAnomalyCode.INCENTIVE_INPUT_MISSING,
+                    person_id=person_id,
+                    message=(
+                        "accepted Retail snapshot has no usable incentive input "
+                        "for this person; zero is calculation-only and close-blocking"
+                    ),
+                )
+            )
         parameters = RulePackParameters(
             salary=salary,
             tickets=tickets,
@@ -183,7 +195,7 @@ class PayrollGridService(GridService):
         *,
         tenant_id: str,
         month: Month,
-        sales_generation: str = "FIXTURE_V1",
+        sales_generation: str | None = None,
     ) -> tuple[list[GridSnapshot], list[GridCalculation]]:
         locked_month = self.session.execute(
             select(Month)
@@ -198,6 +210,25 @@ class PayrollGridService(GridService):
                 details={"code": "MONTH_CLOSED", "month_id": locked_month.id},
             )
         month = locked_month
+
+        accepted_generation = accepted_retail_generation_key(
+            self.session,
+            tenant_id=tenant_id,
+            period=f"{month.year:04d}-{month.month:02d}",
+        )
+        if accepted_generation is not None:
+            if sales_generation is not None and sales_generation != accepted_generation:
+                raise ConflictError(
+                    "requested grid generation is not the accepted Retail head",
+                    details={
+                        "code": "RETAIL_GENERATION_NOT_ACCEPTED",
+                        "accepted_generation": accepted_generation,
+                        "received_generation": sales_generation,
+                    },
+                )
+            resolved_generation = accepted_generation
+        else:
+            resolved_generation = sales_generation or "FIXTURE_V1"
 
         participant_ids = month_participant_ids(
             self.session,
@@ -221,7 +252,7 @@ class PayrollGridService(GridService):
                 tenant_id=tenant_id,
                 month=month,
                 person_id=person.id,
-                sales_generation=sales_generation,
+                sales_generation=resolved_generation,
             )
             for person in sorted(people, key=lambda item: item.id)
         ]

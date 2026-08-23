@@ -1,20 +1,25 @@
 # UniHub Grile — future Retail integration contract
 
-Status: **target contract, no Retail writes authorized**  
+Status: **Grile-side adapter contract implemented; no Retail writes authorized**  
 Program: issue #3  
 Tracker: issue #4 (`INT-*`)
 
 ## 1. Purpose
 
-This document defines what Grile must be ready to consume from UniHub Retail in
+This document defines what Grile is prepared to consume from UniHub Retail in
 a later integration program. It exists so the plugin can be developed and
-tested now without depending on the Retail implementation.
+tested without depending on Retail implementation modules.
 
 During the current program:
 - Retail may be inspected read-only;
 - these contracts/adapters are implemented in `unihub-grile`;
 - no Retail endpoint/table/service is required to be changed yet;
-- no claim is made that the real Retail adapter is already wired.
+- no claim is made that the real Retail adapter or Retail identity handoff is
+  already wired.
+
+The current read-only mapping inventory is pinned in
+`docs/RETAIL_MAPPING_INVENTORY.md`; its Retail reference SHA is evidence, not a
+runtime dependency.
 
 ## 2. Design rule
 
@@ -27,8 +32,9 @@ External source
 Adapter -> versioned Grile contract -> validation/generation -> Grile services
 ```
 
-A fixture adapter and the future Retail adapter must implement the same semantic
-contract.
+`FixtureRetailAdapter` and the future Retail adapter implement the same
+`RetailSnapshotAdapter` semantic boundary. Neither the Grile domain nor service
+layer imports Retail code.
 
 Forbidden architecture:
 
@@ -41,33 +47,44 @@ A temporary read-only DB adapter may be used later during a controlled cutover
 only if explicitly approved, but it must still translate into the same Grile
 contract and cannot become the permanent domain dependency.
 
-## 3. Contract envelope
+## 3. Executable v1 contract envelope
 
-Every external snapshot/generation should carry enough metadata to answer:
-- which schema version is this;
-- which tenant/business context;
-- which source generation;
-- which period;
-- when was it produced;
-- is the snapshot complete;
-- how can it be reconciled/replayed.
-
-Conceptual envelope:
+The supported schema is exactly `retail-grile.v1`, represented by
+`RetailSnapshotV1` in `backend/src/ugrile/connectors/retail_contract_v1.py`.
+The top-level snapshot contains:
 
 ```json
 {
-  "schema_version": "retail-grile-v1",
-  "tenant_id": "...",
+  "schema_version": "retail-grile.v1",
+  "tenant_id": "tenant_example",
   "timezone": "Europe/Bucharest",
-  "generation": "...",
   "period": "YYYY-MM",
-  "generated_at": "...",
-  "datasets": {}
+  "generation": {
+    "sales_hash": "source-authority-hash",
+    "sales_revision": 12,
+    "campaign_revision": 7,
+    "cutoff_date": "YYYY-MM-DD",
+    "generated_at": "timezone-aware timestamp"
+  },
+  "complete": true,
+  "stores": [],
+  "people": [],
+  "manager_scopes": [],
+  "sales_store_day": [],
+  "targets": [],
+  "incentives": [],
+  "payroll_inputs": []
 }
 ```
 
-Unknown major schema versions fail closed. Missing required datasets cannot be
-silently interpreted as all-zero business data.
+`parse_retail_snapshot()` negotiates the schema before Pydantic validation.
+Unknown versions and malformed/incomplete snapshots fail closed. Tenant and
+period returned by an adapter are rechecked against the caller request before
+any persistence mutation.
+
+`complete=true` is a semantic assertion: omission cannot silently mean a
+monetary zero. A business zero must be represented as an explicit authoritative
+row where the relevant dataset is required.
 
 ## 4. Identity / principal contract
 
@@ -99,7 +116,9 @@ Candidate set:
 - `grile.admin`.
 
 The exact list may evolve in Grile, but the backend capability model must exist
-before real Retail session wiring.
+before real Retail session wiring. Until INT-012 defines manager identity
+translation, a snapshot carrying `manager_scopes` is rejected by the ingest
+bridge rather than guessed into Grile `User` foreign keys.
 
 ## 5. Tenant/time contract
 
@@ -111,7 +130,8 @@ Required:
 - source generation.
 
 All business dates are interpreted using the tenant business timezone; persisted
-instant timestamps remain timezone-aware.
+instant timestamps remain timezone-aware. A snapshot timezone that conflicts
+with an existing Grile tenant fails closed.
 
 ## 6. Store/catalog contract
 
@@ -123,7 +143,9 @@ Per store, minimum fields:
 - hierarchy/manager references required for scope;
 - optional source metadata useful for reconciliation.
 
-Names are display values, never identity keys.
+Names are display values, never identity keys. The M6 bridge derives stable
+Grile internal codes from the external IDs while preserving the external IDs on
+catalog rows for reconciliation.
 
 ## 7. Person contract
 
@@ -139,6 +161,10 @@ Per person, minimum:
 Do not copy unnecessary personal data into Grile. CNP, private addresses and
 other irrelevant HR data are outside this contract.
 
+A future adapter must resolve one defensible payroll/home store for the requested
+period before constructing `RetailPersonV1`; ambiguous multi-store source facts
+fail closed rather than being guessed.
+
 ## 8. Manager/effective scope contract
 
 Grile needs enough data to answer, for a business date/period:
@@ -148,15 +174,13 @@ Which stores may principal X read/write?
 Which people are visible through that scope?
 ```
 
-The contract must support effective-dated scope changes. A current static list is
-not sufficient if Retail's manager ownership can change mid-period.
+The contract supports effective-dated scope rows. A current static list is not
+sufficient if Retail manager ownership changes across periods.
 
-The future adapter may either:
-- provide normalized effective scope rows; or
-- provide hierarchy facts from which Grile's centralized scope resolver derives
-  the same result.
-
-This choice must be explicit and tested.
+The current DTO is `RetailManagerScopeV1`. Persistence is deliberately deferred
+until INT-012 establishes the Retail-subject/group-to-Grile-user identity
+adapter; the M6 ingest bridge rejects unresolved scope rows rather than silently
+dropping or misbinding them.
 
 ## 9. Sales store/day contract
 
@@ -174,8 +198,11 @@ Business invariant:
 - Grile derives person credit from the Grile calendar;
 - changing personal attribution never changes the physical sales total.
 
-A generation is accepted atomically or rejected; partial new input must not
-replace the last accepted complete generation as if missing rows were zero.
+Each accepted snapshot receives a Grile-owned `generation_key` derived from the
+canonical snapshot SHA-256. Historical `SalesStoreDay` generations remain
+stored, but attribution, grid and close paths consume only the generation named
+by the current accepted Retail ledger head for that tenant/period. This prevents
+multiple complete generations from being summed together.
 
 ## 10. Target contract
 
@@ -188,68 +215,108 @@ Minimum:
   rule pack;
 - generation/source metadata.
 
-If `sales_days` is required and missing, the condition is an explicit anomaly.
-Preview fallback behavior, if any, must not make final close appear fully valid.
+Retail target rows are stored as versioned Grile rows. The accepted generation
+ledger records the exact `(store_id, kind, version)` rows belonging to that
+snapshot. For a Retail-backed period, grid and close do **not** select an older
+"latest" row if the current accepted snapshot omits the target. The condition is
+surfaced as `TARGET_INPUT_MISSING` and is close-blocking. A present target whose
+amount is genuinely zero remains distinct and is reported through the existing
+zero-target anomaly.
+
+If `sales_days` is required and missing, the condition remains an explicit
+anomaly. Preview fallback behavior cannot make final close appear fully valid.
 
 ## 11. Incentive and other external payroll inputs
 
 The rule pack currently needs an authoritative monthly incentive input. Future
-Retail integration must supply it through a versioned contract or an explicitly
-separate authoritative connector.
+Retail integration must supply it through this versioned contract or an
+explicitly separate authoritative connector.
 
-Any additional external payroll input follows the same rule:
-- source identified;
-- period/person/store linkage explicit;
-- generation/version explicit;
-- missing input never silently becomes authoritative zero unless the business
-  contract explicitly defines zero as the correct default.
+Accepted Retail incentive rows are pinned as exact `(person_id, version)` ledger
+entries. Omission in a newer complete snapshot never reactivates an older
+version and never becomes authoritative zero. Grid may use zero as a deterministic
+calculation placeholder, but emits `INCENTIVE_INPUT_MISSING`; the close policy
+blocks that anomaly. An actual no-campaign zero is represented by an explicit
+incentive row with amount zero. `FixtureRetailAdapter` follows this same rule.
 
-Salary/tickets/Flip master remains a Grile-owned normalized input boundary even
-if the source is later Retail/HR.
+Generic `payroll_inputs` remain fail-closed in the ingest bridge until each
+`input_kind` has an explicit Grile persistence/business mapping. Salary/tickets/
+Flip master remains a Grile-owned normalized boundary even if its eventual
+source is Retail/HR.
 
-## 12. Generation semantics
+## 12. Accepted generation and last-good semantics
 
-A connector import must be replayable and diagnosable.
+The semantic snapshot SHA-256 is calculated from canonical `RetailSnapshotV1`
+content while excluding `generation.generated_at`, because fetch time is
+diagnostic rather than source identity. The first 32 hex characters form the
+DB-compatible sales `generation_key`; the full SHA remains in the ledger.
 
-Required properties:
-- source generation ID;
-- validated dataset manifest/counts;
-- atomic accepted generation;
-- last-good retention;
-- idempotent replay where practical;
-- no cross-tenant identity collision;
-- audit/job linkage;
-- current vs previous generation visible operationally.
-
-## 13. Adapter interfaces
-
-The exact Python names are implementation decisions, but the architectural roles
-should remain separable:
+A successful apply writes both normalized inputs and one `ImportRun` ledger row
+inside the same caller transaction. Ledger kind is period-scoped:
 
 ```text
-IdentityAdapter / PrincipalProvider
-CatalogAdapter
-ScopeAdapter
-SalesAdapter
-TargetAdapter
-Incentive/PayrollInputAdapter
+RETAIL_SNAPSHOT_V1:YYYY-MM
 ```
 
-A single snapshot provider may implement several interfaces internally, but
-business services should not depend on a giant Retail-specific object.
+The newest committed `DONE` ledger row for `(tenant, period)` is the accepted
+head. Properties:
+- exact replay returns `REPLAYED` and creates no new financial versions/ledger
+  row;
+- source revision/cutoff regression is rejected;
+- a changed sales hash without sales revision advance is rejected;
+- changed content with neither sales nor campaign revision advance is rejected;
+- the tenant row is locked before transition validation and version allocation,
+  preventing concurrent writers from publishing an older head behind a newer
+  one;
+- a failed/rolled-back attempt cannot replace the previous committed head;
+- target and incentive ledger entries are strictly validated and duplicate
+  identities fail closed;
+- persisted grid financial freshness is revalidated against the **current
+  accepted head**, even when `Month.revision` has not changed.
+
+Legacy fixture/non-Retail periods preserve their historical latest-version
+behavior only when no accepted Retail head exists.
+
+## 13. Adapter interfaces and service boundary
+
+The executable M6 source adapter boundary is intentionally small:
+
+```python
+class RetailSnapshotAdapter(Protocol):
+    def load_snapshot(self, *, tenant_id: str, period: str) -> RetailSnapshotV1: ...
+```
+
+Adapters perform source acquisition + translation to the Grile-owned DTO. They
+do not mutate Grile persistence. `RetailSnapshotIngestService` is the Grile-owned
+mutation boundary that validates request identity/time, serializes generation
+acceptance and applies the normalized snapshot.
+
+Identity/session is intentionally a separate future adapter (INT-012). This
+keeps Retail auth/provider details out of financial data adapters and out of the
+domain.
 
 ## 14. FixtureRetailAdapter
 
-Before real integration, Grile must provide anonymized fixtures that implement
-the same semantic contract and include:
-- multiple managers/scopes;
-- at least 75 stores / 150 people for performance fixtures;
-- effective scope changes;
-- missing/duplicate source cases;
-- sales/target generation changes;
-- incentive/payroll input edge cases.
+`FixtureRetailAdapter` is implemented from the package's deterministic fixture
+and returns the exact same `RetailSnapshotV1` type required from a future Retail
+adapter. It does not call a different domain path. It includes explicit zero
+incentive rows for people with no campaign amount so tests distinguish
+"authoritative zero" from "input omitted".
 
-Contract tests should be reusable against both fixture and future Retail adapter.
+Contract/integration tests cover:
+- supported/unsupported schema negotiation;
+- tenant/period matching;
+- idempotent replay;
+- accepted generation advance and stale-generation rejection;
+- last-good preservation;
+- physical sales reading from only one accepted generation;
+- target/incentive omission without stale fallback;
+- payroll-grid auto-selection of the accepted generation;
+- close-time invalidation of a grid when the Retail head advances without a
+  calendar revision change.
+
+Large 75-store/150-person performance fixtures remain a performance-proof
+concern; they do not change the adapter contract.
 
 ## 15. Frontend/shell integration contract
 

@@ -13,7 +13,6 @@ These tests prove:
 from __future__ import annotations
 
 import ast
-import re
 from decimal import Decimal
 from pathlib import Path
 
@@ -48,6 +47,7 @@ RETAIL_NAMES = {
     "mobiup_retail",
     "mobiup.retail",
     "mobiup.unihub_retail",
+    "grile_salarii",
 }
 
 
@@ -225,17 +225,22 @@ def test_two_tenants_isolation(session):
 
 
 def test_grile_source_does_not_import_retail():
-    """No Grile module may import from the Retail checkout."""
+    """No Grile module may import from the external Retail checkout.
+
+    ``retail_*`` modules inside ``ugrile`` are Grile-owned integration DTO /
+    adapter code and are therefore legitimate. This regression rejects only
+    known external Retail package roots; the M6 AST boundary test separately
+    rejects absolute ``services``/``repositories`` imports from domain/services.
+    """
 
     offending: list[str] = []
-    pattern = re.compile(r"retail|grile_salarii", re.IGNORECASE)
     for path in GRILE_SRC.rglob("*.py"):
         if "__pycache__" in path.parts:
             continue
         for module, lineno, snippet in _imports_in(path):
-            if pattern.search(module):
+            if any(module == name or module.startswith(f"{name}.") for name in RETAIL_NAMES):
                 offending.append(f"{path}:{lineno}: {snippet}")
-    assert offending == [], "Grile source must not import from Retail/grile-salarii: " + "\n".join(
+    assert offending == [], "Grile source must not import external Retail/grile-salarii: " + "\n".join(
         offending
     )
 
