@@ -19,6 +19,7 @@ Every authenticated UniHub Grile API route must have an explicit capability and 
 - `epay.write` — record E-pay readback for an allowed store.
 - `sheet.read` — read projection/canary state within store scope.
 - `sheet.sync` — enqueue Sheet projection for an allowed store.
+- `sheet.bind` — read/create/rebind the permanent store↔Google-Sheet identity; admin-only.
 - `export.read` — read/download export runs only when their requested store set is within scope.
 - `export.create` — enqueue exports for an allowed store set.
 - `month.read` — read ordinary tenant month metadata.
@@ -50,8 +51,9 @@ Admins are tenant-wide unless a more restrictive product rule applies. Managers 
 | reopen | `month.reopen` | tenant month | admin-only + reason |
 | E-pay freshness | `epay.read` | requested store | manager effective scope; admin tenant-wide |
 | E-pay readback | `epay.write` | requested store and submitted working agents | admin in current UI policy; resource scope still mandatory |
+| Sheet binding GET/PUT | `sheet.bind` | tenant + exact store; spreadsheet id globally unique | admin-only; rebind requires CAS identity + reason |
 | Sheet projection read | `sheet.read` | requested store | manager effective scope; admin tenant-wide |
-| Sheet projection enqueue | `sheet.sync` | requested store | admin in current product policy; resource scope mandatory |
+| Sheet projection enqueue | `sheet.sync` | requested store + pinned Sheet identity | admin in current product policy; resource scope mandatory |
 | export/store | `export.create` | requested store | admin currently; future manager policy may grant scoped export |
 | export/bulk, pontaj-only | `export.create` | explicit store set; when omitted resolve to caller-visible set, never implicit tenant-wide for manager | admin currently |
 | export status/download | `export.read` | persisted export run + embedded requested store set | manager may read only if entire run is in current/effective allowed scope; admin tenant-wide |
@@ -75,6 +77,9 @@ Admins are tenant-wide unless a more restrictive product rule applies. Managers 
 11. Cross-tenant identifiers return deny/not-found without exposing foreign data.
 12. Closed-month state remains an independent business write gate after authorization succeeds. Connector ingest locks the same Month rows before authoritative financial input writes so it serializes with close/reopen.
 13. New routes must update this matrix and authorization tests in the same PR.
+14. A store has at most one permanent Sheet binding and one Google spreadsheet id may not be bound to multiple stores, including across tenants.
+15. Sheet projection jobs pin the binding identity seen at enqueue. A later rebind must make the older job fail terminally before provider I/O; it must never redirect that job to the replacement Sheet.
+16. Projection publication may advance `generation`, but live projection is never allowed to create/discover/rebind a Sheet identity as a side effect.
 
 ## M1 re-attestation result
 
