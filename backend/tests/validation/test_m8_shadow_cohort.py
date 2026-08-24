@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from tests.fixtures.m8_shadow_cohort import SHADOW_COHORT
 from ugrile.domain.grid import calculate_grid
 from ugrile.domain.rule_pack import get_default_rule_pack
+
+from tests.fixtures.m8_shadow_cohort import SHADOW_COHORT
 
 
 REQUIRED_COVERAGE = {
@@ -48,7 +49,7 @@ def test_shadow_cohort_is_anonymized_and_covers_at_least_eight_stores() -> None:
 
 def test_shadow_cohort_covers_required_payroll_and_source_edges() -> None:
     actual = set().union(*(case.coverage_tags for case in SHADOW_COHORT))
-    assert REQUIRED_COVERAGE <= actual
+    assert actual >= REQUIRED_COVERAGE
 
 
 def test_shadow_cohort_expected_payroll_components_match_rule_pack() -> None:
