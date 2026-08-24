@@ -43,7 +43,7 @@ jobs:
           cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Apply hardening edits
-        run: python .github/scripts/final_hardening_prep.py
+        run: python .github/scripts/final_hardening_prep_v2.py
 
       - name: Regenerate frontend lockfile
         working-directory: frontend
