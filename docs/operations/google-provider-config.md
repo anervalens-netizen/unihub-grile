@@ -52,20 +52,26 @@ The repository ignores `.env`, `config/google/`, `credentials*.json`,
 ## Live transport contract
 
 The live provider uses the Google Sheets v4 REST API with the service-account
-`spreadsheets` OAuth scope. It performs bounded HTTP calls with a 30-second
-per-request timeout by default.
+`spreadsheets` OAuth scope. It also uses the read-only
+`drive.metadata.readonly` scope to resolve the exact file owners that Google
+necessarily retains as protected-range editors. It does not read Drive file
+content or discover bindings by name. Requests use a 30-second per-request
+timeout by default.
 
 For one store projection it:
 
 1. requires the existing stable binding;
-2. reads the currently populated row count of the owned `Grila` (`A:E`) and
+2. resolves the file-owner identities from read-only Drive metadata so
+   protection attestation can distinguish unavoidable owners from arbitrary
+   extra editors;
+3. reads the currently populated row count of the owned `Grila` (`A:E`) and
    `Pontaj` (`A:G`) ranges;
-3. renders deterministic projection values from the revision-bound job payload;
-4. pads trailing owned rows with empty values so stale prior projection rows are
+4. renders deterministic projection values from the revision-bound job payload;
+5. pads trailing owned rows with empty values so stale prior projection rows are
    removed;
-5. writes both value ranges through one `spreadsheets.values.batchUpdate`
+6. writes both value ranges through one `spreadsheets.values.batchUpdate`
    request using `RAW` input mode;
-6. marks the local projection run `DONE` and advances binding generation only
+7. marks the local projection run `DONE` and advances binding generation only
    after the Google write succeeds.
 
 The live writer owns only these value ranges in this batch. Formatting,

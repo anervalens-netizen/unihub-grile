@@ -142,6 +142,7 @@ def _matches_expected(
     *,
     expected: Mapping[str, Any],
     editor_email: str,
+    owner_emails: frozenset[str],
 ) -> bool:
     if protected.get("description") != expected.get("description"):
         return False
@@ -152,7 +153,8 @@ def _matches_expected(
     if protected.get("warningOnly") is True:
         return False
     editors = _mapping(protected.get("editors"))
-    if sorted(_text_list(editors.get("users"))) != [editor_email]:
+    expected_editors = frozenset({editor_email, *owner_emails})
+    if frozenset(_text_list(editors.get("users"))) != expected_editors:
         return False
     if _text_list(editors.get("groups")):
         return False
@@ -170,6 +172,7 @@ def build_protection_requests(
     pontaj_tab: str,
     person_count: int,
     editor_email: str,
+    owner_emails: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Any], ...]:
     """Return only material add/update/delete requests for managed protections."""
 
@@ -208,7 +211,10 @@ def build_protection_requests(
                     details={"code": "GOOGLE_SHEET_CONTROL_STATE_INVALID", "tab": tab_name},
                 )
             if not _matches_expected(
-                managed[0], expected=expected, editor_email=editor_email
+                managed[0],
+                expected=expected,
+                editor_email=editor_email,
+                owner_emails=owner_emails,
             ):
                 requests.append(
                     {
@@ -245,6 +251,7 @@ def attest_protection_state(
     pontaj_tab: str,
     person_count: int,
     editor_email: str,
+    owner_emails: frozenset[str] = frozenset(),
 ) -> None:
     """Require one exact managed protection per tab and no E-pay overlap conflict."""
 
@@ -275,7 +282,10 @@ def attest_protection_state(
             unprotected=unprotected,
         )
         if not _matches_expected(
-            managed[0], expected=expected, editor_email=editor_email
+            managed[0],
+            expected=expected,
+            editor_email=editor_email,
+            owner_emails=owner_emails,
         ):
             raise GoogleProtectionContractError(
                 "managed protection does not exactly match the editable-cell contract",

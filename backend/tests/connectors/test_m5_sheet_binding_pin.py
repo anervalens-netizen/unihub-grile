@@ -22,6 +22,9 @@ from ugrile.repositories.models import SheetBinding, SheetProjectionRun
 class RecordingTransport:
     managed_editor_email = "svc-binding@example.test"
 
+    def spreadsheet_owner_emails(self, spreadsheet_id: str) -> frozenset[str]:
+        return frozenset()
+
     def __init__(self) -> None:
         self.reads: list[tuple[str, str]] = []
         self.readbacks: list[tuple[str, str]] = []

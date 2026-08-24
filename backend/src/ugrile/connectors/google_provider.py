@@ -167,6 +167,9 @@ class LiveGoogleProjectionProvider:
         month_id = _required_metadata_text(metadata, "month_id")
         revision = _required_metadata_int(metadata, "revision")
         try:
+            owner_emails = self._transport.spreadsheet_owner_emails(
+                binding.spreadsheet_id
+            )
             epay_existing = self._transport.read_values(
                 binding.spreadsheet_id,
                 epay_read_range(binding.sheet_name_grila),
@@ -185,6 +188,7 @@ class LiveGoogleProjectionProvider:
                 pontaj_tab=binding.sheet_name_pontaj,
                 person_count=len(person_ids),
                 editor_email=self._transport.managed_editor_email,
+                owner_emails=owner_emails,
             )
             if protection_requests:
                 self._transport.batch_update_spreadsheet(
@@ -198,6 +202,7 @@ class LiveGoogleProjectionProvider:
                 pontaj_tab=binding.sheet_name_pontaj,
                 person_count=len(person_ids),
                 editor_email=self._transport.managed_editor_email,
+                owner_emails=owner_emails,
             )
 
             grila_existing_rows = self._transport.existing_row_count(

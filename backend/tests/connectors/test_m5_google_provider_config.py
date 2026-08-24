@@ -26,6 +26,11 @@ GOOGLE_ENV_KEYS = (
 
 
 class NoopLiveTransport:
+    managed_editor_email = "svc-noop@example.test"
+
+    def spreadsheet_owner_emails(self, spreadsheet_id: str) -> frozenset[str]:
+        return frozenset()
+
     def existing_row_count(self, spreadsheet_id: str, range_a1: str) -> int:
         return 0
 
