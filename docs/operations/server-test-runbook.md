@@ -2,8 +2,8 @@
 
 Status: `VAL-014` candidate procedure.  
 Canonical plan: issue #3.  
-Historical completed program/evidence ledger: issue #4.  
-Current pre-server remediation/certification ledger: issue #69.
+Program/evidence tracker: issue #4.  
+Pre-server remediation/certification ledger: issue #69.
 
 This runbook is for testing UniHub Grile as a standalone candidate on a
 non-production server. It does **not** authorize production deployment, live
