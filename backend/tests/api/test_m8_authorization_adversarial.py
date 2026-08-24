@@ -58,7 +58,7 @@ def test_dev_identity_headers_cannot_spoof_another_tenant(
     for headers in attempts:
         response = client.get("/session", headers=headers)
         assert response.status_code == 401, response.text
-        assert response.json()["detail"]["code"] == "AUTH_ERROR"
+        assert response.json()["code"] == "AUTH_ERROR"
 
 
 def test_export_denials_happen_before_any_job_or_export_side_effect(
