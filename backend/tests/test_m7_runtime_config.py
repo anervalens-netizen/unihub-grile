@@ -67,7 +67,7 @@ def test_prod_rejects_development_identity_database_and_fake_google(
     assert "UGRILE_GOOGLE_PROVIDER=fake is forbidden in prod" in message
 
 
-def test_prod_rejects_non_postgres_and_database_echo(
+def test_prod_rejects_non_postgres_database_echo_and_unimplemented_external_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
@@ -84,9 +84,10 @@ def test_prod_rejects_non_postgres_and_database_echo(
     message = str(captured.value)
     assert "prod requires PostgreSQL DATABASE_URL" in message
     assert "DATABASE_ECHO must be false in prod" in message
+    assert "IDENTITY_PROVIDER=external is not implemented" in message
 
 
-def test_explicit_prod_safe_shape_passes_startup_validation(
+def test_prod_rejects_otherwise_safe_shape_until_external_identity_exists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
@@ -103,8 +104,26 @@ def test_explicit_prod_safe_shape_passes_startup_validation(
     )
     monkeypatch.setenv("UGRILE_GOOGLE_LIVE_MUTATIONS_ENABLED", "false")
 
+    with pytest.raises(ValidationError, match="IDENTITY_PROVIDER=external is not implemented"):
+        Settings(_env_file=None)
+
+
+def test_server_test_shape_remains_allowed_before_production_identity_integration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://grile_test_app:nondefault@db:5432/grile_test",
+    )
+    monkeypatch.setenv("DATABASE_ECHO", "false")
+    monkeypatch.setenv("IDENTITY_PROVIDER", "dev_headers")
+    monkeypatch.setenv("UGRILE_GOOGLE_PROVIDER", "fake")
+    monkeypatch.setenv("UGRILE_GOOGLE_LIVE_MUTATIONS_ENABLED", "false")
+    monkeypatch.delenv("UGRILE_GOOGLE_CREDENTIALS_FILE", raising=False)
+
     settings = Settings(_env_file=None)
 
-    assert settings.app_env == "prod"
-    assert settings.identity_provider == "external"
-    assert settings.google_provider == "live"
+    assert settings.app_env == "test"
+    assert settings.identity_provider == "dev_headers"
+    assert settings.google_provider == "fake"
