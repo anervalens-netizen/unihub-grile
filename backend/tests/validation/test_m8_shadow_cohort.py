@@ -2,7 +2,6 @@
 
 from ..fixtures.m8_shadow_cohort import SHADOW_COHORT
 
-
 REQUIRED_COVERAGE = {
     "BELOW_80",
     "AT_80",
