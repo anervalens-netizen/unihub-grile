@@ -40,16 +40,19 @@ Programul standalone M0-M8 și remedierea pre-server #69/#70 au produs un
 candidat tehnic puternic. Corecția de referință a candidatului din runbook a fost
 închisă prin #71/#72.
 
-Un audit adversarial nou, pornit de la starea curentă a repository-ului și fără a
-presupune corectitudinea rapoartelor anterioare, a redeschis gate-ul prin issue
-#73: procedura server-test instala backendul în `backend/.venv`, dar folosea apoi
-comenzi Python/Alembic globale. Până la închiderea #73, **nu există autorizație
-curentă de instalare pe server**.
+Un audit adversarial ulterior, pornit de la starea repository-ului fără a
+presupune corectitudinea rapoartelor anterioare, a deschis #73 pentru o problemă
+de executabilitate a procedurii server-test: backendul este instalat în
+`backend/.venv`, iar vechiul runbook folosea apoi comenzi Python/Alembic globale.
 
-Statusul curent se citește din planul #3 și trackerul #4. Issue #69 rămâne ledger
-pentru certificarea/remedierile pre-server anterioare și va fi reconciliat cu
-noul candidat după închiderea #73. Etichetele vechi `S1…S7` sunt numai dovezi
-istorice. Production și integrarea Retail rămân în afara acestei autorizări.
+**Acest README nu certifică dacă gate-ul este în acest moment PASS sau BLOCKED și
+nu certifică un SHA instalabil.** Statusul curent și eventualele remedieri deschise
+se citesc exclusiv din planul #3 și trackerul #4; candidatul autorizat, atunci
+când gate-ul este PASS, se reconciliază în ledgerul pre-server #69. Astfel,
+închiderea sau redeschiderea unei remedieri nu face acest README imediat stale.
+
+Etichetele vechi `S1…S7` sunt numai dovezi istorice. Production și integrarea
+Retail rămân în afara autorizării standalone.
 
 ## Surse canonice
 
