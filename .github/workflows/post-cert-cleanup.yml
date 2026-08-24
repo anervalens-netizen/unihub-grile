@@ -19,11 +19,14 @@ jobs:
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
-      - name: Delete merged and stale work branches
+      - name: Delete merged work branches
         shell: bash
         run: |
           set -euo pipefail
-          for branch in 'pre-server/final-hardening' 'pre-server/fresh-audit-runbook-venv'; do
+          for branch in \
+            'pre-server/final-hardening' \
+            'pre-server/fresh-audit-runbook-venv' \
+            'pre-server/security-remove-multipart'; do
             if gh api "repos/${REPO}/git/ref/heads/${branch}" >/dev/null 2>&1; then
               echo "Deleting ${branch}"
               gh api --method DELETE "repos/${REPO}/git/refs/heads/${branch}"
