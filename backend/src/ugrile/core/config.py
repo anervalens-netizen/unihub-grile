@@ -117,9 +117,12 @@ class Settings(BaseSettings):
                     "live Google mutations require UGRILE_GOOGLE_CREDENTIALS_FILE"
                 )
 
-        if self.google_provider == "live" and credentials:
-            if not Path(credentials).is_absolute():
-                raise ValueError("UGRILE_GOOGLE_CREDENTIALS_FILE must be an absolute path")
+        if (
+            self.google_provider == "live"
+            and credentials
+            and not Path(credentials).is_absolute()
+        ):
+            raise ValueError("UGRILE_GOOGLE_CREDENTIALS_FILE must be an absolute path")
 
         if self.app_env != "prod":
             return self
