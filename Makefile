@@ -26,8 +26,9 @@ help: ## Show the available targets
 
 .PHONY: install
 install: ## Install backend (venv + deps) and frontend (pnpm) toolchains
-	cd $(BACKEND) && $(PYTHON) -m venv $(VENV) && $(VENV)/bin/pip install --quiet --upgrade pip
-	cd $(BACKEND) && $(VENV)/bin/pip install --quiet -e ".[dev]"
+	cd $(BACKEND) && $(PYTHON) -m venv $(VENV) && $(VENV)/bin/pip install --quiet --upgrade 'pip==26.2.1'
+	cd $(BACKEND) && $(VENV)/bin/pip install --quiet -c requirements.lock -e ".[dev]"
+	cd $(BACKEND) && $(VENV)/bin/pip check
 	cd $(FRONTEND) && pnpm install --silent --frozen-lockfile
 
 .PHONY: format

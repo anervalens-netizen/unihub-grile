@@ -309,18 +309,29 @@ nu trebuie rescrise.
 
 ## 12. Current vs target
 
-Arhitectura documentează **ținta programului**, nu pretinde că toate elementele
-sunt deja implementate. Statusul exact este numai în issue #4.
+Arhitectura de mai sus este implementată pentru candidatul standalone server-test;
+statusul gate-ului și SHA-ul instalabil rămân autoritative exclusiv în issue #4.
 
-Mecanisme temporare cunoscute care trebuie eliminate/hardened înainte de gate:
-- development identity headers/fallback;
-- autorizare neuniformă pe unele endpointuri;
-- fixture ingest care nu trebuie montat în prod;
-- close policy încă insuficient de strict pentru toate inputurile financiare;
-- worker fără recovery/retry complet;
-- integrare Google/XLSX încă neproductionizată integral;
-- backend CI/observability incomplet;
-- Retail adapters încă neimplementate.
+Mecanismele care au fost harden-uite în program și nu mai sunt TODO-uri:
+- `dev_headers` este strict environment-gated, iar configurația production
+  fail-closed nu acceptă development identity;
+- capability + tenant + effective resource scope sunt backend-enforced, cu teste
+  negative cross-tenant/cross-manager;
+- fixture ingest nu este montat în production;
+- `ClosePolicy` verifică inputurile financiare obligatorii și serializează
+  mutațiile relevante pe Month;
+- workerul are lease committed, bounded retry/backoff, stale-RUNNING recovery,
+  idempotency și supersession/revision binding;
+- Google fake/live și XLSX au contracte fail-closed, readback/protection,
+  revision/generation pinning și publicare deterministă/atomică;
+- CI acoperă backend strict, PostgreSQL/migrații, frontend și browser E2E, iar
+  runtime-ul expune health/readiness/metrics/logging structurat.
+
+Limite deliberate care rămân în afara gate-ului standalone:
+- identitatea production reală va fi furnizată de adaptorul Retail/host;
+- adaptorul Retail real și montarea în shell-ul Retail sunt fază separată;
+- live Google canary, deployment/production activation și măsurătorile pe hostul
+  real necesită autorizare/executare separată.
 
 ## 13. Performance și operare
 

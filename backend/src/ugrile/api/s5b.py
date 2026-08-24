@@ -167,8 +167,6 @@ def _export_response(
     summary = _summary_dict(run)
     request_payload = summary.get("payload")
     request_payload = request_payload if isinstance(request_payload, dict) else {}
-    hint = summary.get("artifact_uri_hint")
-    artifact_uri_hint = str(hint) if isinstance(hint, str) and hint else run.artifact_uri
     status = "ENQUEUED" if run.status == "PENDING" else run.status
     return {
         "kind": run.kind,
@@ -176,7 +174,7 @@ def _export_response(
         "job_id": run.id,
         "idempotency_key": idempotency_key,
         "status": status,
-        "artifact_uri_hint": artifact_uri_hint,
+        "artifact_ready": run.status == "DONE" and bool(run.artifact_uri),
         "replayed": replayed,
         "month_revision": request_payload.get("month_revision"),
         "data_revision": request_payload.get("data_revision"),
@@ -521,7 +519,7 @@ def export_job_status(
         "job_id": run.id,
         "kind": run.kind,
         "status": run.status,
-        "artifact_uri": run.artifact_uri,
+        "artifact_ready": run.status == "DONE" and bool(run.artifact_uri),
         "summary": run.summary,
     }
 
