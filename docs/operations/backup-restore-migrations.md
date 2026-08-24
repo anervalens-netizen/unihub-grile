@@ -21,7 +21,9 @@ external projections and are not a substitute for a PostgreSQL backup.
 ## Required tools and secret handling
 
 Use PostgreSQL client tools compatible with the server major version (currently
-PostgreSQL 17 in CI):
+PostgreSQL 17 in CI). Repository Alembic commands must be run from
+`<REPOSITORY_CHECKOUT>/backend` with `.venv/bin/alembic`; a global Alembic install
+is not part of the server contract. Required host tools:
 
 - `pg_dump`;
 - `pg_restore`;
@@ -86,8 +88,10 @@ restore target, never the active primary URL.
 Validate the restored copy:
 
 ```bash
-DATABASE_URL="$RESTORED_SQLALCHEMY_URL" alembic current
-DATABASE_URL="$RESTORED_SQLALCHEMY_URL" alembic check
+cd <REPOSITORY_CHECKOUT>/backend
+DATABASE_URL="$RESTORED_SQLALCHEMY_URL" .venv/bin/alembic current
+DATABASE_URL="$RESTORED_SQLALCHEMY_URL" .venv/bin/alembic check
+cd -
 ```
 
 Then run read-only sanity checks appropriate to the snapshot (table counts,
@@ -104,22 +108,24 @@ For a later server-test update:
 
 1. identify the exact candidate commit and migration head;
 2. confirm mandatory CI is green on that exact commit;
-3. inspect `alembic current`, `alembic heads` and migration files before changing
-   the server-test DB;
+3. from `<REPOSITORY_CHECKOUT>/backend`, inspect `.venv/bin/alembic current`,
+   `.venv/bin/alembic heads` and migration files before changing the server-test DB;
 4. quiesce Grile business writes and stop the durable worker (or perform the
    equivalent deployment drain) so no writer races the schema transition;
 5. take and verify the pre-migration backup above;
 6. run:
 
    ```bash
-   alembic upgrade head
+   cd <REPOSITORY_CHECKOUT>/backend
+   .venv/bin/alembic upgrade head
    ```
 
 7. verify:
 
    ```bash
-   alembic current
-   alembic check
+   .venv/bin/alembic current
+   .venv/bin/alembic check
+   cd -
    ```
 
 8. start the API, verify `/livez` then `/readyz`;
@@ -134,17 +140,17 @@ runtime errors to reveal migration needs.
 
 Default policy is **run forward or restore**, not an improvised schema downgrade.
 
-If `alembic upgrade head` fails before application traffic resumes:
+If `.venv/bin/alembic upgrade head` fails before application traffic resumes:
 
 1. keep API business writes and worker stopped/drained;
 2. capture the migration error without exposing secrets/business payloads;
 3. determine whether the failed transaction rolled back cleanly;
-4. compare `alembic current` with the recorded pre-migration revision;
+4. from `<REPOSITORY_CHECKOUT>/backend`, compare `.venv/bin/alembic current` with the recorded pre-migration revision;
 5. if the database cannot be proven consistent, restore the verified pre-change
    backup into a clean database/instance and repoint only after validation;
 6. otherwise fix the migration in code, recertify it, and run forward.
 
-Do **not** run `alembic downgrade` as a generic emergency command. A downgrade is
+Do **not** run `.venv/bin/alembic downgrade` as a generic emergency command. A downgrade is
 allowed only when the exact migration's downgrade path has been specifically
 reviewed/tested for the affected data and the maintenance plan says to use it.
 Destructive/downward data conversion is never inferred from the presence of a
@@ -158,8 +164,7 @@ an explicit maintenance window. The safe order is:
 1. stop/drain API writes and worker;
 2. preserve the failed/current DB rather than overwriting it in place;
 3. restore the chosen verified archive to a **new clean** database/instance;
-4. run `alembic current` and reconcile it with the application commit to be
-   started;
+4. from `<REPOSITORY_CHECKOUT>/backend`, run `.venv/bin/alembic current` and reconcile it with the application commit to be started;
 5. apply only the reviewed forward migrations needed by that application;
 6. run integrity/readiness checks against the restored target;
 7. switch Grile connectivity to the validated restored database;

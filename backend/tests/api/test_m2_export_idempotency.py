@@ -70,6 +70,13 @@ def _cleanup(*paths: str | None) -> None:
             os.unlink(path)
 
 
+def _export_artifact_uri(job_id: int) -> str | None:
+    with database.session_scope() as session:
+        run = session.get(ExportRun, job_id)
+        assert run is not None
+        return run.artifact_uri
+
+
 def test_exact_replay_returns_same_export_run_before_and_after_completion(engine, faker_tenant):
     principal = _principal(
         user_id="user_admin",
@@ -102,7 +109,10 @@ def test_exact_replay_returns_same_export_run_before_and_after_completion(engine
         assert first_body["replayed"] is False
         assert second_body["replayed"] is True
         assert second_body["job_id"] == first_body["job_id"]
-        assert second_body["artifact_uri_hint"] == first_body["artifact_uri_hint"]
+        assert "artifact_uri_hint" not in first_body
+        assert "artifact_uri_hint" not in second_body
+        assert first_body["artifact_ready"] is False
+        assert second_body["artifact_ready"] is False
 
         with database.session_scope() as session:
             assert (
@@ -141,7 +151,11 @@ def test_exact_replay_returns_same_export_run_before_and_after_completion(engine
         assert replay_body["replayed"] is True
         assert replay_body["job_id"] == first_body["job_id"]
         assert replay_body["status"] == "DONE"
-        _cleanup(replay_body["artifact_uri_hint"])
+        assert replay_body["artifact_ready"] is True
+        assert "artifact_uri_hint" not in replay_body
+        artifact_uri = _export_artifact_uri(replay_body["job_id"])
+        assert artifact_uri is not None
+        _cleanup(artifact_uri)
 
 
 def test_same_key_with_different_payload_fails_closed_without_orphan_run(engine, faker_tenant):
@@ -271,10 +285,13 @@ def test_distinct_export_operations_never_share_or_mutate_artifact(engine, faker
                 store_id=faker_tenant["store_id"],
                 key="m2-artifact-a",
             ).json()
-            first_path = first["artifact_uri_hint"]
+            assert "artifact_uri_hint" not in first
+            assert first["artifact_ready"] is False
             row, result = run_once(locked_by=WORKER_LOCKED_BY)
             assert row is not None and row.status == "DONE"
             assert result is not None
+            first_path = _export_artifact_uri(first["job_id"])
+            assert first_path is not None
             with open(first_path, "rb") as fh:
                 first_bytes = fh.read()
 
@@ -285,11 +302,14 @@ def test_distinct_export_operations_never_share_or_mutate_artifact(engine, faker
                 store_id=faker_tenant["store_id"],
                 key="m2-artifact-b",
             ).json()
-            second_path = second["artifact_uri_hint"]
-            assert second_path != first_path
+            assert "artifact_uri_hint" not in second
+            assert second["artifact_ready"] is False
             row, result = run_once(locked_by=WORKER_LOCKED_BY)
             assert row is not None and row.status == "DONE"
             assert result is not None
+            second_path = _export_artifact_uri(second["job_id"])
+            assert second_path is not None
+            assert second_path != first_path
 
             with open(first_path, "rb") as fh:
                 assert fh.read() == first_bytes

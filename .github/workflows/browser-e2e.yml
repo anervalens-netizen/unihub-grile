@@ -39,31 +39,35 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: |
+            backend/pyproject.toml
+            backend/requirements.lock
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
-          version: 9
+          version: 9.15.4
+          run_install: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 22.12.0
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - name: Install backend and browser driver
+      - name: Install locked backend and browser driver
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e './backend[dev]' playwright==1.55.0
+          python -m pip install --quiet --upgrade 'pip==26.2.1'
+          python -m pip install --quiet -c ./backend/requirements.lock -e './backend[dev]' 'playwright==1.55.0' 'pyee==13.0.0'
+          python -m pip check
 
       - name: Install Chromium
         run: python -m playwright install --with-deps chromium
@@ -112,7 +116,7 @@ jobs:
 
       - name: Upload browser evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: browser-e2e-evidence
           path: e2e-artifacts/

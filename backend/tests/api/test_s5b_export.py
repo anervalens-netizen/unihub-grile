@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from ugrile.core import database
 from ugrile.domain.enums import DayStatus, MonthState, RoleName, WorkingKind
 from ugrile.main import create_app
+from ugrile.repositories.models import ExportRun
 from ugrile.repositories.months import MonthRepository
 from ugrile.services.auth import Principal
 from ugrile.services.calendar import CalendarChange, CalendarService
@@ -101,6 +102,13 @@ def _cleanup_artifact(artifact_uri: str | None) -> None:
         os.unlink(artifact_uri)
 
 
+def _internal_artifact_uri(job_id: int) -> str | None:
+    with database.session_scope() as session:
+        run = session.get(ExportRun, job_id)
+        assert run is not None
+        return run.artifact_uri
+
+
 def test_export_store_enqueues_with_export_run_id_and_artifact_hint(engine, faker_tenant):
     admin = _build_admin(faker_tenant)
     with TestClient(create_app()) as test_client:
@@ -117,13 +125,15 @@ def test_export_store_enqueues_with_export_run_id_and_artifact_hint(engine, fake
         assert data["kind"] == "EXPORT_XLSX_STORE"
         assert data["status"] == "ENQUEUED"
         assert data["job_id"] > 0
-        assert data["artifact_uri_hint"].endswith(".xlsx")
+        assert "artifact_uri_hint" not in data
+        assert data["artifact_ready"] is False
         assert data["month_revision"] == data["data_revision"] == 1
         # The same job_id must be readable as an ExportRun row in PENDING.
         pending = _poll_export(test_client, admin, month_id, data["job_id"])
         assert pending["status"] == "PENDING"
         assert pending["kind"] == "EXPORT_XLSX_STORE"
-        assert pending["artifact_uri"] is None
+        assert "artifact_uri" not in pending
+        assert pending["artifact_ready"] is False
 
 
 def test_export_store_polling_returns_done_with_artifact_and_checksum(engine, faker_tenant):
@@ -146,8 +156,10 @@ def test_export_store_polling_returns_done_with_artifact_and_checksum(engine, fa
         body = _poll_export(test_client, admin, month_id, job_id)
         assert body["status"] == "DONE"
         assert body["kind"] == "EXPORT_XLSX_STORE"
-        artifact_uri = body["artifact_uri"]
-        assert artifact_uri == data["artifact_uri_hint"]
+        assert "artifact_uri" not in body
+        assert body["artifact_ready"] is True
+        artifact_uri = _internal_artifact_uri(job_id)
+        assert artifact_uri is not None
         assert os.path.exists(artifact_uri)
         try:
             with open(artifact_uri, "rb") as fh:
@@ -189,7 +201,10 @@ def test_export_download_streams_done_artifact_and_rejects_pending_or_unknown(en
 
         assert _drain_worker_until_empty() == 1
         status = _poll_export(test_client, admin, month_id, data["job_id"])
-        artifact_uri = status["artifact_uri"]
+        assert "artifact_uri" not in status
+        assert status["artifact_ready"] is True
+        artifact_uri = _internal_artifact_uri(data["job_id"])
+        assert artifact_uri is not None
         try:
             with open(artifact_uri, "rb") as fh:
                 expected = fh.read()
@@ -234,7 +249,10 @@ def test_export_bulk_polling_returns_done_with_zip_artifact(engine, faker_tenant
         body = _poll_export(test_client, admin, month_id, job_id)
         assert body["status"] == "DONE"
         assert body["kind"] == "EXPORT_XLSX_BULK"
-        artifact_uri = body["artifact_uri"]
+        assert "artifact_uri" not in body
+        assert body["artifact_ready"] is True
+        artifact_uri = _internal_artifact_uri(job_id)
+        assert artifact_uri is not None
         assert artifact_uri.endswith(".zip")
         try:
             assert os.path.exists(artifact_uri)
@@ -268,7 +286,10 @@ def test_export_pontaj_only_polling_returns_done_with_xlsx(engine, faker_tenant)
         body = _poll_export(test_client, admin, month_id, job_id)
         assert body["status"] == "DONE"
         assert body["kind"] == "EXPORT_PONTAJ_ONLY"
-        artifact_uri = body["artifact_uri"]
+        assert "artifact_uri" not in body
+        assert body["artifact_ready"] is True
+        artifact_uri = _internal_artifact_uri(job_id)
+        assert artifact_uri is not None
         try:
             assert os.path.exists(artifact_uri)
             with open(artifact_uri, "rb") as fh:
@@ -325,7 +346,9 @@ def test_export_job_polling_marks_failed_when_handler_raises(engine, faker_tenan
         assert processed == 1
         body = _poll_export(test_client, admin, month_id, bogus_run_id)
         assert body["status"] == "FAILED"
-        assert body["artifact_uri"] is None
+        assert "artifact_uri" not in body
+        assert body["artifact_ready"] is False
+        assert _internal_artifact_uri(bogus_run_id) is None
         summary = json.loads(body["summary"])
         assert "errors" in summary
         assert "month does not exist" in summary["errors"]

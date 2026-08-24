@@ -65,6 +65,7 @@ minversion = "8.0"
 addopts = "-ra --strict-markers"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "postgres: requires a reachable PostgreSQL server (set UGRILE_PG_URL).",
     "performance: realistic-scale performance contract run separately in CI.",

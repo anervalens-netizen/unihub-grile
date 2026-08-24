@@ -2,8 +2,8 @@
 
 Status: `VAL-014` candidate procedure.  
 Canonical plan: issue #3.  
-Program/evidence tracker: issue #4.  
-Pre-server remediation/certification ledger: issue #69.
+Authoritative server-test gate and installable SHA: issue #4.
+Pre-server remediation/evidence history: issue #69.
 
 This runbook is for testing UniHub Grile as a standalone candidate on a
 non-production server. It does **not** authorize production deployment, live
@@ -11,10 +11,11 @@ Google mutation, modification of UniHub Retail, or real Retail integration.
 
 ## 1. Candidate identity
 
-The installable candidate SHA is recorded in issue #69 after remediation,
-certification and merge attestation. Issue #4 preserves the program tracker and
-current gate status. This file uses the placeholder `<CANDIDATE_SHA>` rather
-than attempting to name its own commit.
+The installable candidate SHA is recorded in issue #4 only after the final
+server-test gate, certification and merge attestation. Issue #4 is the single
+authoritative gate **and** candidate-identity source required by `AGENTS.md`;
+issue #69 preserves remediation/evidence history only. This file uses the
+placeholder `<CANDIDATE_SHA>` rather than attempting to name its own commit.
 
 Server test must start from an immutable commit, not `main` or another moving
 branch:
@@ -28,7 +29,7 @@ git status --short
 
 Acceptance:
 
-- `git rev-parse HEAD` exactly equals the candidate SHA recorded in issue #69;
+- `git rev-parse HEAD` exactly equals the installable candidate SHA recorded in issue #4;
 - worktree is clean;
 - no local patch, generated source, dependency override or untracked runtime code
   is allowed to influence the tested artifact;
@@ -59,7 +60,7 @@ Use versions compatible with the certified repository:
 
 - Python 3.12;
 - PostgreSQL 17-compatible server/client tooling;
-- Node 20+ and pnpm for building the standalone frontend;
+- Node >=20.19 (or >=22.12) and pnpm for building the standalone frontend;
 - Git;
 - a host service supervisor for API/worker processes;
 - a static file server/reverse proxy for `frontend/dist` when the UI is exposed.
@@ -93,7 +94,9 @@ Important rules:
 - `VITE_DEV_IDENTITY` / `VITE_DEV_TENANT` are non-secret synthetic test IDs
   embedded at frontend build time; set them before `make build` and never use
   real employee/customer identifiers;
-- the static frontend/reverse proxy must route `/api` to the Grile API;
+- the static frontend/reverse proxy must route `/api/...` to the Grile API **after stripping the `/api` prefix** (`/api/session` -> backend `/session`, `/api/months/...` -> backend `/months/...`);
+- verify the rewrite from the externally served origin before UI acceptance. For Nginx, a minimal location is `location /api/ { proxy_pass http://127.0.0.1:8080/; }`; the trailing slash on `proxy_pass` is intentional and removes the matched `/api/` prefix. Equivalent proxies must preserve the same rewrite semantics;
+- after proxy setup, compare an authenticated request through `<SERVER_TEST_ORIGIN>/api/session` with the direct restricted-host API request to `http://127.0.0.1:8080/session`; both must reach the same backend route (subject to the same identity headers), and backend access logs must not show `/api/session`;
 - **do not expose `pnpm dev` or `pnpm preview` as the server-test frontend**;
   those are development/CI tooling. Serve the production-built `frontend/dist`
   through the chosen static server/reverse proxy;
@@ -403,7 +406,7 @@ For each server-test session record, without secrets/PII:
 
 ```text
 result: PASS | FAIL | PARTIAL
-candidate_sha: <exact issue-69 certified SHA>
+candidate_sha: <exact issue-4 installable SHA>
 checkout_clean: true|false
 host_profile: <non-secret CPU/RAM/storage/OS summary>
 postgres_version: <version>
