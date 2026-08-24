@@ -12,6 +12,14 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 module.update_server_runbook()
+runbook_path = Path("docs/operations/server-test-runbook.md")
+runbook_path.write_text(
+    runbook_path.read_text().replace(
+        "Authoritative server-test gate and installable SHA: issue #4.  \n",
+        "Authoritative server-test gate and installable SHA: issue #4.\n",
+        1,
+    )
+)
 module.update_backup_runbook()
 module.update_architecture()
 module.update_backend_config()
