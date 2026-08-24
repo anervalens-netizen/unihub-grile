@@ -1,6 +1,6 @@
 """M8 VAL-001 representative shadow cohort contract."""
 
-from tests.fixtures.m8_shadow_cohort import SHADOW_COHORT
+from ..fixtures.m8_shadow_cohort import SHADOW_COHORT
 
 
 REQUIRED_COVERAGE = {
