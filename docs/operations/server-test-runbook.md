@@ -2,8 +2,8 @@
 
 Status: `VAL-014` candidate procedure.  
 Canonical plan: issue #3.  
-Historical completed program/evidence ledger: issue #4.
-Current pre-server remediation/certification ledger: issue #69.
+Program/evidence tracker: issue #4.  
+Pre-server remediation/certification ledger: issue #69.
 
 This runbook is for testing UniHub Grile as a standalone candidate on a
 non-production server. It does **not** authorize production deployment, live
@@ -12,9 +12,9 @@ Google mutation, modification of UniHub Retail, or real Retail integration.
 ## 1. Candidate identity
 
 The installable candidate SHA is recorded in issue #69 after remediation,
-exact-head CI and merge attestation. Issue #4 preserves the historical M0-M8
-candidate evidence but is not installation authorization. This file uses the
-placeholder `<CANDIDATE_SHA>` rather than attempting to name its own commit.
+certification and merge attestation. Issue #4 preserves the program tracker and
+current gate status. This file uses the placeholder `<CANDIDATE_SHA>` rather
+than attempting to name its own commit.
 
 Server test must start from an immutable commit, not `main` or another moving
 branch:
@@ -59,10 +59,10 @@ Use versions compatible with the certified repository:
 
 - Python 3.12;
 - PostgreSQL 17-compatible server/client tooling;
-- Node 20+ and pnpm for the standalone frontend when built on-host;
+- Node 20+ and pnpm for building the standalone frontend;
 - Git;
 - a host service supervisor for API/worker processes;
-- reverse proxy/TLS only if needed by the isolated test environment.
+- a static file server/reverse proxy for `frontend/dist` when the UI is exposed.
 
 Container/local Compose defaults are development helpers, not server
 configuration standards.
@@ -93,8 +93,10 @@ Important rules:
 - `VITE_DEV_IDENTITY` / `VITE_DEV_TENANT` are non-secret synthetic test IDs
   embedded at frontend build time; set them before `make build` and never use
   real employee/customer identifiers;
-- the static frontend/reverse proxy must route `/api` to the Grile API; CI
-  certifies this contract against the production-built `dist` via Vite preview;
+- the static frontend/reverse proxy must route `/api` to the Grile API;
+- **do not expose `pnpm dev` or `pnpm preview` as the server-test frontend**;
+  those are development/CI tooling. Serve the production-built `frontend/dist`
+  through the chosen static server/reverse proxy;
 - use non-default PostgreSQL credentials;
 - never copy Google credential JSON into the repo or inline it into evidence;
 - `APP_ENV=prod` is intentionally rejected until the real external identity
@@ -122,14 +124,19 @@ make test
 make build
 ```
 
-Replace the quoted placeholders with fixture IDs that exist in the dedicated
-server-test database. `make install` uses the committed pnpm lockfile in frozen
-mode; unexplained dependency drift is a failure.
+`make install` creates the certified backend environment at
+`backend/.venv`. **All backend commands below use executables from that virtual
+environment explicitly. Do not rely on a globally installed `python`, `alembic`,
+`uvicorn`, or Grile package.**
+
+Replace the quoted frontend placeholders with fixture IDs that exist in the
+dedicated server-test database. `make install` uses the committed pnpm lockfile
+in frozen mode; unexplained dependency drift is a failure.
 
 A server-test deployment may use prebuilt artifacts instead, but their provenance
 must resolve to the same `<CANDIDATE_SHA>`.
 
-Do not continue with failed verification or an unexplained dependency drift.
+Do not continue with failed verification or unexplained dependency drift.
 
 ## 6. Database creation and migration
 
@@ -140,10 +147,11 @@ Before first application start:
 
 ```bash
 cd backend
-alembic heads
-alembic upgrade head
-alembic current
-alembic check
+.venv/bin/alembic heads
+.venv/bin/alembic upgrade head
+.venv/bin/alembic current
+.venv/bin/alembic check
+cd ..
 ```
 
 Acceptance:
@@ -156,7 +164,8 @@ Acceptance:
 For an **existing valuable server-test database**, follow
 `docs/operations/backup-restore-migrations.md` before migrations. That procedure
 requires verified backup evidence and restore-first/run-forward behavior rather
-than an improvised downgrade.
+than an improvised downgrade. When invoking repository Alembic commands there,
+use the same `backend/.venv` environment established by this installation.
 
 ## 7. Start order
 
@@ -168,21 +177,25 @@ Recommended order:
 4. `/livez` and `/readyz` check;
 5. worker;
 6. readiness/metrics re-check;
-7. frontend/reverse proxy.
+7. static frontend/reverse proxy.
 
 Example API process from repository checkout:
 
 ```bash
 cd backend
-python -m ugrile.main
+.venv/bin/python -m ugrile.main
 ```
 
 Example worker in a separately supervised process:
 
 ```bash
 cd backend
-python -m ugrile.worker.worker
+.venv/bin/python -m ugrile.worker.worker
 ```
+
+For a process supervisor, use the corresponding **absolute path** to
+`backend/.venv/bin/python` and set the repository `backend` directory as the
+working directory. Do not depend on an interactive shell activation step.
 
 The host supervisor owns process liveness/restart policy. Grile `/readyz` checks
 DB/schema and stale RUNNING leases; it does not claim to be a worker heartbeat.
@@ -225,8 +238,6 @@ fields as financial zero.
 
 Use at least one ADMIN and one MANAGER synthetic principal.
 
-Validate:
-
 ### Session and capabilities
 
 - `GET /session` returns the expected tenant, role and capabilities;
@@ -238,8 +249,7 @@ Validate:
 - Overview loads for representative fixture scale;
 - Program loads current revision;
 - one valid cell change succeeds;
-- stale revision produces the typed conflict without losing the pending user
-  context;
+- stale revision produces the typed conflict without losing pending user context;
 - out-of-scope person/store mutation is rejected;
 - denial creates no assignment/audit/job side effect.
 
@@ -291,10 +301,10 @@ Validate:
 - required `Grila` and `Pontaj` tabs are present for per-store export;
 - bulk manifest/checksum matches payload;
 - no external Retail/Google links/formula dependencies appear;
-- repeated same canonical input is deterministic according to the existing
-  serializer contract;
+- repeated same canonical input is deterministic according to the serializer
+  contract;
 - a synthetic store with at least three historical participants renders every
-  participant in Pontaj (including an inactive/leaver historical participant);
+  participant in Pontaj, including an inactive/leaver historical participant;
 - more than eight participants in one Pontaj workbook fails closed with
   `PONTAJ_LAYOUT_CAPACITY_EXCEEDED` rather than silently truncating;
 - managed export storage remains within the configured retention root.
@@ -326,8 +336,8 @@ latency issue is a P1 and blocks wider test progression until understood.
 
 ## 14. Browser validation
 
-Run the real frontend against the server-test API/PostgreSQL stack and validate
-at least:
+Run the production-built frontend against the server-test API/PostgreSQL stack
+and validate at least:
 
 - overview/navigation;
 - Program read/edit/conflict recovery;
@@ -352,10 +362,9 @@ Do **not** execute live Google operations from this runbook unless the user has
 separately authorized the bounded canary and named/approved a non-production
 target.
 
-When authorized, follow **only**
-`docs/operations/google-live-canary.md`. Its hard bounds include one test tenant,
-one OPEN test month, one store, one disposable spreadsheet, at most two
-projections and at most one controlled E-pay readback.
+When authorized, follow only `docs/operations/google-live-canary.md`. Its hard
+bounds include one test tenant, one OPEN test month, one store, one disposable
+spreadsheet, at most two projections and at most one controlled E-pay readback.
 
 Stop on the first provider/protection/readback mismatch. A failing canary is not
 converted to PASS by blind repetition.
@@ -363,11 +372,12 @@ converted to PASS by blind repetition.
 ## 16. Backup / restore drill
 
 Before server-test state becomes a dependency for others or before a risky
-migration window, execute the backup procedure in
-`docs/operations/backup-restore-migrations.md`.
+migration window, execute `docs/operations/backup-restore-migrations.md`.
 
 A backup is accepted as restorable evidence only after an isolated restore test
 succeeds. Never restore over the active database merely to prove the dump works.
+For repository Alembic validation in that procedure, use the installed
+`backend/.venv/bin/alembic` executable rather than assuming a global Alembic.
 
 ## 17. Stop / rollback
 
@@ -382,8 +392,7 @@ Safe rollback boundary:
 5. for schema/data recovery, run forward or restore a verified Grile backup to a
    clean database according to the migration runbook;
 6. keep Google live mutations disabled;
-7. do not perform any Retail rollback because this program did not change
-   Retail.
+7. do not perform any Retail rollback because this program did not change Retail.
 
 Do not use destructive `alembic downgrade`, manual outbox deletion or direct
 business-table edits as generic recovery shortcuts.
@@ -418,7 +427,7 @@ retail_mutations: none
 open_findings: <IDs/descriptions>
 ```
 
-If live Google canary is separately run, store its own sanitized evidence using
+If a live Google canary is separately run, store its own sanitized evidence using
 the template in the canary document.
 
 ## 19. Server-test session PASS criteria
@@ -432,7 +441,8 @@ A standalone server-test session is PASS only when:
 - worker jobs are recoverable/diagnosable;
 - browser and XLSX smoke succeed;
 - observed performance has no unexplained severe regression;
-- no new P0/P1 correctness/scope/data-loss/financial-close defect is open;
+- no new P0/P1 correctness/scope/data-loss/financial-close/operational defect is
+  open;
 - Retail remained untouched;
 - any live Google activity stayed within a separately authorized bounded canary.
 
