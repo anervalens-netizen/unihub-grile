@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from tests.fixtures.m8_shadow_cohort import SHADOW_COHORT
-
 from ugrile.domain.grid import calculate_grid
 from ugrile.domain.rule_pack import get_default_rule_pack
 
