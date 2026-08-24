@@ -1,0 +1,50 @@
+name: Post-certification branch cleanup
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  cleanup:
+    if: github.event.pull_request.head.ref == 'maintenance/post-cert-cleanup-20260824'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Delete merged and stale work branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          for branch in 'pre-server/final-hardening' 'pre-server/fresh-audit-runbook-venv'; do
+            if gh api "repos/${REPO}/git/ref/heads/${branch}" >/dev/null 2>&1; then
+              echo "Deleting ${branch}"
+              gh api --method DELETE "repos/${REPO}/git/refs/heads/${branch}"
+            else
+              echo "Already absent: ${branch}"
+            fi
+          done
+
+      - name: Verify only main plus cleanup branch remain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t branches < <(gh api "repos/${REPO}/branches?per_page=100" --paginate --jq '.[].name' | sort)
+          printf '%s\n' "${branches[@]}"
+          test "${#branches[@]}" -eq 2
+          test "${branches[0]}" = 'main'
+          test "${branches[1]}" = 'maintenance/post-cert-cleanup-20260824'
+
+      - name: Close cleanup PR and delete cleanup branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method PATCH "repos/${REPO}/pulls/${PR_NUMBER}" -f state=closed >/dev/null
+          gh api --method DELETE "repos/${REPO}/git/refs/heads/maintenance/post-cert-cleanup-20260824"
