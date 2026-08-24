@@ -36,18 +36,20 @@ autoritatea formulelor financiare.
 
 ## Stare
 
-Aplicația are deja un nucleu funcțional important: model de domeniu, calendar cu
-revision/CAS, pontaj, atribuire, rule pack, grile, close/reopen, Google/XLSX și un
-frontend standalone apropiat vizual de UniHub Retail.
+Programul standalone M0-M8 și remedierea pre-server #69/#70 au produs un
+candidat tehnic puternic. Corecția de referință a candidatului din runbook a fost
+închisă prin #71/#72.
 
-Programul standalone M0-M8 a ajuns la un candidat istoric certificat, dar
-un audit independent pre-server a deschis remedierea #69 înainte de instalare.
-Scorul/gate-ul istoric din #4 nu este, singur, autorizație de instalare.
+Un audit adversarial nou, pornit de la starea curentă a repository-ului și fără a
+presupune corectitudinea rapoartelor anterioare, a redeschis gate-ul prin issue
+#73: procedura server-test instala backendul în `backend/.venv`, dar folosea apoi
+comenzi Python/Alembic globale. Până la închiderea #73, **nu există autorizație
+curentă de instalare pe server**.
 
-Readiness-ul curent se stabilește din cea mai recentă certificare exact-head;
-pentru această fază sursa este issue #69. Etichetele vechi `S1…S7` și trackerul
-închis #4 rămân numai dovezi istorice. Production și integrarea Retail rămân în
-afara acestei autorizări.
+Statusul curent se citește din planul #3 și trackerul #4. Issue #69 rămâne ledger
+pentru certificarea/remedierile pre-server anterioare și va fi reconciliat cu
+noul candidat după închiderea #73. Etichetele vechi `S1…S7` sunt numai dovezi
+istorice. Production și integrarea Retail rămân în afara acestei autorizări.
 
 ## Surse canonice
 
@@ -138,8 +140,10 @@ Detalii și limitări: `docs/operations/local-commands.md`.
 Candidate-ul poate fi declarat gata numai dacă:
 
 - scorul total este `>= 8.5/10`;
-- nu există P0/P1 deschis pe correctness, authorization, data loss sau close;
-- CI obligatoriu este verde pe exact commitul candidat;
+- nu există P0/P1 deschis pe correctness, authorization, data loss, close sau
+  operare/installare;
+- CI obligatoriu și identitatea artifactului candidat sunt reconciliate fără
+  ambiguitate între commit și tree-ul efectiv testat;
 - reconcilierea shadow nu are diferențe salariale neexplicate;
 - fluxurile principale sunt validate end-to-end;
 - contractul de integrare Retail este complet;
