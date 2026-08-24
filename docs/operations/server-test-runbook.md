@@ -2,7 +2,8 @@
 
 Status: `VAL-014` candidate procedure.  
 Canonical plan: issue #3.  
-Canonical status/evidence ledger: issue #4.
+Historical completed program/evidence ledger: issue #4.
+Current pre-server remediation/certification ledger: issue #69.
 
 This runbook is for testing UniHub Grile as a standalone candidate on a
 non-production server. It does **not** authorize production deployment, live
@@ -10,9 +11,10 @@ Google mutation, modification of UniHub Retail, or real Retail integration.
 
 ## 1. Candidate identity
 
-The exact candidate SHA is recorded in issue #4 after final exact-head CI and
-SHA-guard merge. This file intentionally uses the placeholder
-`<CANDIDATE_SHA>` rather than attempting to name its own commit.
+The installable candidate SHA is recorded in issue #69 after remediation,
+exact-head CI and merge attestation. Issue #4 preserves the historical M0-M8
+candidate evidence but is not installation authorization. This file uses the
+placeholder `<CANDIDATE_SHA>` rather than attempting to name its own commit.
 
 Server test must start from an immutable commit, not `main` or another moving
 branch:
@@ -80,12 +82,19 @@ WORKER_ENABLED=true
 UGRILE_GOOGLE_PROVIDER=fake
 UGRILE_GOOGLE_LIVE_MUTATIONS_ENABLED=false
 UGR_S5_EXPORT_DIR=<bounded writable server-test path>
+VITE_DEV_IDENTITY=<synthetic server-test principal id>
+VITE_DEV_TENANT=<synthetic server-test tenant id>
 ```
 
 Important rules:
 
 - bind the server test to a restricted network; `dev_headers` is not production
   authentication;
+- `VITE_DEV_IDENTITY` / `VITE_DEV_TENANT` are non-secret synthetic test IDs
+  embedded at frontend build time; set them before `make build` and never use
+  real employee/customer identifiers;
+- the static frontend/reverse proxy must route `/api` to the Grile API; CI
+  certifies this contract against the production-built `dist` via Vite preview;
 - use non-default PostgreSQL credentials;
 - never copy Google credential JSON into the repo or inline it into evidence;
 - `APP_ENV=prod` is intentionally rejected until the real external identity
@@ -99,15 +108,23 @@ contents.
 
 ## 5. Install and build
 
-From the exact detached candidate checkout:
+From the exact detached candidate checkout, set the synthetic server-test
+frontend identity **before** building because Vite embeds these values at build
+time:
 
 ```bash
+export VITE_DEV_IDENTITY="<SYNTHETIC_TEST_USER_ID>"
+export VITE_DEV_TENANT="<SYNTHETIC_TEST_TENANT_ID>"
 make install
 make lint
 make typecheck
 make test
 make build
 ```
+
+Replace the quoted placeholders with fixture IDs that exist in the dedicated
+server-test database. `make install` uses the committed pnpm lockfile in frozen
+mode; unexplained dependency drift is a failure.
 
 A server-test deployment may use prebuilt artifacts instead, but their provenance
 must resolve to the same `<CANDIDATE_SHA>`.
@@ -276,6 +293,10 @@ Validate:
 - no external Retail/Google links/formula dependencies appear;
 - repeated same canonical input is deterministic according to the existing
   serializer contract;
+- a synthetic store with at least three historical participants renders every
+  participant in Pontaj (including an inactive/leaver historical participant);
+- more than eight participants in one Pontaj workbook fails closed with
+  `PONTAJ_LAYOUT_CAPACITY_EXCEEDED` rather than silently truncating;
 - managed export storage remains within the configured retention root.
 
 Do not move generated artifacts into Retail storage.

@@ -90,8 +90,11 @@ raw ZIP inspection. They prove:
 2. the workbook reports the pinned revision and expected Grila/Pontaj layout;
 3. bulk manifest size/checksum equals the embedded workbook;
 4. scoped pontaj-only output contains only the requested store set;
-5. no external-link parts or formula cells are present;
-6. retention deletes expired/overflow operation entries while preserving
+5. every selected historical participant is rendered in deterministic Pontaj
+   blocks up to the eight-block layout capacity, including inactive/leaver
+   history; capacity overflow fails closed instead of truncating;
+6. no external-link parts or formula cells are present;
+7. retention deletes expired/overflow operation entries while preserving
    filesystem boundaries and symlink safety.
 
 No Retail mutation or live Google request is part of this contract.

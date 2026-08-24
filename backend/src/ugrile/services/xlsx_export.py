@@ -27,9 +27,9 @@ Layout summary
 * Row 2: blank / spacer.
 * Row 8, 11, 14, 17, 20, 23, 26, 29: per-block day rows (Net hours),
   followed by interval (row r+1) and pause (row r+2).
-* Standard two-agent store uses rows 8 and 11 only; the remaining six
-  block-start rows stay present but empty so the contract layout
-  survives any future agent count.
+* Historical participants use the available block-start rows in deterministic
+  person order, up to all eight blocks. Rendering fails closed above layout
+  capacity; Pontaj never silently truncates a historical participant.
 * Total at column AH per active block: ``AHr = SUM(Cr:AGr)``.
 
 Per-store export filters assignments/pontaj to the store's own grid
@@ -58,6 +58,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..domain.errors import ValidationError
 from ..repositories.models import (
     ExportRun,
     GridCalculation,
@@ -349,17 +350,25 @@ def _write_pontaj_tab(
     by_person: dict[str, dict[date, PontajProjection]] = defaultdict(dict)
     for row in pontaj_rows:
         by_person[row.person_id][row.business_date] = row
-    # Two-agent store: render at most 2 blocks (rows 8, 11) when agents exist;
-    # the remaining block rows stay present (empty) per the standard layout.
+    # The standard sheet provides eight 3-row participant blocks. Historical
+    # people are part of payroll truth even after transfer/deactivation, so render
+    # every person supplied by the revision-pinned selector. Never turn overflow
+    # into a plausible but incomplete workbook.
     ordered_block_rows = list(active_block_rows)
-    if len(ordered_block_rows) > 2 and persons_by_id or not persons_by_id:
-        ordered_block_rows = ordered_block_rows[:2]
-    # Pick the two persons the standard layout uses (V2 first two by code).
     sorted_person_ids = sorted(
         persons_by_id.keys(),
         key=lambda pid: ((persons_by_id[pid].internal_code or ""), pid),
     )
-    block_persons = sorted_person_ids[: len(ordered_block_rows)]
+    if len(sorted_person_ids) > len(ordered_block_rows):
+        raise ValidationError(
+            "Pontaj layout capacity exceeded",
+            details={
+                "code": "PONTAJ_LAYOUT_CAPACITY_EXCEEDED",
+                "capacity": len(ordered_block_rows),
+                "participants": len(sorted_person_ids),
+            },
+        )
+    block_persons = sorted_person_ids
     for block_idx, start_row in enumerate(ordered_block_rows):
         if block_idx >= len(block_persons):
             break

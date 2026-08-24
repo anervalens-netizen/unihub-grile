@@ -28,7 +28,7 @@ help: ## Show the available targets
 install: ## Install backend (venv + deps) and frontend (pnpm) toolchains
 	cd $(BACKEND) && $(PYTHON) -m venv $(VENV) && $(VENV)/bin/pip install --quiet --upgrade pip
 	cd $(BACKEND) && $(VENV)/bin/pip install --quiet -e ".[dev]"
-	cd $(FRONTEND) && pnpm install --silent
+	cd $(FRONTEND) && pnpm install --silent --frozen-lockfile
 
 .PHONY: format
 format: ## Run ruff on the backend (format only)
