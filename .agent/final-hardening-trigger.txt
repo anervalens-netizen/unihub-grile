@@ -1,2 +1,0 @@
-Trigger the temporary final-hardening preparation workflow. This file is removed before final certification.
-retry: 2
