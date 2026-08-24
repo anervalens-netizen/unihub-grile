@@ -33,17 +33,24 @@ jobs:
       UGRILE_PG_URL: postgresql+psycopg://grile:grile@127.0.0.1:5432/grile_test
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/pyproject.toml
+          cache-dependency-path: |
+            backend/pyproject.toml
+            backend/requirements.lock
 
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --quiet --upgrade 'pip==26.2.1'
+          python -m pip install --quiet -c requirements.lock -e '.[dev]'
+          python -m pip check
+          python -m pip freeze --exclude-editable | LC_ALL=C sort > /tmp/resolved.lock
+          diff -u requirements.lock /tmp/resolved.lock
 
       - name: Ruff
         run: ruff check src tests
