@@ -129,7 +129,8 @@ def test_default_export_identity_advances_and_stale_job_never_writes(engine, fak
         assert stale_row.attempts == 1
         assert stale_row.last_error is not None
         assert "JOB_MONTH_REVISION_STALE" in stale_row.last_error
-        assert not os.path.exists(old["artifact_uri_hint"])
+        assert "artifact_uri_hint" not in old
+        assert old["artifact_ready"] is False
 
         with database.session_scope() as session:
             stale_run = session.get(ExportRun, old["job_id"])
@@ -142,12 +143,14 @@ def test_default_export_identity_advances_and_stale_job_never_writes(engine, fak
         current_row, current_result = run_once(locked_by=WORKER_LOCKED_BY)
         assert current_row is not None and current_row.status == "DONE"
         assert current_result is not None and current_result.status == "DONE"
-        current_artifact = new["artifact_uri_hint"]
-        assert os.path.exists(current_artifact)
+        assert "artifact_uri_hint" not in new
 
         with database.session_scope() as session:
             current_run = session.get(ExportRun, new["job_id"])
             assert current_run is not None and current_run.status == "DONE"
+            current_artifact = current_run.artifact_uri
+            assert current_artifact is not None
+            assert os.path.exists(current_artifact)
             summary = json.loads(current_run.summary)
             # CalendarService keeps revision 1 Pontaj history. The pinned
             # renderer must select only the 31 rows for revision 2, not both
