@@ -20,7 +20,7 @@ explicit `UGRILE_*` alias follow Pydantic Settings' field-name convention.
 | `TIMEZONE` | `Europe/Bucharest` | backend | Default business timezone setting. Tenant/business-date rules remain authoritative where explicitly stored. |
 | `DATABASE_URL` | local `grile:grile` PostgreSQL URL | API/worker/migrations | SQLAlchemy URL. Prod requires PostgreSQL and rejects the development credential pair. Secret in real environments. |
 | `DATABASE_ECHO` | `false` | backend | SQLAlchemy SQL echo. Must be `false` in prod because SQL/parameters are not an approved observability channel. |
-| `IDENTITY_PROVIDER` | `dev_headers` | API | `dev_headers` or reserved `external`. `dev_headers` is rejected in prod. The current `external` provider remains fail-closed until mounted later. |
+| `IDENTITY_PROVIDER` | `dev_headers` | API | `dev_headers` or reserved `external`. `dev_headers` is local/test only. `external` is also rejected in `prod` until a real adapter exists, preventing false production readiness. |
 | `WORKER_ENABLED` | `true` | API/worker | Declares durable worker responsibility. Readiness checks stale RUNNING leases only when enabled. |
 | `UGRILE_WORKER_POLL_SECONDS` | `0.5` | worker | Durable outbox poll interval. |
 | `UGRILE_WORKER_LEASE_SECONDS` | `1800` | API/worker | RUNNING lease timeout; minimum 30 seconds. Used by recovery/readiness. |
@@ -64,10 +64,15 @@ contracts.
 
 ## Production startup validation
 
-Constructing `Settings` is part of API/worker startup. `APP_ENV=prod` fails
-before serving traffic when any of these conditions is true:
+Constructing `Settings` is part of API/worker startup. At the current standalone
+milestone, `APP_ENV=prod` is intentionally **not startable** because no production
+identity adapter exists yet. This prevents a process with unusable authentication
+from advertising healthy production readiness.
+
+`APP_ENV=prod` fails before serving traffic when any of these conditions is true:
 
 - `IDENTITY_PROVIDER=dev_headers`;
+- `IDENTITY_PROVIDER=external` while the external adapter remains unimplemented;
 - `DATABASE_URL` is not PostgreSQL;
 - `DATABASE_URL` uses the repository's development `grile:grile` credential pair;
 - `DATABASE_ECHO=true`;
@@ -78,9 +83,10 @@ Independent of environment, enabling Google live mutations also requires
 `UGRILE_GOOGLE_PROVIDER=live` and an absolute
 `UGRILE_GOOGLE_CREDENTIALS_FILE` path.
 
-This does **not** claim that the reserved `external` identity adapter is already
-installed. Until the later integration milestone mounts it, business requests
-using `IDENTITY_PROVIDER=external` fail closed by design.
+Production can only become startable in a later integration milestone that adds
+a real identity adapter and updates this validator with executable tests proving
+that adapter is available. Merely selecting `IDENTITY_PROVIDER=external` is not
+sufficient.
 
 ## Secrets and forbidden values
 
@@ -99,7 +105,7 @@ command history. Prefer the host secret mechanism and file mounts.
 Before starting API/worker on a server-test host:
 
 1. create the environment from this inventory rather than copying local Compose defaults;
-2. keep `APP_ENV=test` until a complete production identity/provider wiring is explicitly opened;
+2. use `APP_ENV=test` until production identity integration is actually implemented and separately verified;
 3. use a dedicated PostgreSQL database/user with non-default credentials;
 4. run migrations before starting API/worker;
 5. use a persistent bounded export path if artifact download testing is required;
