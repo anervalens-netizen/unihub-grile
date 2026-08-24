@@ -1,6 +1,6 @@
 """Add Retail organization labels to the Grile store catalog.
 
-Revision ID: d4e6f8a0b2c4
+Revision ID: 2f4a6c8e0b1d
 Revises: b7c9d1e3f5a7
 """
 
@@ -11,7 +11,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "d4e6f8a0b2c4"
+revision: str = "2f4a6c8e0b1d"
 down_revision: str | None = "b7c9d1e3f5a7"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
