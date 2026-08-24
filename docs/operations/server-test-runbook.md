@@ -28,7 +28,7 @@ git status --short
 
 Acceptance:
 
-- `git rev-parse HEAD` exactly equals the candidate SHA recorded in issue #4;
+- `git rev-parse HEAD` exactly equals the candidate SHA recorded in issue #69;
 - worktree is clean;
 - no local patch, generated source, dependency override or untracked runtime code
   is allowed to influence the tested artifact;
@@ -394,7 +394,7 @@ For each server-test session record, without secrets/PII:
 
 ```text
 result: PASS | FAIL | PARTIAL
-candidate_sha: <exact issue-4 candidate SHA>
+candidate_sha: <exact issue-69 certified SHA>
 checkout_clean: true|false
 host_profile: <non-secret CPU/RAM/storage/OS summary>
 postgres_version: <version>
