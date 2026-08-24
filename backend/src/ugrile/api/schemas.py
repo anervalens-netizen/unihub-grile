@@ -46,6 +46,8 @@ class StoreOut(BaseModel):
     internal_code: str
     external_code: str | None
     name: str
+    regional: str | None
+    asm: str | None
     is_active: bool
 
 

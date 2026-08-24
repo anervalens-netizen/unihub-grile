@@ -93,6 +93,7 @@ describe("Magazin and Agent contract routes", () => {
     const { api, calls } = apiForPage();
     render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} capabilities={ADMIN_CAPABILITIES} />);
     expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Control" }));
     expect(screen.getAllByText(/126/).length).toBeGreaterThan(0);
     expect(screen.getByText("g1")).toBeInTheDocument();
     expect(screen.getByText("Deschisă · rev. 2")).toBeInTheDocument();
@@ -117,27 +118,23 @@ describe("Magazin and Agent contract routes", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Control" }));
     const initialDiagnosticsReads = calls.filter((path) => path === JOB_DIAGNOSTICS_PATH).length;
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /Sincronizează Sheet/i }));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    await waitFor(() => expect(calls.filter((path) => path === JOB_DIAGNOSTICS_PATH)).toHaveLength(initialDiagnosticsReads + 1));
-    await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /Exportă XLSX/i }));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    await waitFor(() => expect(calls.filter((path) => path === JOB_DIAGNOSTICS_PATH)).toHaveLength(initialDiagnosticsReads + 2));
+    await waitFor(() => expect(calls.filter((path) => path === JOB_DIAGNOSTICS_PATH)).toHaveLength(initialDiagnosticsReads + 1));
     expect(calls).toContain("/catalog/people?store_id=store_x");
     expect(calls).toContain(`/months/${MONTH.id}/sheet-reconciliation?store_id=store_x`);
     expect(calls.some((path) => path.includes("store_id=store_x"))).toBe(true);
     expect(calls.some((path) => path.includes("/store/"))).toBe(false);
-    expect((api.post as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([`/months/${MONTH.id}/sheet-projection/enqueue`, { store_id: "store_x" }]);
-    expect((api.post as ReturnType<typeof vi.fn>).mock.calls[1]).toEqual([`/months/${MONTH.id}/export/store`, { store_id: "store_x" }]);
+    expect(screen.queryByRole("button", { name: /Sincronizează Sheet/i })).not.toBeInTheDocument();
+    expect((api.post as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([`/months/${MONTH.id}/export/store`, { store_id: "store_x" }]);
   });
 
   it("keeps job diagnostics failure isolated from the core store detail", async () => {
     const { api } = apiForPage({ jobsFailure: true });
     render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} capabilities={MANAGER_CAPABILITIES} />);
     expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Control" }));
     expect(screen.getByText(/Starea joburilor este indisponibilă: jobs unavailable/)).toBeInTheDocument();
     expect(screen.getByText("2/2")).toBeInTheDocument();
   });
@@ -146,10 +143,8 @@ describe("Magazin and Agent contract routes", () => {
     const { api } = apiForPage({ failPaths: ["/epay/freshness"] });
     render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} capabilities={MANAGER_CAPABILITIES} />);
     expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Editează calendarul/i })).toBeInTheDocument();
     expect(screen.getAllByText(/126/).length).toBeGreaterThan(0);
     expect(screen.getByRole("alert")).toHaveTextContent(/E-pay: \/epay\/freshness unavailable/);
-    fireEvent.click(screen.getByRole("tab", { name: "Calendar" }));
     expect(screen.getByRole("button", { name: /Alice pe 2026-08-01/i })).toBeInTheDocument();
   });
 
@@ -157,7 +152,7 @@ describe("Magazin and Agent contract routes", () => {
     const { api } = apiForPage();
     render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} capabilities={MANAGER_CAPABILITIES} />);
     expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Editează calendarul/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Alice pe 2026-08-01/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Sincronizează Sheet/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Exportă XLSX/i })).not.toBeInTheDocument();
     expect(api.post).not.toHaveBeenCalled();
@@ -167,7 +162,6 @@ describe("Magazin and Agent contract routes", () => {
     const { api, calls } = apiForPage({ programRevisions: [2, 3, 4], postFailures: [{ status: 409, code: "STALE_REVISION" }] });
     render(<Magazin api={api} storeId="store_x" months={[MONTH]} monthsError={null} capabilities={MANAGER_CAPABILITIES} />);
     expect(await screen.findByRole("heading", { name: /Demo Store/ })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Editează calendarul/i }));
     fireEvent.click(screen.getByRole("button", { name: /Alice pe 2026-08-01/i }));
     expect(await screen.findByRole("button", { name: "Salvează" })).toBeInTheDocument();
     expect(calls).toContain(`/months/${MONTH.id}/program/choices?business_date=2026-08-01&store_id=store_x`);

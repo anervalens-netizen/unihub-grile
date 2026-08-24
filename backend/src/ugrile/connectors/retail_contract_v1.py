@@ -58,12 +58,22 @@ class RetailStoreV1(BaseModel):
     external_store_id: str
     display_name: str
     company_code: str
+    regional_key: str | None = None
+    manager_key: str | None = None
     is_active: bool = True
 
     @field_validator("external_store_id", "display_name", "company_code")
     @classmethod
     def _required_text(cls, value: str) -> str:
         return _non_empty(value, field_name="store field")
+
+    @field_validator("regional_key", "manager_key")
+    @classmethod
+    def _optional_org_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
 
 class RetailPersonV1(BaseModel):

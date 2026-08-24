@@ -182,6 +182,8 @@ export interface StoreSummary {
   internal_code: string;
   external_code: string | null;
   name: string;
+  regional: string | null;
+  asm: string | null;
   is_active: boolean;
 }
 

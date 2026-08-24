@@ -172,6 +172,8 @@ class Store(Base, TimestampMixin):
     internal_code: Mapped[str] = mapped_column(String(32), nullable=False)
     external_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
+    regional: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    asm: Mapped[str | None] = mapped_column(String(128), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     __table_args__ = (

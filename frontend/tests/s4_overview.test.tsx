@@ -113,7 +113,7 @@ describe("Overview command center", () => {
     expect(screen.getByText("Magazin fără agent")).toBeInTheDocument();
     expect(screen.getByText("Clasificare invalidă")).toBeInTheDocument();
     expect(screen.getByText("Target lipsă\/zero")).toBeInTheDocument();
-    expect(screen.getByText("Alice")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Fără ASM.*2 magazine/i })).toBeInTheDocument();
   });
 
   it("keeps the hub usable when the auxiliary people-area read fails", async () => {

@@ -124,7 +124,7 @@ export function Agent({ api, personId, months, monthsError }: AgentProps) {
   return (
     <section className="card" aria-label="Agent">
       <header className="card-header">
-        <h2>Agent {personId ?? ""}</h2>
+        <h2>{person?.display_name ?? "Agent"}</h2>
         <MonthSelector months={months} value={monthId} onChange={setMonthId} error={monthsError} />
       </header>
       {error && <RequestError message={error} onRetry={retry} />}

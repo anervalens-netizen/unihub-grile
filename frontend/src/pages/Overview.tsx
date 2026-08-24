@@ -27,6 +27,7 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
+  const [selectedAsm, setSelectedAsm] = useState<string | null>(null);
 
   useEffect(() => {
     setMonthId((current) => current ?? months[0]?.id ?? null);
@@ -86,6 +87,30 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
     return map;
   }, [report]);
 
+  const storesByAsm = useMemo(() => {
+    const grouped = new Map<string, StoreSummary[]>();
+    for (const store of stores) {
+      const asm = store.asm?.trim() || "Fără ASM";
+      grouped.set(asm, [...(grouped.get(asm) ?? []), store]);
+    }
+    return Array.from(grouped.entries()).sort(([left], [right]) => left.localeCompare(right, "ro"));
+  }, [stores]);
+
+  useEffect(() => {
+    if (storesByAsm.length === 0) {
+      setSelectedAsm(null);
+      return;
+    }
+    setSelectedAsm((current) => current && storesByAsm.some(([asm]) => asm === current)
+      ? current
+      : storesByAsm[0][0]);
+  }, [storesByAsm]);
+
+  const visibleStores = useMemo(
+    () => storesByAsm.find(([asm]) => asm === selectedAsm)?.[1] ?? [],
+    [selectedAsm, storesByAsm],
+  );
+
   const operational = useMemo(() => {
     if (!report) return null;
     const daysInMonth = new Date(Date.UTC(report.year, report.month, 0)).getUTCDate();
@@ -136,15 +161,29 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
           <div className="command-grid">
             <section className="panel network-panel">
               <div className="panel-heading">
-                <div><span className="eyebrow">MAGAZINE / STRUCTURĂ</span><h3>Control rețea</h3></div>
+                <div><span className="eyebrow">ASM / MAGAZINE</span><h3>Alege structura</h3></div>
                 <span className="context-pill">{monthStateLabel(report.state)} · rev. {report.revision}</span>
+              </div>
+
+              <div className="asm-selector" aria-label="Selectează ASM">
+                {storesByAsm.map(([asm, asmStores]) => (
+                  <button
+                    type="button"
+                    key={asm}
+                    className={`asm-selector-button ${selectedAsm === asm ? "active" : ""}`}
+                    onClick={() => setSelectedAsm(asm)}
+                  >
+                    <span className="manager-avatar" aria-hidden="true">{initials(asm)}</span>
+                    <span><strong>{asm}</strong><small>{asmStores.length} magazine</small></span>
+                  </button>
+                ))}
               </div>
 
               {storesError && <RequestError message={`Structura magazinelor este indisponibilă: ${storesError}`} onRetry={retry} />}
               {!storesError && stores.length === 0 && (
                 <div className="empty-state"><strong>Niciun magazin activ.</strong><span>Catalogul nu conține magazine active în aria curentă.</span></div>
               )}
-              {!storesError && stores.length > 0 && (
+              {!storesError && visibleStores.length > 0 && (
                 <div className="retail-overview-table" role="table" aria-label="Magazine și stare operațională">
                   <div className="retail-overview-row head" role="row">
                     <span role="columnheader">Magazin</span>
@@ -154,7 +193,7 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
                     <span role="columnheader">Excepții</span>
                     <span role="columnheader"><span className="sr-only">Acțiune</span></span>
                   </div>
-                  {stores.map((store) => {
+                  {visibleStores.map((store) => {
                     const issue = issuesByStore.get(store.id);
                     const status = !issue ? "ok" : issue.severity >= 2 ? "err" : "warn";
                     return (
@@ -201,22 +240,6 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
             </section>
           </div>
 
-          <section className="panel managers-panel">
-            <div className="panel-heading"><div><span className="eyebrow">MANAGERI REGIONALI</span><h3>Completare pe structură</h3></div></div>
-            <div className="manager-cards">
-              {report.managers.filter((row) => row.stores_total > 0).map((row) => {
-                const coverage = Math.round((row.stores_covered / row.stores_total) * 100);
-                return (
-                  <article className="manager-card" key={row.user_id}>
-                    <div className="manager-avatar" aria-hidden="true">{initials(row.display_name)}</div>
-                    <div className="manager-copy"><strong>{row.display_name}</strong><span>{row.stores_total} magazine · {row.days_uncovered} zile neacoperite</span></div>
-                    <div className="coverage-meter" aria-label={`Acoperire ${coverage}%`}><span style={{ width: `${coverage}%` }} /></div>
-                    <strong className="coverage-value">{coverage}%</strong>
-                  </article>
-                );
-              })}
-            </div>
-          </section>
         </>
       )}
     </div>

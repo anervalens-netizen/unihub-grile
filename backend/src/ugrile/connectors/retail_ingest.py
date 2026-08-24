@@ -24,7 +24,7 @@ from ..domain.identifiers import (
     tenant_slug_from_tenant_id,
 )
 from ..repositories.attribution import attribute_for_month, persist_attribution
-from ..repositories.models import ImportRun, IncentiveInput, Month, StoreTarget, Tenant
+from ..repositories.models import ImportRun, IncentiveInput, Month, Store, StoreTarget, Tenant
 from ..repositories.retail_generation import (
     AcceptedRetailGeneration,
     accepted_retail_generation,
@@ -285,6 +285,24 @@ def _connector_payload(
     )
 
 
+def _apply_store_organization(
+    session: Session,
+    snapshot: RetailSnapshotV1,
+) -> None:
+    store_codes = _store_codes(snapshot)
+    rows = {
+        row.internal_code: row
+        for row in session.execute(
+            select(Store).where(Store.tenant_id == snapshot.tenant_id)
+        ).scalars()
+    }
+    for source in snapshot.stores:
+        target = rows.get(store_codes[source.external_store_id])
+        if target is not None:
+            target.regional = source.regional_key
+            target.asm = source.manager_key
+
+
 def _target_version_ledger(
     snapshot: RetailSnapshotV1,
     payload: ConnectorV1Payload,
@@ -520,6 +538,7 @@ class RetailSnapshotIngestService:
                 generation_key=generation_key,
             )
             applied = FixtureConnector(self.session).apply(connector_payload)
+            _apply_store_organization(self.session, snapshot)
             store_ids, person_ids = _catalog_ledger(snapshot)
             ledger = {
                 "schema_version": snapshot.schema_version,

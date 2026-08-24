@@ -83,7 +83,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
   const [loading, setLoading] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<StoreTab>("control");
+  const [activeTab, setActiveTab] = useState<StoreTab>("calendar");
   const [editing, setEditing] = useState<Editing | null>(null);
   const [editValue, setEditValue] = useState<EditValue>({ personId: "", storeId: "", status: "WORKING", workingKind: "NORMAL" });
   const [editPeople, setEditPeople] = useState<Array<{ id: string; label: string; homeStoreId: string }>>([]);
@@ -93,7 +93,9 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
   const [saveError, setSaveError] = useState<string | null>(null);
   const choiceRequestId = useRef(0);
   const canEditSchedule = hasCapability(capabilities, "schedule.write");
-  const canSyncSheet = hasCapability(capabilities, "sheet.sync");
+  // Google is deliberately outside the current product slice. Grile remains
+  // fully usable from its own database and calculations.
+  const canSyncSheet = false;
   const canCreateExport = hasCapability(capabilities, "export.create");
   const canReadJobs = hasCapability(capabilities, "jobs.read");
   const hasStoreAction = canEditSchedule || canSyncSheet || canCreateExport;
