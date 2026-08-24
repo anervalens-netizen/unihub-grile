@@ -40,13 +40,14 @@ Aplicația are deja un nucleu funcțional important: model de domeniu, calendar 
 revision/CAS, pontaj, atribuire, rule pack, grile, close/reopen, Google/XLSX și un
 frontend standalone apropiat vizual de UniHub Retail.
 
-**Nu este încă server-test-ready sau production-ready.** Programul curent
-prioritizează autorizarea/scope-ul, siguranța financiară la close, reziliența
-workerului, maturizarea frontendului, CI/observability, productionizarea
-Google/XLSX și contractele de integrare Retail.
+Programul standalone M0-M8 a ajuns la un candidat istoric certificat, dar
+un audit independent pre-server a deschis remedierea #69 înainte de instalare.
+Scorul/gate-ul istoric din #4 nu este, singur, autorizație de instalare.
 
-Statusul taskurilor nu se deduce din acest README și nici din vechile etichete
-`S1…S7`. Se citește exclusiv din Master Tracker.
+Readiness-ul curent se stabilește din cea mai recentă certificare exact-head;
+pentru această fază sursa este issue #69. Etichetele vechi `S1…S7` și trackerul
+închis #4 rămân numai dovezi istorice. Production și integrarea Retail rămân în
+afara acestei autorizări.
 
 ## Surse canonice
 

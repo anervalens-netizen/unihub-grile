@@ -23,9 +23,9 @@ import { healthStateLabel, type StatusDotTone } from "./operationalStatus";
 import { currentRoute, subscribeRoute, type Route } from "./router";
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "/api") as string;
-// Standalone development keeps convenient fixture defaults. Production builds
-// never synthesize an admin/tenant identity; the future Retail host provides
-// identity through the configured provider boundary.
+// Standalone development keeps convenient fixture defaults. A controlled
+// server-test static build may explicitly provide VITE_DEV_IDENTITY/TENANT for
+// synthetic dev-header principals. Production builds never synthesize identity.
 const identity = (import.meta.env.VITE_DEV_IDENTITY ??
   (import.meta.env.DEV ? "user_admin" : undefined)) as string | undefined;
 const tenant = (import.meta.env.VITE_DEV_TENANT ??
