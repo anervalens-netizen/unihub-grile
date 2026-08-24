@@ -146,7 +146,8 @@ Inspect the dedicated test workbook:
 - only H:I for the exact current expected person rows are operator-editable;
 - all other Grila cells remain protected;
 - `Pontaj` is fully read-only to the operator;
-- service-account managed protection is present;
+- service-account managed protection is present; its editors are exactly the
+  service account plus the Google-reported file owner identities;
 - unrelated/sentinel workbook content and non-conflicting external protection remain unchanged.
 
 If an unexpected cell is editable, an expected H/I cell is blocked, or an unrelated protection/content item changed, stop immediately.

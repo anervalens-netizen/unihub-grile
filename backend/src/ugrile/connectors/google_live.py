@@ -20,7 +20,9 @@ from ..domain.errors import DomainError
 from .google import GoogleAdapterError
 
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
+DRIVE_METADATA_SCOPE = "https://www.googleapis.com/auth/drive.metadata.readonly"
 SHEETS_API_BASE = "https://sheets.googleapis.com/v4/spreadsheets"
+DRIVE_API_BASE = "https://www.googleapis.com/drive/v3/files"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 _CONTROL_FIELDS = (
     "sheets(properties(sheetId,title),"
@@ -43,6 +45,10 @@ class GoogleSheetsTransport(Protocol):
     @property
     def managed_editor_email(self) -> str:
         """Identity that must retain edit access to managed protected ranges."""
+        ...
+
+    def spreadsheet_owner_emails(self, spreadsheet_id: str) -> frozenset[str]:
+        """Return file owners that Google cannot exclude from protected ranges."""
         ...
 
     def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
@@ -99,7 +105,7 @@ class GoogleSheetsApiTransport:
         try:
             credentials = service_account.Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
                 credentials_file,
-                scopes=[SHEETS_SCOPE],
+                scopes=[SHEETS_SCOPE, DRIVE_METADATA_SCOPE],
             )
         except (ValueError, OSError, GoogleAuthError) as exc:
             raise GoogleTerminalTransportError(
@@ -115,6 +121,30 @@ class GoogleSheetsApiTransport:
         return cls(
             AuthorizedSession(credentials),  # type: ignore[no-untyped-call]
             managed_editor_email=editor_email,
+        )
+
+    def spreadsheet_owner_emails(self, spreadsheet_id: str) -> frozenset[str]:
+        """Resolve unavoidable owner editors through read-only Drive metadata."""
+
+        url = (
+            f"{DRIVE_API_BASE}/{quote(spreadsheet_id, safe='')}"
+            "?fields=permissions(type,role,emailAddress)&supportsAllDrives=true"
+        )
+        payload = self._request_json("GET", url)
+        permissions = payload.get("permissions", [])
+        if not isinstance(permissions, list) or any(
+            not isinstance(item, Mapping) for item in permissions
+        ):
+            raise GoogleRetryableTransportError(
+                "Google Drive returned an invalid permissions payload",
+                details={"code": "GOOGLE_LIVE_RESPONSE_INVALID"},
+            )
+        return frozenset(
+            str(item.get("emailAddress"))
+            for item in permissions
+            if item.get("role") == "owner"
+            and isinstance(item.get("emailAddress"), str)
+            and str(item.get("emailAddress")).strip()
         )
 
     def read_values(self, spreadsheet_id: str, range_a1: str) -> list[list[Any]]:
@@ -222,6 +252,7 @@ class GoogleSheetsApiTransport:
 
 __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
+    "DRIVE_METADATA_SCOPE",
     "GoogleRetryableTransportError",
     "GoogleSheetsApiTransport",
     "GoogleSheetsTransport",

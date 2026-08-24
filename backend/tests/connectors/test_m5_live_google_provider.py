@@ -17,6 +17,7 @@ from ugrile.connectors.google import (
 )
 from ugrile.connectors.google_epay_layout import render_epay_values
 from ugrile.connectors.google_live import (
+    DRIVE_METADATA_SCOPE,
     SHEETS_SCOPE,
     GoogleRetryableTransportError,
     GoogleSheetsApiTransport,
@@ -33,7 +34,13 @@ from ugrile.repositories.models import SheetBinding, SheetProjectionRun
 class RecordingTransport:
     managed_editor_email = "svc-grile@example.test"
 
-    def __init__(self, *, grila_rows: int = 0, pontaj_rows: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        grila_rows: int = 0,
+        pontaj_rows: int = 0,
+        owner_emails: frozenset[str] = frozenset(),
+    ) -> None:
         self.grila_rows = grila_rows
         self.pontaj_rows = pontaj_rows
         self.count_reads: list[tuple[str, str]] = []
@@ -43,6 +50,7 @@ class RecordingTransport:
         self.control_updates: list[tuple[str, Sequence[Mapping[str, Any]]]] = []
         self._written: dict[str, list[list[Any]]] = {}
         self._next_protection_id = 1000
+        self.owner_emails = owner_emails
         self.control_state: dict[str, Any] = {
             "sheets": [
                 {
@@ -55,6 +63,9 @@ class RecordingTransport:
                 },
             ]
         }
+
+    def spreadsheet_owner_emails(self, spreadsheet_id: str) -> frozenset[str]:
+        return self.owner_emails
 
     def existing_row_count(self, spreadsheet_id: str, range_a1: str) -> int:
         self.count_reads.append((spreadsheet_id, range_a1))
@@ -97,6 +108,11 @@ class RecordingTransport:
                     dict(request["addProtectedRange"])["protectedRange"]
                 )
                 assert isinstance(payload, dict)
+                editors = dict(payload.get("editors", {}))
+                editors["users"] = sorted(
+                    {*editors.get("users", []), *self.owner_emails}
+                )
+                payload["editors"] = editors
                 payload["protectedRangeId"] = self._next_protection_id
                 self._next_protection_id += 1
                 self._sheet_for_id(int(dict(payload["range"])["sheetId"]))[
@@ -105,6 +121,11 @@ class RecordingTransport:
             elif "updateProtectedRange" in request:
                 update = dict(request["updateProtectedRange"])
                 payload = copy.deepcopy(dict(update["protectedRange"]))
+                editors = dict(payload.get("editors", {}))
+                editors["users"] = sorted(
+                    {*editors.get("users", []), *self.owner_emails}
+                )
+                payload["editors"] = editors
                 protection_id = int(payload["protectedRangeId"])
                 sheet = self._sheet_for_id(int(dict(payload["range"])["sheetId"]))
                 ranges = sheet["protectedRanges"]
@@ -413,6 +434,66 @@ def test_live_protection_is_noop_when_already_exact(session, faker_tenant) -> No
     assert len(transport.control_updates) == 1
 
 
+def test_live_protection_accepts_unavoidable_drive_owner(
+    session,
+    faker_tenant,
+) -> None:
+    _binding(session, faker_tenant)
+    transport = RecordingTransport(owner_emails=frozenset({"owner@example.test"}))
+    provider = LiveGoogleProjectionProvider(transport)
+
+    projection = provider.write_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        generation="LIVE_OWNER_V1",
+        payload=_payload(),
+    )
+
+    assert projection.reconciliation["verified"] is True
+    for sheet in transport.control_state["sheets"]:
+        editors = sheet["protectedRanges"][0]["editors"]["users"]
+        assert set(editors) == {
+            "owner@example.test",
+            transport.managed_editor_email,
+        }
+
+
+def test_live_protection_removes_non_owner_extra_editor(
+    session,
+    faker_tenant,
+) -> None:
+    _binding(session, faker_tenant)
+    transport = RecordingTransport(owner_emails=frozenset({"owner@example.test"}))
+    provider = LiveGoogleProjectionProvider(transport)
+    provider.write_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        generation="LIVE_OWNER_V1",
+        payload=_payload(),
+    )
+    managed = transport.control_state["sheets"][0]["protectedRanges"][0]
+    managed["editors"]["users"].append("unexpected-writer@example.test")
+
+    provider.write_store_projection(
+        session,
+        tenant_id=faker_tenant["tenant_id"],
+        store_id=faker_tenant["store_id"],
+        generation="LIVE_OWNER_V2",
+        payload=_payload(),
+    )
+
+    editors = transport.control_state["sheets"][0]["protectedRanges"][0][
+        "editors"
+    ]["users"]
+    assert set(editors) == {
+        "owner@example.test",
+        transport.managed_editor_email,
+    }
+    assert "unexpected-writer@example.test" not in editors
+
+
 def test_external_protection_over_epay_inputs_fails_closed(session, faker_tenant) -> None:
     binding = _binding(session, faker_tenant)
     transport = RecordingTransport()
@@ -693,6 +774,39 @@ def test_http_transport_reads_and_updates_control_state_without_network() -> Non
     }
 
 
+def test_http_transport_resolves_only_drive_owner_permissions() -> None:
+    session = FakeAuthorizedSession(
+        [
+            FakeResponse(
+                200,
+                {
+                    "permissions": [
+                        {
+                            "type": "user",
+                            "role": "owner",
+                            "emailAddress": "owner@example.test",
+                        },
+                        {
+                            "type": "user",
+                            "role": "writer",
+                            "emailAddress": "writer@example.test",
+                        },
+                    ]
+                },
+            )
+        ]
+    )
+    transport = GoogleSheetsApiTransport(session)
+
+    assert transport.spreadsheet_owner_emails("sheet-1") == frozenset(
+        {"owner@example.test"}
+    )
+    assert session.calls[0]["method"] == "GET"
+    url = str(session.calls[0]["url"])
+    assert url.startswith("https://www.googleapis.com/drive/v3/files/sheet-1?")
+    assert "permissions(type,role,emailAddress)" in url
+
+
 def test_http_transport_rejects_invalid_values_shape() -> None:
     session = FakeAuthorizedSession([FakeResponse(200, {"values": ["not-a-row"]})])
     transport = GoogleSheetsApiTransport(session)
@@ -733,7 +847,7 @@ def test_service_account_loader_uses_sheet_scope_and_editor_identity_without_rea
 
     assert calls == {
         "filename": "/run/secrets/google.json",
-        "scopes": [SHEETS_SCOPE],
+        "scopes": [SHEETS_SCOPE, DRIVE_METADATA_SCOPE],
     }
     assert transport._session is sentinel_session
     assert transport.managed_editor_email == "svc@example.test"

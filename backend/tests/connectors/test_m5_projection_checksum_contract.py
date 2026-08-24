@@ -14,6 +14,9 @@ from ugrile.repositories.models import SheetBinding
 class EchoTransport:
     managed_editor_email = "svc-checksum@example.test"
 
+    def spreadsheet_owner_emails(self, spreadsheet_id: str) -> frozenset[str]:
+        return frozenset()
+
     def __init__(self) -> None:
         self.written: dict[str, list[list[Any]]] = {}
         self._next_protection_id = 100

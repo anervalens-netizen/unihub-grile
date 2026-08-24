@@ -102,7 +102,9 @@ Required state:
 ### Grila
 
 - one enforced whole-sheet protected range;
-- service-account identity is the only explicit protected-range editor;
+- protected-range editors are exactly the service-account identity plus any
+  file owner identities returned by Google Drive metadata; owners cannot be
+  excluded by a Sheets protection;
 - domain-wide edit is disabled;
 - the only unprotected cells are `H:I` on the exact current person rows (zero-based columns 7..9, rows 4..4+N);
 - metadata rows, person IDs, projection columns and all other cells remain protected.
@@ -110,12 +112,13 @@ Required state:
 ### Pontaj
 
 - one enforced whole-sheet protected range;
-- service-account identity is the only explicit protected-range editor;
+- protected-range editors are exactly the service-account identity plus the
+  Google-reported file owners;
 - no unprotected ranges.
 
 The reconciliation is idempotent. If the managed protection already matches exactly, no structural `batchUpdate` is sent. This avoids quota churn.
 
-Managed duplicates are removed, but protections not owned by UniHub Grile are never deleted. If a non-warning external protection overlaps the required E-pay input cells, or a named/table protection prevents proving editability, projection fails closed with `GOOGLE_EPAY_PROTECTION_CONFLICT` rather than weakening or deleting the external control.
+Managed duplicates are removed, but protections not owned by UniHub Grile are never deleted. Any non-owner extra editor on a managed protection is removed during reconciliation and cannot satisfy attestation. If a non-warning external protection overlaps the required E-pay input cells, or a named/table protection prevents proving editability, projection fails closed with `GOOGLE_EPAY_PROTECTION_CONFLICT` rather than weakening or deleting the external control.
 
 After any managed protection change, control state is read again and must attest exactly before the projection values can be marked successful.
 
