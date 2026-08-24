@@ -7,7 +7,7 @@ import json
 import os
 from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from ..connectors.retail_ingest import RetailSnapshotIngestService
 from ..connectors.retail_postgres import PostgresRetailSnapshotAdapter
@@ -39,59 +39,73 @@ def main(argv: Sequence[str] | None = None) -> None:
         month = MonthRepository(session).get_or_create(args.tenant_id, year, month_number)
         if month.state == MonthState.DRAFT.value:
             month.state = MonthState.OPEN.value
-        existing_calendar_rows = session.scalar(
-            select(func.count()).select_from(SiteDayAssignment).where(
+        existing_assignments = list(
+            session.execute(
+                select(
+                    SiteDayAssignment.store_id,
+                    SiteDayAssignment.person_id,
+                    SiteDayAssignment.business_date,
+                ).where(
                 SiteDayAssignment.tenant_id == args.tenant_id,
                 SiteDayAssignment.month_id == month.id,
             )
+            ).all()
         )
+        occupied_store_days = {(row.store_id, row.business_date) for row in existing_assignments}
+        occupied_person_days = {(row.person_id, row.business_date) for row in existing_assignments}
         seeded_assignments = 0
-        if not existing_calendar_rows:
-            stores_by_external = {
-                row.external_code: row.id
-                for row in session.execute(
-                    select(Store).where(Store.tenant_id == args.tenant_id)
-                ).scalars()
-                if row.external_code
-            }
-            people_by_external = {
-                row.external_code: row.id
-                for row in session.execute(
-                    select(Person).where(Person.tenant_id == args.tenant_id)
-                ).scalars()
-                if row.external_code
-            }
-            for external_store, business_date, external_person in adapter.observed_assignments:
-                store_id = stores_by_external.get(external_store)
-                person_id = people_by_external.get(external_person)
-                if store_id is None or person_id is None:
-                    continue
-                session.add(
-                    SiteDayAssignment(
-                        tenant_id=args.tenant_id,
-                        month_id=month.id,
-                        store_id=store_id,
-                        person_id=person_id,
-                        business_date=business_date,
-                        status=DayStatus.WORKING.value,
-                        working_kind=WorkingKind.NORMAL.value,
-                        revision=1,
-                        source="RETAIL_ACTIVITY_SEED",
-                    )
-                )
-                seeded_assignments += 1
-            if seeded_assignments:
-                month.revision = 1
-                session.flush()
-                AttributionService(session).rebuild_for_month(
-                    month=month,
+        stores_by_external = {
+            row.external_code: row.id
+            for row in session.execute(
+                select(Store).where(Store.tenant_id == args.tenant_id)
+            ).scalars()
+            if row.external_code
+        }
+        people_by_external = {
+            row.external_code: row.id
+            for row in session.execute(
+                select(Person).where(Person.tenant_id == args.tenant_id)
+            ).scalars()
+            if row.external_code
+        }
+        next_revision = month.revision + 1
+        for external_store, business_date, external_person in adapter.observed_assignments:
+            store_id = stores_by_external.get(external_store)
+            person_id = people_by_external.get(external_person)
+            if store_id is None or person_id is None:
+                continue
+            if (store_id, business_date) in occupied_store_days:
+                continue
+            if (person_id, business_date) in occupied_person_days:
+                continue
+            session.add(
+                SiteDayAssignment(
                     tenant_id=args.tenant_id,
-                    revision=month.revision,
+                    month_id=month.id,
+                    store_id=store_id,
+                    person_id=person_id,
+                    business_date=business_date,
+                    status=DayStatus.WORKING.value,
+                    working_kind=WorkingKind.NORMAL.value,
+                    revision=next_revision,
+                    source="RETAIL_ACTIVITY_SEED",
                 )
-                PayrollGridService(session).compute_and_persist(
-                    tenant_id=args.tenant_id,
-                    month=month,
-                )
+            )
+            occupied_store_days.add((store_id, business_date))
+            occupied_person_days.add((person_id, business_date))
+            seeded_assignments += 1
+        if seeded_assignments:
+            month.revision = next_revision
+            session.flush()
+            AttributionService(session).rebuild_for_month(
+                month=month,
+                tenant_id=args.tenant_id,
+                revision=month.revision,
+            )
+            PayrollGridService(session).compute_and_persist(
+                tenant_id=args.tenant_id,
+                month=month,
+            )
         admin_id = "user_mobiup_admin"
         if session.get(User, admin_id) is None:
             session.add(

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Retail read-only import for UniHub Grile
+
+[Timer]
+OnCalendar=*-*-* 07:30:00 Europe/Bucharest
+Persistent=true
+RandomizedDelaySec=120
+Unit=unihub-grile-test-retail-sync.service
+
+[Install]
+WantedBy=timers.target

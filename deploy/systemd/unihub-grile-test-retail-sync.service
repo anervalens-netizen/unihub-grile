@@ -1,0 +1,13 @@
+[Unit]
+Description=Import UniHub Retail reporting snapshot into Grile (read-only source)
+After=network-online.target unihub-grile-test-postgres.service
+Requires=unihub-grile-test-postgres.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/UniHub/unihub-grile-server-test/current/backend
+ExecStart=/bin/bash -c 'set -a; . /opt/Mobiup/unihub-retail/.env.worker; retail_url="$DATABASE_URL"; . /etc/unihub-grile-test/runtime.env; exec env UGRILE_RETAIL_DATABASE_URL="$retail_url" .venv/bin/python -m ugrile.operations.retail_sync --period "$$(date +%%Y-%%m)"'
+NoNewPrivileges=true
+PrivateTmp=true
+
