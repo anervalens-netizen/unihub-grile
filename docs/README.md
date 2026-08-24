@@ -22,6 +22,8 @@ overrides them.
 | `../AGENTS.md` | agent execution/governance rules |
 | `operations/local-commands.md` | current local development/verification workflow |
 | `operations/google-provider-config.md` | Google provider selection, secrets and live-mutation gates |
+| `operations/server-test-runbook.md` | exact-artifact standalone server-test procedure, probes, smoke, rollback and evidence |
+| `validation/final-candidate-audit.md` | M8 final adversarial audit and quality scoring evidence |
 
 ## Historical material
 
