@@ -391,7 +391,7 @@ export function Magazin({ api, storeId, months, monthsError, capabilities }: Mag
           <div>
             <span className="eyebrow">COMANDĂ MAGAZIN</span>
             <h2>{store?.name ?? "Magazin"}</h2>
-            <p>{store?.internal_code ?? storeId} · {store?.company_code ?? "fără firmă"}</p>
+            <p>{store?.external_code ?? store?.internal_code ?? storeId} · {store?.company_code ?? "fără firmă"}</p>
           </div>
         </div>
         <div className="store-hero-actions">

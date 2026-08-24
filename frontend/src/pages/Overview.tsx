@@ -199,7 +199,7 @@ export function Overview({ api, months, monthsError }: OverviewProps) {
                     return (
                       <div className="retail-overview-row" role="row" key={store.id}>
                         <span role="cell"><button type="button" className="retail-store-link" onClick={() => navigate("store", store.id)}>{store.name}</button></span>
-                        <span role="cell">{store.internal_code}</span>
+                        <span role="cell">{store.external_code ?? store.internal_code}</span>
                         <span role="cell">{store.company_code || "—"}</span>
                         <span className="retail-status" role="cell">
                           <span className={`status-dot status-${status === "ok" ? "online" : status === "warn" ? "checking" : "offline"}`} aria-hidden="true" />

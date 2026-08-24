@@ -124,7 +124,7 @@ class IndexedProgramService:
                 rows.append(
                     ProgramRow(
                         row_id=store.id,
-                        label=f"{store.internal_code} · {store.name}",
+                        label=f"{store.external_code or store.internal_code} · {store.name}",
                         home_store_id=store.id,
                         cells=tuple(store_cells),
                     )
@@ -148,7 +148,9 @@ class IndexedProgramService:
                     if match is not None:
                         store_obj = store_by_id.get(match.store_id)
                         store_label = (
-                            store_obj.internal_code if store_obj is not None else match.store_id
+                            (store_obj.external_code or store_obj.internal_code)
+                            if store_obj is not None
+                            else match.store_id
                         )
                         person_cells.append(
                             ProgramCell(
@@ -194,7 +196,7 @@ class IndexedProgramService:
                 rows.append(
                     ProgramRow(
                         row_id=person.id,
-                        label=f"{person.internal_code} · {person.display_name}",
+                        label=person.display_name,
                         home_store_id=person.home_store_id,
                         cells=tuple(person_cells),
                     )
