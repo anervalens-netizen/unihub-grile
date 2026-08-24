@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from ugrile.core.config import get_settings
 from ugrile.main import create_app
 
@@ -17,10 +20,11 @@ def test_fixture_ingest_is_mounted_in_test(monkeypatch) -> None:
         get_settings.cache_clear()
 
 
-def test_fixture_ingest_is_not_mounted_in_prod(monkeypatch) -> None:
+def test_prod_startup_fails_before_fixture_ingest_can_mount(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "prod")
     get_settings.cache_clear()
     try:
-        assert "/ingest/fixture" not in _paths()
+        with pytest.raises(ValidationError, match="unsafe prod configuration"):
+            _paths()
     finally:
         get_settings.cache_clear()
