@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from ugrile.connectors.google import StoreProjection, read_store_projection
 from ugrile.connectors.google_provider import (
@@ -70,12 +71,9 @@ def test_live_provider_requires_external_credentials_path(
     _settings(monkeypatch)
     monkeypatch.setenv("UGRILE_GOOGLE_PROVIDER", "live")
     monkeypatch.setenv("UGRILE_GOOGLE_LIVE_MUTATIONS_ENABLED", "true")
-    settings = Settings(_env_file=None)
 
-    with pytest.raises(GoogleProviderConfigurationError) as excinfo:
-        build_google_projection_provider(settings)
-
-    assert excinfo.value.details == {"code": "GOOGLE_CREDENTIALS_FILE_REQUIRED"}
+    with pytest.raises(ValidationError, match="UGRILE_GOOGLE_CREDENTIALS_FILE"):
+        Settings(_env_file=None)
 
 
 def test_live_provider_rejects_missing_credentials_file(
