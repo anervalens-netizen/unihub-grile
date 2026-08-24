@@ -40,15 +40,27 @@ def test_repair_close_chain_partitions_interleaved_months(pg_engine) -> None:
                 timezone="Europe/Bucharest",
             )
         )
+        # Flush the FK parent explicitly. These models intentionally do not rely on
+        # ORM relationships for persistence ordering, so a single mixed flush is
+        # not a valid fixture assumption.
+        session.flush()
         session.add_all(
             [
                 Month(
-                    id=month_a_id, tenant_id=tenant_id, year=2026, month=7,
-                    state="CLOSED", revision=2,
+                    id=month_a_id,
+                    tenant_id=tenant_id,
+                    year=2026,
+                    month=7,
+                    state="CLOSED",
+                    revision=2,
                 ),
                 Month(
-                    id=month_b_id, tenant_id=tenant_id, year=2026, month=8,
-                    state="CLOSED", revision=2,
+                    id=month_b_id,
+                    tenant_id=tenant_id,
+                    year=2026,
+                    month=8,
+                    state="CLOSED",
+                    revision=2,
                 ),
             ]
         )
@@ -56,32 +68,64 @@ def test_repair_close_chain_partitions_interleaved_months(pg_engine) -> None:
         session.add_all(
             [
                 MonthCloseEvent(
-                    tenant_id=tenant_id, month_id=month_a_id, action="CLOSE",
-                    previous_state="OPEN", new_state="CLOSED", revision_before=0,
-                    revision_after=1, actor_id="user_a", reason=None, blockers="[]",
-                    previous_event_digest="f" * 64, event_digest="a" * 64,
+                    tenant_id=tenant_id,
+                    month_id=month_a_id,
+                    action="CLOSE",
+                    previous_state="OPEN",
+                    new_state="CLOSED",
+                    revision_before=0,
+                    revision_after=1,
+                    actor_id="user_a",
+                    reason=None,
+                    blockers="[]",
+                    previous_event_digest="f" * 64,
+                    event_digest="a" * 64,
                     occurred_at=base,
                 ),
                 MonthCloseEvent(
-                    tenant_id=tenant_id, month_id=month_b_id, action="CLOSE",
-                    previous_state="OPEN", new_state="CLOSED", revision_before=0,
-                    revision_after=1, actor_id="user_b", reason=None, blockers="[]",
-                    previous_event_digest="a" * 64, event_digest="b" * 64,
+                    tenant_id=tenant_id,
+                    month_id=month_b_id,
+                    action="CLOSE",
+                    previous_state="OPEN",
+                    new_state="CLOSED",
+                    revision_before=0,
+                    revision_after=1,
+                    actor_id="user_b",
+                    reason=None,
+                    blockers="[]",
+                    previous_event_digest="a" * 64,
+                    event_digest="b" * 64,
                     occurred_at=base + timedelta(seconds=1),
                 ),
                 MonthCloseEvent(
-                    tenant_id=tenant_id, month_id=month_a_id, action="REOPEN",
-                    previous_state="CLOSED", new_state="REOPENED", revision_before=1,
-                    revision_after=2, actor_id="user_a", reason="audit repair",
-                    blockers="[]", previous_event_digest="b" * 64,
-                    event_digest="c" * 64, occurred_at=base + timedelta(seconds=2),
+                    tenant_id=tenant_id,
+                    month_id=month_a_id,
+                    action="REOPEN",
+                    previous_state="CLOSED",
+                    new_state="REOPENED",
+                    revision_before=1,
+                    revision_after=2,
+                    actor_id="user_a",
+                    reason="audit repair",
+                    blockers="[]",
+                    previous_event_digest="b" * 64,
+                    event_digest="c" * 64,
+                    occurred_at=base + timedelta(seconds=2),
                 ),
                 MonthCloseEvent(
-                    tenant_id=tenant_id, month_id=month_b_id, action="REOPEN",
-                    previous_state="CLOSED", new_state="REOPENED", revision_before=1,
-                    revision_after=2, actor_id="user_b", reason="audit repair",
-                    blockers="[]", previous_event_digest="c" * 64,
-                    event_digest="d" * 64, occurred_at=base + timedelta(seconds=3),
+                    tenant_id=tenant_id,
+                    month_id=month_b_id,
+                    action="REOPEN",
+                    previous_state="CLOSED",
+                    new_state="REOPENED",
+                    revision_before=1,
+                    revision_after=2,
+                    actor_id="user_b",
+                    reason="audit repair",
+                    blockers="[]",
+                    previous_event_digest="c" * 64,
+                    event_digest="d" * 64,
+                    occurred_at=base + timedelta(seconds=3),
                 ),
             ]
         )
@@ -94,7 +138,9 @@ def test_repair_close_chain_partitions_interleaved_months(pg_engine) -> None:
     with Session(pg_engine) as session:
         rows = list(
             session.execute(
-                select(MonthCloseEvent).order_by(
+                select(MonthCloseEvent)
+                .where(MonthCloseEvent.tenant_id == tenant_id)
+                .order_by(
                     MonthCloseEvent.month_id,
                     MonthCloseEvent.occurred_at,
                     MonthCloseEvent.id,
@@ -106,11 +152,17 @@ def test_repair_close_chain_partitions_interleaved_months(pg_engine) -> None:
     for row in rows:
         grouped[row.month_id].append(
             MonthCloseEventRecord(
-                id=row.id, tenant_id=row.tenant_id, month_id=row.month_id,
-                action=row.action, previous_state=row.previous_state,
-                new_state=row.new_state, revision_before=row.revision_before,
-                revision_after=row.revision_after, actor_id=row.actor_id,
-                reason=row.reason, blockers=row.blockers,
+                id=row.id,
+                tenant_id=row.tenant_id,
+                month_id=row.month_id,
+                action=row.action,
+                previous_state=row.previous_state,
+                new_state=row.new_state,
+                revision_before=row.revision_before,
+                revision_after=row.revision_after,
+                actor_id=row.actor_id,
+                reason=row.reason,
+                blockers=row.blockers,
                 previous_event_digest=row.previous_event_digest,
                 event_digest=row.event_digest,
             )
