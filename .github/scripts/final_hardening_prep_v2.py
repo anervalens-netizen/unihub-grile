@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).with_name("final_hardening_prep.py")
@@ -16,6 +17,17 @@ module.update_architecture()
 module.update_backend_config()
 module.update_export_api_and_tests()
 module.update_frontend_toolchain()
+
+package_path = Path("frontend/package.json")
+package = json.loads(package_path.read_text())
+package["devDependencies"]["@types/node"] = "22.17.2"
+package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n")
+
+module.replace_exact(
+    "frontend/vite.config.ts",
+    'import { defineConfig } from "vite";\n',
+    'import { defineConfig } from "vitest/config";\n',
+)
 
 module.replace_exact(
     "Makefile",
