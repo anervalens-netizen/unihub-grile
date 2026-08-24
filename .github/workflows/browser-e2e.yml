@@ -34,7 +34,7 @@ jobs:
       UGRILE_API_PROXY: http://127.0.0.1:8080
       VITE_DEV_IDENTITY: user_perf_admin
       VITE_DEV_TENANT: tenant_perf
-      E2E_BASE_URL: http://127.0.0.1:5173
+      E2E_BASE_URL: http://127.0.0.1:5174
       E2E_ARTIFACT_DIR: e2e-artifacts
 
     steps:
@@ -72,6 +72,10 @@ jobs:
         working-directory: frontend
         run: pnpm install --frozen-lockfile
 
+      - name: Build production frontend with explicit server-test identity
+        working-directory: frontend
+        run: pnpm build
+
       - name: Fresh PostgreSQL migration bootstrap
         working-directory: backend
         run: python -m alembic upgrade head
@@ -80,12 +84,12 @@ jobs:
         working-directory: backend
         run: python -m tests.fixtures.seed_browser_e2e
 
-      - name: Start local API and frontend
+      - name: Start local API and production-built frontend
         run: |
           (cd backend && python -m ugrile.main > ../backend-e2e.log 2>&1 & echo $! > ../backend-e2e.pid)
-          (cd frontend && pnpm dev --host 127.0.0.1 --port 5173 > ../frontend-e2e.log 2>&1 & echo $! > ../frontend-e2e.pid)
+          (cd frontend && pnpm preview > ../frontend-e2e.log 2>&1 & echo $! > ../frontend-e2e.pid)
           for attempt in $(seq 1 45); do
-            if curl --fail --silent http://127.0.0.1:8080/readyz >/dev/null && curl --fail --silent http://127.0.0.1:5173/ >/dev/null; then
+            if curl --fail --silent http://127.0.0.1:8080/readyz >/dev/null && curl --fail --silent http://127.0.0.1:5174/ >/dev/null; then
               exit 0
             fi
             sleep 1
