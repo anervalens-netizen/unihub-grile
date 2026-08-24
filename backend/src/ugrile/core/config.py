@@ -131,7 +131,7 @@ class Settings(BaseSettings):
             # ``external`` is a reserved interface only. Allowing prod startup
             # before a concrete trusted adapter is mounted would let /readyz be
             # green while every business request fails authentication.
-            violations.append("external identity adapter is not installed for prod")
+            violations.append("IDENTITY_PROVIDER=external is not implemented for prod")
         if not self.database_url.startswith(("postgresql://", "postgresql+psycopg://")):
             violations.append("prod requires PostgreSQL DATABASE_URL")
         if "://grile:grile@" in self.database_url:
